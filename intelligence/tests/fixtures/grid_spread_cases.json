@@ -1,0 +1,55 @@
+{
+  "contractVersion": "geosentinel.compute/v1",
+  "cases": [
+    {
+      "name": "isolated-ignition",
+      "request": {
+        "contract_version": "geosentinel.compute/v1",
+        "grid_key": "fixture-isolated",
+        "cells": [
+          {"x": 0, "y": 0, "fuel_load": 0.1, "fuel_moisture": 1.0, "burn_susceptibility": 0.0}
+        ],
+        "ignition": {"x": 0, "y": 0},
+        "steps": 5,
+        "wind_speed_kmh": 0,
+        "wind_direction_degrees": 0,
+        "spread_threshold": 0.5
+      }
+    },
+    {
+      "name": "three-cell-eastward-spread",
+      "request": {
+        "contract_version": "geosentinel.compute/v1",
+        "grid_key": "fixture-eastward",
+        "cells": [
+          {"x": 0, "y": 0, "fuel_load": 1.0, "fuel_moisture": 0.0, "burn_susceptibility": 1.0},
+          {"x": 1, "y": 0, "fuel_load": 1.0, "fuel_moisture": 0.0, "burn_susceptibility": 1.0},
+          {"x": 2, "y": 0, "fuel_load": 1.0, "fuel_moisture": 0.0, "burn_susceptibility": 1.0}
+        ],
+        "ignition": {"x": 0, "y": 0},
+        "steps": 5,
+        "wind_speed_kmh": 25,
+        "wind_direction_degrees": 90,
+        "spread_threshold": 0.5
+      }
+    },
+    {
+      "name": "diagonal-wind-sensitive-spread",
+      "request": {
+        "contract_version": "geosentinel.compute/v1",
+        "grid_key": "fixture-diagonal",
+        "cells": [
+          {"x": 0, "y": 0, "fuel_load": 0.7, "fuel_moisture": 0.25, "burn_susceptibility": 0.75},
+          {"x": 1, "y": 1, "fuel_load": 0.7, "fuel_moisture": 0.25, "burn_susceptibility": 0.75},
+          {"x": 1, "y": 0, "fuel_load": 0.2, "fuel_moisture": 0.9, "burn_susceptibility": 0.1},
+          {"x": 0, "y": 1, "fuel_load": 0.2, "fuel_moisture": 0.9, "burn_susceptibility": 0.1}
+        ],
+        "ignition": {"x": 0, "y": 0},
+        "steps": 4,
+        "wind_speed_kmh": 70,
+        "wind_direction_degrees": 45,
+        "spread_threshold": 0.5
+      }
+    }
+  ]
+}

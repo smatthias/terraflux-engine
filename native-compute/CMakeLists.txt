@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.20)
+project(geosentinel_compute LANGUAGES CXX)
+add_library(geosentinel_compute INTERFACE)
+target_include_directories(geosentinel_compute INTERFACE include)
+target_compile_features(geosentinel_compute INTERFACE cxx_std_20)
+
+add_executable(geosentinel-compute-runner src/grid_spread_runner.cpp)
+target_link_libraries(geosentinel-compute-runner PRIVATE geosentinel_compute)
