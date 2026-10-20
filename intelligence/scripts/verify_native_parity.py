@@ -19,7 +19,7 @@ def comparable(result: SpreadResponse) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--runner", default=os.environ.get("GEOSENTINEL_NATIVE_RUNNER", "/usr/local/bin/geosentinel-compute-runner"))
+    parser.add_argument("--runner", default=os.environ.get("TERRAFLUX_NATIVE_RUNNER", "/usr/local/bin/terraflux-compute-runner"))
     parser.add_argument("--fixtures", type=Path, default=DEFAULT_FIXTURES)
     arguments = parser.parse_args()
 

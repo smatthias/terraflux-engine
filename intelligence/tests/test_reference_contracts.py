@@ -10,7 +10,7 @@ class ReferenceFixtureTest(unittest.TestCase):
     def test_reference_contract_fixtures_are_deterministic(self):
         path = Path(__file__).parent / "fixtures" / "grid_spread_cases.json"
         document = json.loads(path.read_text())
-        self.assertEqual(document["contractVersion"], "geosentinel.compute/v1")
+        self.assertEqual(document["contractVersion"], "terraflux.compute/v1")
         for case in document["cases"]:
             with self.subTest(case=case["name"]):
                 request = SpreadRequest.model_validate(case["request"])

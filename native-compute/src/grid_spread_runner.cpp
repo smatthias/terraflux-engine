@@ -1,4 +1,4 @@
-#include <geosentinel/contracts.hpp>
+#include <terraflux/contracts.hpp>
 
 #include <algorithm>
 #include <cctype>
@@ -100,13 +100,13 @@ int main() {
   try {
     std::stringstream input; input << std::cin.rdbuf();
     const auto root = object(Parser(input.str()).parse());
-    if (string(field(root, "contract_version")) != geosentinel::compute::kContractVersion) throw std::runtime_error("unsupported contract_version");
+    if (string(field(root, "contract_version")) != terraflux::compute::kContractVersion) throw std::runtime_error("unsupported contract_version");
 
     const auto& cells_json = array(field(root, "cells"));
-    std::map<std::pair<int, int>, geosentinel::compute::GridCell> cells;
+    std::map<std::pair<int, int>, terraflux::compute::GridCell> cells;
     for (const auto& item : cells_json) {
       const auto& source = object(item);
-      geosentinel::compute::GridCell cell;
+      terraflux::compute::GridCell cell;
       cell.x = static_cast<int>(number(field(source, "x")));
       cell.y = static_cast<int>(number(field(source, "y")));
       cell.fuel_load = number(field(source, "fuel_load"));
@@ -144,7 +144,7 @@ int main() {
     }
 
     std::ostringstream output;
-    output << "{\"contract_version\":\"" << geosentinel::compute::kContractVersion << "\",\"engine\":\"cpp-native-v1\",\"deterministic\":true,\"grid_key\":" << quote(string(field(root, "grid_key"))) << ",\"frames\":[";
+    output << "{\"contract_version\":\"" << terraflux::compute::kContractVersion << "\",\"engine\":\"cpp-native-v1\",\"deterministic\":true,\"grid_key\":" << quote(string(field(root, "grid_key"))) << ",\"frames\":[";
     for (std::size_t index = 0; index < frames.size(); ++index) {
       if (index) output << ','; const auto& [step, active, consumed] = frames[index];
       output << "{\"step\":" << step << ",\"active_cells\":"; coordinates(output, active);

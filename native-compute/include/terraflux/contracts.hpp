@@ -4,8 +4,8 @@
 #include <string>
 #include <vector>
 
-namespace geosentinel::compute {
-inline constexpr const char* kContractVersion = "geosentinel.compute/v1";
+namespace terraflux::compute {
+inline constexpr const char* kContractVersion = "terraflux.compute/v1";
 
 struct GridCell {
   std::int32_t x{};
@@ -41,4 +41,4 @@ struct SpreadResult {
   std::int32_t burned_cells{};
   std::int32_t completed_steps{};
 };
-} // namespace geosentinel::compute
+} // namespace terraflux::compute

@@ -1,0 +1,49 @@
+
+## 2. Add GitHub Actions CI
+
+This will automatically build and test TerraFlux whenever code is pushed or a pull request is opened.
+
+```bash
+mkdir -p .github/workflows
+
+cat > .github/workflows/ci.yml <<'EOF'
+name: TerraFlux CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install Python dependencies
+        run: pip install -r intelligence/requirements.txt
+
+      - name: Build native engine
+        run: |
+          cmake -S native-compute -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --parallel 2
+
+      - name: Run Python tests
+        env:
+          PYTHONPATH: intelligence
+        run: python -m unittest discover -s intelligence/tests -v
+
+      - name: Verify native parity
+        env:
+          PYTHONPATH: intelligence
+        run: |
+          python intelligence/scripts/verify_native_parity.py \
+            --runner build/terraflux-compute-runner \
+            --fixtures intelligence/tests/fixtures/grid_spread_cases.json
+EOF

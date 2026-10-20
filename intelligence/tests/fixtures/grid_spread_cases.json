@@ -1,10 +1,10 @@
 {
-  "contractVersion": "geosentinel.compute/v1",
+  "contractVersion": "terraflux.compute/v1",
   "cases": [
     {
       "name": "isolated-ignition",
       "request": {
-        "contract_version": "geosentinel.compute/v1",
+        "contract_version": "terraflux.compute/v1",
         "grid_key": "fixture-isolated",
         "cells": [
           {"x": 0, "y": 0, "fuel_load": 0.1, "fuel_moisture": 1.0, "burn_susceptibility": 0.0}
@@ -19,7 +19,7 @@
     {
       "name": "three-cell-eastward-spread",
       "request": {
-        "contract_version": "geosentinel.compute/v1",
+        "contract_version": "terraflux.compute/v1",
         "grid_key": "fixture-eastward",
         "cells": [
           {"x": 0, "y": 0, "fuel_load": 1.0, "fuel_moisture": 0.0, "burn_susceptibility": 1.0},
@@ -36,7 +36,7 @@
     {
       "name": "diagonal-wind-sensitive-spread",
       "request": {
-        "contract_version": "geosentinel.compute/v1",
+        "contract_version": "terraflux.compute/v1",
         "grid_key": "fixture-diagonal",
         "cells": [
           {"x": 0, "y": 0, "fuel_load": 0.7, "fuel_moisture": 0.25, "burn_susceptibility": 0.75},

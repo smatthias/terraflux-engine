@@ -3,7 +3,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-CONTRACT_VERSION = "geosentinel.compute/v1"
+CONTRACT_VERSION = "terraflux.compute/v1"
 
 
 class GridCell(BaseModel):

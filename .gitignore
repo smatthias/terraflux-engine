@@ -1,0 +1,21 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# CMake / C++
+build/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+compile_commands.json
+
+# Editors
+.idea/
+.vscode/
+
+# Local configuration
+.env
+.env.*
+!.env.example
