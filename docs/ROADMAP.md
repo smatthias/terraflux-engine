@@ -1,50 +1,89 @@
-# TerraFlux Engine — Development Roadmap
+# TerraFlux Engine — Long-Term Engineering Roadmap
 
-## Scope
-TerraFlux is an independent C++20 / Python spatial simulation engine. It is not the private GeoSentinel3D application. The current baseline includes deterministic wildfire grid propagation, versioned contracts, reference fixtures, native/Python parity verification and CI.
+## Project boundary
+TerraFlux is an independent C++20/Python spatial simulation engine. It is **not** the private GeoSentinel3D application. Current baseline: deterministic grid wildfire propagation, versioned contracts, native C++ runner, Python reference implementation, parity fixtures and CI. Proposed features below are **not implemented yet**.
 
-## Planning and time accounting
-All hour figures below are **estimates of future engineering effort**, not time already worked, approved, or payable. A successful Git commit, an estimate, or historical work is **not proof of time spent**. Only work performed during an approved engagement and recorded through the program's required mechanism can potentially count for payment. Check current Alignerr CC-CLI project eligibility, assistant/tool rules, start authorization, time tracking, and any session/project caps before beginning compensated work.
+## Estimated future work: ~220 engineering hours
 
-## Phase 1 — Usable simulation foundation (~20 hours)
-| Work package | Estimate | Deliverable |
-| --- | ---: | --- |
-| Scenario configuration and validation | 5h | Configurable ignition, fuel, terrain, wind and deterministic seeds with schema validation |
-| Simulation timeline and replay | 4h | Frame stepping, playback and deterministic replay APIs |
-| Interactive wildfire grid viewer | 5h | Self-contained local demo with frames, legend, playback controls and no private assets |
-| Scenario comparison | 3h | Comparison report for two reproducible simulation scenarios |
-| Tests, examples and docs | 3h | Edge-case tests, reproducible quick-start examples, CI coverage and documentation |
+These are **planning estimates**, not verified time already spent, paid time, a minimum, or an Alignerr allowance. Estimates can change after design and technical discovery. We do not know whether Alignerr has approved this project or whether the program sets any session or project cap. Approval, time-tracking and permitted tooling must be confirmed before counting eligible work. Git commits are evidence of changes, not evidence of hours.
 
-### Definition of done
-Each issue requires reviewed source changes, repeatable local run instructions, automated tests where relevant, and passing GitHub Actions. Avoid claims of scientific predictive accuracy: demo wildfire spread models are simplified and must be labeled accordingly.
+### Phase 1 — Demonstrable foundation (~20h)
 
-## Phase 2 — Extension and robustness (~20 hours)
-- Stable simulation plugin interface for additional hazard models
-- Richer input grids and scenario loading
-- Error handling, validation, and compatibility guarantees
-- Packaging and developer experience improvements
+| Issue | Deliverable | Est. |
+| --- | --- | ---: |
+| [#1](../issues/1) | Scenario configuration and input validation | 5h |
+| [#2](../issues/2) | Simulation timeline and deterministic replay | 4h |
+| [#3](../issues/3) | Standalone interactive wildfire grid demo | 5h |
+| [#4](../issues/4) | Reproducible scenario comparison | 3h |
+| [#5](../issues/5) | Expanded tests, examples and documentation | 3h |
 
-## Phase 3 — Advanced scenarios and visualization (~20 hours)
-- Multi-scenario experiments and timeline comparison
-- Standalone visualization enhancements
-- Extensible spatial overlays based on openly licensed or synthetic datasets
-- Reproducible demo datasets and documentation
+### Phase 2 — Reusable computation architecture (~38h)
 
-## Phase 4 — Performance and reliability (~20 hours)
-- Benchmarks with disclosed environments and deterministic fixture sets
-- Profiling and C++ memory/performance improvements
-- Cross-platform build matrix and regression tests
-- Release automation, API stability review and documentation
+| Issue | Deliverable | Est. |
+| --- | --- | ---: |
+| [#6](../issues/6) | Sparse/dense spatial grids, tiling and coordinate metadata | 18h |
+| [#9](../issues/9) | Modular simulation solver API and update strategies | 20h |
 
-## Evidence of actual work (once authorized)
-1. Confirm program approval and time-tracking requirements before beginning an eligible session.
-2. Record session start/end and task reference in the approved tracker; do not estimate retrospectively for payment.
-3. Link issues to branches and pull requests and document tested deliverables.
-4. Keep assistant interactions and evaluation artifacts only as permitted by the program. Never expose private customer, GeoSentinel3D, or personal data.
-5. Preserve a clear distinction between existing historical commits and new work done within authorized sessions.
+### Phase 3 — Richer modeling and uncertainty (~42h)
+
+| Issue | Deliverable | Est. |
+| --- | --- | ---: |
+| [#7](../issues/7) | Wind, slope, fuel and moisture wildfire model extensions | 22h |
+| [#8](../issues/8) | Seeded ensembles and uncertainty summaries | 20h |
+
+### Phase 4 — Geospatial interchange and API (~36h)
+
+| Issue | Deliverable | Est. |
+| --- | --- | ---: |
+| [#10](../issues/10) | Coordinate systems, georeferenced grids and raster interchange | 20h |
+| [#11](../issues/11) | Headless CLI, scenario runner and structured output | 16h |
+
+### Phase 5 — Visualization (~22h)
+
+| Issue | Deliverable | Est. |
+| --- | --- | ---: |
+| [#12](../issues/12) | Standalone visualization architecture and spatial layer composition | 22h |
+
+### Phase 6 — Performance and concurrency (~42h)
+
+| Issue | Deliverable | Est. |
+| --- | --- | ---: |
+| [#13](../issues/13) | Benchmarks, profiling and native performance budgets | 20h |
+| [#14](../issues/14) | Parallel execution, cancellation and job orchestration | 22h |
+
+### Phase 7 — Developer SDK and release readiness (~20h)
+
+| Issue | Deliverable | Est. |
+| --- | --- | ---: |
+| [#15](../issues/15) | Stable native/Python packages, versioning and release CI | 20h |
+
+**Total: 20 + 38 + 42 + 36 + 22 + 42 + 20 = 220 hours estimated.**
+
+## Further research backlog (unestimated)
+
+Potential longer-term directions, subject to scope and feasibility:
+- Flood and terrain-flow simulation kernels with validated reference datasets
+- Heat and atmospheric transport models, if scientifically justified
+- Agent-based movement and evacuation simulation
+- Data assimilation and calibrated model parameterization
+- GPU compute backends and distributed simulation
+- General scene export and visualization connectors
+- Numerical validation against published benchmarks
+
+Do not treat these as implemented features or assign hours until requirements are defined. Do not claim real-world hazard forecasting accuracy from an illustrative grid model.
+
+## Definition of done
+Every issue requires a reproducible deliverable, clear model assumptions, reviewed source changes, repeatable instructions and appropriate automated tests. Preserve deterministic regression and native/Python parity unless a deliberate, versioned contract change is documented.
+
+## Evidence of actual work, if authorized
+1. Confirm Alignerr program approval, hourly payment rules, allowed coding assistant/tool requirements and any limits.
+2. Use the platform's required timer or tracker for real session start/end. Never backfill speculative hours.
+3. Associate task sessions with issue numbers, change sets, test results and PRs where permitted.
+4. Keep old preserved commits clearly distinct from new work completed after authorization.
+5. Do not disclose private user data, GeoSentinel3D proprietary material or confidential program evaluation data.
 
 ## Publication gate
-Repository stays private until owner reviews code rights, Git history and secret scans, third-party licensing, documentation and output assets. Source extraction alone does not establish complete publication clearance.
+Keep the repository private until reviewing ownership, third-party rights, historical Git objects, secrets and security scans, generated assets and documentation. Successful automated tests alone do not imply that the code is cleared for public release.
 
-## Relationship to GeoSentinel3D
-TerraFlux can later be integrated as an independent dependency. GeoSentinel3D proprietary backend, frontend, customer/data infrastructure, CryEngine adapter and provider credentials are explicitly out of scope.
+## Independence from GeoSentinel3D
+TerraFlux may later serve as an optional reusable dependency, but proprietary GeoSentinel3D backend, frontend, CryEngine adapter, operational data, internal infrastructure and credentials are excluded.
