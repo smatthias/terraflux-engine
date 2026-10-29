@@ -66,7 +66,8 @@ Playback load(const std::string& request_json, const std::string& response_json)
     throw std::invalid_argument("invalid cell size");
 
   Playback playback{compute::Grid(std::move(cells)), size, key, {}};
-  const auto response = object(Parser(response_json).parse_document());
+  const Json parsed_response = Parser(response_json).parse_document();
+  const auto& response = object(parsed_response);
   if (string(field(response, "grid_key")) != key ||
       string(field(response, "contract_version")) != version)
     throw std::invalid_argument("request and response refer to different simulations");

@@ -11,7 +11,7 @@ namespace terraflux::graphics {
 
 // Graphics-API-neutral shader contract. GLSL and PSSL reflection must each be
 // compared with this declaration by their respective (future) backends.
-enum class VertexFormat : std::uint8_t { Float2, Float3, Float4 };
+enum class VertexFormat : std::uint8_t { Float1, Float2, Float3, Float4 };
 enum class ShaderResourceKind : std::uint8_t { UniformBuffer, SampledTexture, Sampler, StorageBuffer };
 inline constexpr std::uint32_t kVertexStage = 1U;
 inline constexpr std::uint32_t kFragmentStage = 2U;

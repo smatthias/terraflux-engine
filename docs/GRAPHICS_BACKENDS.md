@@ -74,3 +74,34 @@ link, reflect, upload and render one frame headlessly on a suitable Mesa image.
 Building without `TERRAFLUX_WITH_OPENGL=ON` requires no OpenGL or GLFW and
 continues to run the existing simulation and parity tests. PS4/PSSL code is
 not included and cannot be certified by desktop OpenGL tests.
+
+## Wildfire playback (native compute output)
+
+The viewer can now replay the **unchanged** `terraflux.compute/v1` or `v2`
+JSON request and response produced by the existing native runner. It validates
+grid identity and contract version, steps and coordinates before rendering.
+Active fire appears orange, previously burned terrain charcoal, and unburned
+terrain retains slope lighting. The baseline demo without arguments still works.
+
+```bash
+python3 examples/generate_wildfire_scenario.py > /tmp/terraflux-request.json
+./build-gl/terraflux-compute-runner < /tmp/terraflux-request.json > /tmp/terraflux-response.json
+./build-gl/terraflux-terrain-viewer --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json
+```
+
+Controls: Space pauses/resumes; Home restarts at the first frame while paused;
+comma/period step backward/forward; arrow keys orbit; +/- zoom; Escape exits.
+The window title reports current step, actively burning cell count and
+cumulative burned count. `--smoke-test` renders one frame and exits.
+
+Unknown terrain elevations are interpolated for visualization where possible;
+remaining unmeasured burnable cells use a flat 0m visualization fallback,
+without changing the compute engine's input or responses. Zero-fuel cells with
+unknown elevation remain unrendered. This initial implementation updates the
+whole vertex buffer when stepping frames; large-grid optimization is future
+work. Frame JSON can itself be large at long durations because each step lists
+cumulative burned cells. Playback currently loads the complete JSON in memory.
+
+**Note:** This is a deterministic visualization of the existing simplified
+cellular automaton, not a calibrated wildfire forecast. PS4/PSSL remains
+separate, subject to authorized platform tooling.

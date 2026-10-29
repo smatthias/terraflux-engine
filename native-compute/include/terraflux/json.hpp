@@ -144,10 +144,10 @@ class Parser {
   }
 };
 
-const Json::Object& object(const Json& json) { if (!std::holds_alternative<Json::Object>(json.value)) throw std::runtime_error("JSON object required"); return std::get<Json::Object>(json.value); }
-const Json& field(const Json::Object& object, const std::string& key) { const auto found = object.find(key); if (found == object.end()) throw std::runtime_error("missing field: " + key); return found->second; }
+inline const Json::Object& object(const Json& json) { if (!std::holds_alternative<Json::Object>(json.value)) throw std::runtime_error("JSON object required"); return std::get<Json::Object>(json.value); }
+inline const Json& field(const Json::Object& object, const std::string& key) { const auto found = object.find(key); if (found == object.end()) throw std::runtime_error("missing field: " + key); return found->second; }
 double number(const Json& json) { if (!std::holds_alternative<double>(json.value)) throw std::runtime_error("JSON number required"); return std::get<double>(json.value); }
-std::string string(const Json& json) { if (!std::holds_alternative<std::string>(json.value)) throw std::runtime_error("JSON string required"); return std::get<std::string>(json.value); }
-double optional_number(const Json::Object& value, const std::string& key, double fallback) { const auto found = value.find(key); return found == value.end() || std::holds_alternative<std::nullptr_t>(found->second.value) ? fallback : number(found->second); }
+inline std::string string(const Json& json) { if (!std::holds_alternative<std::string>(json.value)) throw std::runtime_error("JSON string required"); return std::get<std::string>(json.value); }
+inline double optional_number(const Json::Object& value, const std::string& key, double fallback) { const auto found = value.find(key); return found == value.end() || std::holds_alternative<std::nullptr_t>(found->second.value) ? fallback : number(found->second); }
 
 }  // namespace terraflux::json

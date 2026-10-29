@@ -17,14 +17,15 @@ float checked_float(double value) {
 }
 }  // namespace
 
-static_assert(sizeof(TerrainGpuVertex) == 6 * sizeof(float));
+static_assert(sizeof(TerrainGpuVertex) == 7 * sizeof(float));
 static_assert(std::is_standard_layout_v<TerrainGpuVertex>);
 
 ShaderLayout terrain_shader_layout() {
   return {
       static_cast<std::uint32_t>(sizeof(TerrainGpuVertex)),
       {{"POSITION", 0, VertexFormat::Float3, static_cast<std::uint32_t>(offsetof(TerrainGpuVertex, position))},
-       {"NORMAL", 1, VertexFormat::Float3, static_cast<std::uint32_t>(offsetof(TerrainGpuVertex, normal))}},
+       {"NORMAL", 1, VertexFormat::Float3, static_cast<std::uint32_t>(offsetof(TerrainGpuVertex, normal))},
+       {"FIRE_STATE", 2, VertexFormat::Float1, static_cast<std::uint32_t>(offsetof(TerrainGpuVertex, fire_state))}},
       {{"Camera", ShaderResourceKind::UniformBuffer, 0, kVertexStage}}
   };
 }
@@ -38,7 +39,7 @@ TerrainUpload prepare_terrain_upload(const terrain::TerrainMesh& mesh) {
         checked_float(v.position.x), checked_float(v.position.y), checked_float(v.position.z)
       }, {
         checked_float(v.normal.x), checked_float(v.normal.y), checked_float(v.normal.z)
-      }});
+      }, 0.0f});
   }
   for (const auto index : result.indices)
     if (index >= result.vertices.size())

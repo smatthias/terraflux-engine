@@ -32,7 +32,7 @@ template <typename F> void must_throw(F&& action, const char* message) {
 void test_vertex_and_shader_contract() {
   const auto layout = terrain_shader_layout();
   validate_shader_layout(layout);
-  require(layout.vertex_stride_bytes == 24 && layout.attributes.size() == 2,
+  require(layout.vertex_stride_bytes == 28 && layout.attributes.size() == 3,
           "terrain shader must expose packed position and normal");
   require(vertex_format_bytes(VertexFormat::Float4) == 16, "format sizing");
   auto reordered = layout;
@@ -87,6 +87,7 @@ void test_terrain_upload() {
   require(upload.vertices[0].position[1] == 10.0f &&
           upload.vertices[2].position[2] == -30.0f, "terrain coordinate conversion");
   require(upload.vertices[0].normal[1] > 0.0f, "terrain normal conversion");
+  require(upload.vertices[0].fire_state == 0.0f, "new terrain must initialize unburned");
 }
 
 void test_create_draw_destroy() {

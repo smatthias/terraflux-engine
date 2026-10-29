@@ -13,6 +13,7 @@ namespace terraflux::graphics {
 struct TerrainGpuVertex {
   float position[3];
   float normal[3];
+  float fire_state = 0.0f; // 0 unburned, 0.5 burned, 1 active
 };
 
 struct TerrainUpload {

@@ -65,10 +65,13 @@ struct GL {
 constexpr char kVertexShader[] = R"GLSL(#version 430 core
 layout(location = 0) in vec3 POSITION;
 layout(location = 1) in vec3 NORMAL;
+layout(location = 2) in float FIRE_STATE;
 layout(std140, binding = 0) uniform Camera { mat4 viewProjection; };
 out vec3 surfaceNormal;
 out float elevation;
+out float fireState;
 void main() {
+  fireState = FIRE_STATE;
   surfaceNormal = NORMAL;
   elevation = POSITION.y;
   gl_Position = viewProjection * vec4(POSITION, 1.0);
@@ -78,6 +81,7 @@ void main() {
 constexpr char kFragmentShader[] = R"GLSL(#version 430 core
 in vec3 surfaceNormal;
 in float elevation;
+in float fireState;
 out vec4 fragColor;
 void main() {
   vec3 light = normalize(vec3(0.45, 0.85, 0.25));
@@ -85,7 +89,13 @@ void main() {
   vec3 lowland = vec3(0.11, 0.33, 0.20);
   vec3 highland = vec3(0.60, 0.55, 0.42);
   vec3 terrainColor = mix(lowland, highland, clamp(elevation / 140.0, 0.0, 1.0));
-  fragColor = vec4(terrainColor * intensity, 1.0);
+  vec3 base = terrainColor * intensity;
+  if (fireState > 0.75) {
+    base = vec3(1.0, 0.18, 0.015);  // active fire
+  } else if (fireState > 0.25) {
+    base = vec3(0.13, 0.115, 0.12); // burned terrain
+  }
+  fragColor = vec4(base, 1.0);
 }
 )GLSL";
 
@@ -138,6 +148,7 @@ ShaderLayout reflect_program(const GL& gl, GLuint program, const ShaderLayout& e
       throw std::invalid_argument("unexpected GLSL vertex input: " + name);
     VertexFormat format{};
     switch (values[2]) {
+      case GL_FLOAT: format = VertexFormat::Float1; break;
       case GL_FLOAT_VEC2: format = VertexFormat::Float2; break;
       case GL_FLOAT_VEC3: format = VertexFormat::Float3; break;
       case GL_FLOAT_VEC4: format = VertexFormat::Float4; break;
@@ -180,6 +191,7 @@ GLenum target_for(BufferUsage usage) {
 
 GLint components_for(VertexFormat format) {
   switch (format) {
+    case VertexFormat::Float1: return 1;
     case VertexFormat::Float2: return 2;
     case VertexFormat::Float3: return 3;
     case VertexFormat::Float4: return 4;

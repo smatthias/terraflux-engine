@@ -12,6 +12,7 @@ namespace terraflux::graphics {
 
 std::uint32_t vertex_format_bytes(VertexFormat format) {
   switch (format) {
+    case VertexFormat::Float1: return 4;
     case VertexFormat::Float2: return 8;
     case VertexFormat::Float3: return 12;
     case VertexFormat::Float4: return 16;
