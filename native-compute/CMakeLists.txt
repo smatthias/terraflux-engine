@@ -25,6 +25,7 @@ add_library(terraflux_graphics STATIC
   src/graphics/render_device.cpp
   src/graphics/terrain_upload.cpp
   src/graphics/mesh_upload.cpp
+  src/graphics/visibility.cpp
   src/replay.cpp
 )
 target_include_directories(terraflux_graphics PUBLIC include)
@@ -74,6 +75,9 @@ if(BUILD_TESTING)
   add_executable(terraflux-resource-owner-tests tests/resource_owner_tests.cpp)
   target_link_libraries(terraflux-resource-owner-tests PRIVATE terraflux_graphics)
   add_test(NAME terraflux-resource-owner-tests COMMAND terraflux-resource-owner-tests)
+  add_executable(terraflux-visibility-tests tests/visibility_tests.cpp)
+  target_link_libraries(terraflux-visibility-tests PRIVATE terraflux_graphics)
+  add_test(NAME terraflux-visibility-tests COMMAND terraflux-visibility-tests)
 
   add_executable(terraflux-replay-tests tests/replay_tests.cpp)
   target_link_libraries(terraflux-replay-tests PRIVATE terraflux_graphics)
