@@ -98,8 +98,8 @@ void test_create_draw_destroy() {
   const auto vb = device.create_buffer({BufferUsage::Vertex, vertex_bytes.size()}, vertex_bytes);
   const auto ib = device.create_buffer({BufferUsage::Index, index_bytes.size()}, index_bytes);
   const auto pipeline = device.create_pipeline({terrain_shader_layout(), true});
-  device.draw_indexed({pipeline, vb, ib, 0, 6});
-  device.draw_indexed({pipeline, vb, ib, 3, 3});
+  device.draw_indexed({pipeline, vb, ib, 0, 6, {}});
+  device.draw_indexed({pipeline, vb, ib, 3, 3, {}});
   require(device.draw_count() == 2, "valid indexed draws must be recorded");
   require(device.live_buffer_count() == 2 && device.live_pipeline_count() == 1,
           "device must own resources");
@@ -109,7 +109,7 @@ void test_create_draw_destroy() {
   require(device.live_buffer_count() == 0 && device.live_pipeline_count() == 0,
           "resources should be released");
   must_throw([&] { device.destroy_buffer(vb); }, "double destroy must be rejected");
-  must_throw([&] { device.draw_indexed({pipeline, vb, ib, 0, 3}); },
+  must_throw([&] { device.draw_indexed({pipeline, vb, ib, 0, 3, {}}); },
              "stale resource handles must not be valid");
 }
 
@@ -121,11 +121,11 @@ void test_draw_range_checks() {
   auto index_bytes = std::as_bytes(std::span(upload.indices));
   const auto ib = device.create_buffer({BufferUsage::Index, index_bytes.size()}, index_bytes);
   const auto pipeline = device.create_pipeline({terrain_shader_layout(), true});
-  must_throw([&] { device.draw_indexed({pipeline, vb, ib, 3, 6}); },
+  must_throw([&] { device.draw_indexed({pipeline, vb, ib, 3, 6, {}}); },
              "out of range index count must be rejected");
-  must_throw([&] { device.draw_indexed({pipeline, vb, ib, 0, 4}); },
+  must_throw([&] { device.draw_indexed({pipeline, vb, ib, 0, 4, {}}); },
              "draw must consist of full triangles");
-  must_throw([&] { device.draw_indexed({pipeline, ib, vb, 0, 3}); },
+  must_throw([&] { device.draw_indexed({pipeline, ib, vb, 0, 3, {}}); },
              "index/vertex buffer usage mismatch must fail");
   upload.indices[0] = 99;
   auto invalid_bytes = std::as_bytes(std::span(upload.indices));
