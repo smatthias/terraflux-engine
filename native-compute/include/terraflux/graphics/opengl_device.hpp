@@ -27,6 +27,18 @@ class OpenGLRenderDevice final : public RenderDevice {
   void destroy_pipeline(PipelineHandle handle) override;
   void draw_indexed(const DrawIndexed& command) override;
 
+  struct GpuTimingSummary {
+    std::size_t samples=0;
+    std::size_t skipped=0; // timed frames skipped if all query slots were busy
+    double mean_ms=0, min_ms=0, max_ms=0;
+  };
+  // GPU elapsed time for clear/draw commands only. Asynchronous ring queries
+  // do not block normal frames; drain=true waits for the remaining samples.
+  void enable_gpu_timing();
+  void begin_gpu_timing();
+  void end_gpu_timing();
+  GpuTimingSummary gpu_timing_summary(bool drain=false);
+
   void clear_frame(int framebuffer_width, int framebuffer_height);
   // Smoke-test diagnostic; inspect the back buffer before swapping it.
   // Counts bright red/orange pixels in the current render target.

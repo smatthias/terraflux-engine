@@ -69,6 +69,12 @@ struct GL {
   PFNGLCLEARPROC Clear = get_proc<PFNGLCLEARPROC>("glClear");
   PFNGLVIEWPORTPROC Viewport = get_proc<PFNGLVIEWPORTPROC>("glViewport");
   PFNGLREADPIXELSPROC ReadPixels = get_proc<PFNGLREADPIXELSPROC>("glReadPixels");
+  PFNGLGENQUERIESPROC GenQueries = get_proc<PFNGLGENQUERIESPROC>("glGenQueries");
+  PFNGLDELETEQUERIESPROC DeleteQueries = get_proc<PFNGLDELETEQUERIESPROC>("glDeleteQueries");
+  PFNGLBEGINQUERYPROC BeginQuery = get_proc<PFNGLBEGINQUERYPROC>("glBeginQuery");
+  PFNGLENDQUERYPROC EndQuery = get_proc<PFNGLENDQUERYPROC>("glEndQuery");
+  PFNGLGETQUERYOBJECTIVPROC GetQueryObjectiv = get_proc<PFNGLGETQUERYOBJECTIVPROC>("glGetQueryObjectiv");
+  PFNGLGETQUERYOBJECTUI64VPROC GetQueryObjectui64v = get_proc<PFNGLGETQUERYOBJECTUI64VPROC>("glGetQueryObjectui64v");
 };
 
 constexpr char kVertexShader[] = R"GLSL(#version 430 core
@@ -420,8 +426,37 @@ struct OpenGLRenderDevice::Impl {
   std::unordered_map<std::uint32_t,GLuint> texture_units;
   std::optional<bool> depth_test_state;
 
+  static constexpr std::size_t kGpuQuerySlots=8;
+  std::array<GLuint,kGpuQuerySlots> gpu_queries{};
+  std::array<bool,kGpuQuerySlots> query_pending{};
+  bool timing_enabled=false;
+  std::optional<std::size_t> active_query;
+  std::size_t gpu_samples=0,gpu_skipped=0;
+  double gpu_total_ms=0,gpu_min_ms=0,gpu_max_ms=0;
+
+  void collect_gpu_samples(bool drain) {
+    for(std::size_t i=0;i<kGpuQuerySlots;++i) {
+      if(!query_pending[i])continue;
+      if(!drain) {
+        GLint ready=0;
+        gl.GetQueryObjectiv(gpu_queries[i],GL_QUERY_RESULT_AVAILABLE,&ready);
+        if(!ready)continue;
+      }
+      GLuint64 nanos=0;
+      gl.GetQueryObjectui64v(gpu_queries[i],GL_QUERY_RESULT,&nanos);
+      const double ms=static_cast<double>(nanos)*1e-6;
+      if(gpu_samples==0 || ms<gpu_min_ms)gpu_min_ms=ms;
+      gpu_max_ms=std::max(gpu_max_ms,ms);
+      gpu_total_ms+=ms;
+      ++gpu_samples;
+      query_pending[i]=false;
+    }
+  }
+
   ~Impl() {
     // Destruction requires the OpenGL context used at creation to be current.
+    if(timing_enabled)gl.DeleteQueries(static_cast<GLsizei>(kGpuQuerySlots),
+                                       gpu_queries.data());
     for (const auto& [id, pipeline] : pipelines) {
       (void)id;
       gl.DeleteVertexArrays(1, &pipeline.vao);
@@ -440,6 +475,53 @@ struct OpenGLRenderDevice::Impl {
 
 OpenGLRenderDevice::OpenGLRenderDevice() : impl_(std::make_unique<Impl>()) {}
 OpenGLRenderDevice::~OpenGLRenderDevice() = default;
+
+void OpenGLRenderDevice::enable_gpu_timing() {
+  if(impl_->timing_enabled)
+    throw std::logic_error("GPU timing already enabled");
+  impl_->gl.GenQueries(static_cast<GLsizei>(Impl::kGpuQuerySlots),
+                       impl_->gpu_queries.data());
+  if(std::any_of(impl_->gpu_queries.begin(),impl_->gpu_queries.end(),
+                 [](GLuint q){return q==0;})) {
+    impl_->gl.DeleteQueries(static_cast<GLsizei>(Impl::kGpuQuerySlots),
+                            impl_->gpu_queries.data());
+    throw std::runtime_error("GPU timestamp queries unavailable");
+  }
+  impl_->timing_enabled=true;
+}
+void OpenGLRenderDevice::begin_gpu_timing() {
+  if(!impl_->timing_enabled)
+    throw std::logic_error("GPU timing not enabled");
+  if(impl_->active_query)
+    throw std::logic_error("GPU query already active");
+  impl_->collect_gpu_samples(false);
+  for(std::size_t i=0;i<Impl::kGpuQuerySlots;++i) {
+    if(impl_->query_pending[i])continue;
+    impl_->active_query=i;
+    impl_->gl.BeginQuery(GL_TIME_ELAPSED,impl_->gpu_queries[i]);
+    return;
+  }
+  ++impl_->gpu_skipped;
+}
+void OpenGLRenderDevice::end_gpu_timing() {
+  if(!impl_->timing_enabled)
+    throw std::logic_error("GPU timing not enabled");
+  if(impl_->active_query) {
+    impl_->gl.EndQuery(GL_TIME_ELAPSED);
+    impl_->query_pending[*impl_->active_query]=true;
+    impl_->active_query.reset();
+  }
+}
+OpenGLRenderDevice::GpuTimingSummary OpenGLRenderDevice::gpu_timing_summary(bool drain) {
+  if(!impl_->timing_enabled)
+    return {};
+  if(drain && impl_->active_query)
+    throw std::logic_error("cannot drain an active GPU query");
+  impl_->collect_gpu_samples(drain);
+  return {impl_->gpu_samples,impl_->gpu_skipped,
+          impl_->gpu_samples?impl_->gpu_total_ms/impl_->gpu_samples:0,
+          impl_->gpu_min_ms,impl_->gpu_max_ms};
+}
 
 BufferHandle OpenGLRenderDevice::create_buffer(BufferDesc desc,
                                                 std::span<const std::byte> initial_data) {
