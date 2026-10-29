@@ -613,8 +613,8 @@ int main(int argc, char** argv) {
         // Opaque assets only. Terrain/fire passes retain original ordering.
         const auto enqueue=[&](BufferHandle vertex,BufferHandle index,
                                const std::vector<ImportedGpu::Section>& sections,
-                               BufferHandle object_uniform,const math::Mat4& model,
-                               BoundingSphere bounds,math::Vec3 tint) {
+                               BufferHandle object_uniform,const terraflux::math::Mat4& model,
+                               BoundingSphere bounds,terraflux::math::Vec3 tint) {
           if(!frustum.intersects(world_bounds(bounds,model))) {
             ++culled_instances;
             return;
