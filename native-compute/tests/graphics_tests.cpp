@@ -229,7 +229,8 @@ void test_texture_resources() {
       std::span<const std::byte>(pixels.data(),8));},"reject incomplete RGBA data");
   must_throw([&]{(void)device.create_texture2d({5000,2},pixels);},"reject huge texture");
   const auto upload=quad_upload();
-  const auto vbBytes=std::as_bytes(std::span(upload.vertices));
+  std::vector<TexturedGpuVertex> textured_vertices(upload.vertices.size());
+  const auto vbBytes=std::as_bytes(std::span(textured_vertices));
   const auto ibBytes=std::as_bytes(std::span(upload.indices));
   auto vb=device.create_buffer({BufferUsage::Vertex,vbBytes.size()},vbBytes);
   auto ib=device.create_buffer({BufferUsage::Index,ibBytes.size()},ibBytes);

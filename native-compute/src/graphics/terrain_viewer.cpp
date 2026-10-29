@@ -2,6 +2,7 @@
 #include <terraflux/graphics/terrain_upload.hpp>
 #include <terraflux/graphics/mesh_upload.hpp>
 #include <terraflux/assets/obj.hpp>
+#include <terraflux/assets/material.hpp>
 #include <terraflux/scene.hpp>
 #include <terraflux/grid.hpp>
 #include <terraflux/math.hpp>
@@ -48,7 +49,7 @@ std::string read_file(const std::string& path) {
 
 struct Options {
   bool smoke_test = false;
-  std::string request_file, response_file, obj_file;
+  std::string request_file, response_file, obj_file, texture_file;
 };
 
 Options parse_args(int argc, char** argv) {
@@ -59,11 +60,14 @@ Options parse_args(int argc, char** argv) {
     else if (arg == "--request" && i + 1 < argc) options.request_file = argv[++i];
     else if (arg == "--response" && i + 1 < argc) options.response_file = argv[++i];
     else if (arg == "--obj" && i + 1 < argc) options.obj_file = argv[++i];
+    else if (arg == "--texture" && i + 1 < argc) options.texture_file = argv[++i];
     else throw std::invalid_argument(
-        "usage: terraflux-terrain-viewer [--request request.json --response response.json] [--obj model.obj] [--smoke-test]");
+        "usage: terraflux-terrain-viewer [--request request.json --response response.json] [--obj model.obj --texture texture.ppm] [--smoke-test]");
   }
   if (options.request_file.empty() != options.response_file.empty())
     throw std::invalid_argument("--request and --response must be provided together");
+  if (!options.texture_file.empty() && options.obj_file.empty())
+    throw std::invalid_argument("--texture requires --obj");
   return options;
 }
 
@@ -197,6 +201,7 @@ int main(int argc, char** argv) {
     // Their own std140 object UBOs are refreshed every frame (not mesh data).
     struct ImportedGpu {
       BufferHandle vb, ib, object_uniform_left, object_uniform_right;
+      TextureHandle albedo;
       PipelineHandle pipeline;
       std::uint32_t indices = 0;
       terraflux::scene::Scene scene;
@@ -223,7 +228,15 @@ int main(int argc, char** argv) {
                                       max_pos.z-min_pos.z});
       if (!(extent > 0.0)) throw std::runtime_error("OBJ has no spatial extent");
       const double scale = (scene_camera.starting_distance * 0.095) / extent;
-      const auto geometry = prepare_asset_upload(object);  // local-space, uploaded once
+      const auto geometry = prepare_textured_asset_upload(object); // local + UV
+      terraflux::assets::ImageRgba8 image;
+      if (!options.texture_file.empty()) {
+        std::ifstream ppm(options.texture_file);
+        if (!ppm) throw std::runtime_error("cannot open PPM texture " + options.texture_file);
+        image=terraflux::assets::read_ppm_p3(ppm);
+      } else {
+        image=terraflux::assets::checkerboard_image();
+      }
       const auto vertex_bytes = bytes_of(geometry.vertices);
       const auto index_bytes = bytes_of(geometry.indices);
       ImportedGpu obj{};
@@ -242,6 +255,8 @@ int main(int argc, char** argv) {
           obj.local_center * -1.0, {}, {1,1,1}});
       obj.scene.set_transform(obj.right_mesh, {
           obj.local_center * -1.0, {}, {1,1,1}});
+      obj.albedo=device.create_texture2d({image.width,image.height},
+          std::as_bytes(std::span(image.pixels)));
       obj.vb = device.create_buffer({BufferUsage::Vertex,vertex_bytes.size()},vertex_bytes);
       obj.ib = device.create_buffer({BufferUsage::Index,index_bytes.size()},index_bytes);
       const auto init_object = make_object_uniform(terraflux::math::Mat4::identity());
@@ -250,7 +265,7 @@ int main(int argc, char** argv) {
           {BufferUsage::Uniform,init_bytes.size()},init_bytes);
       obj.object_uniform_right = device.create_buffer(
           {BufferUsage::Uniform,init_bytes.size()},init_bytes);
-      obj.pipeline = device.create_pipeline({object_shader_layout(),true});
+      obj.pipeline = device.create_pipeline({textured_object_shader_layout(),true});
       imported = std::move(obj);
       std::cout << "Imported OBJ: " << geometry.indices.size()/3
                 << " triangles, two independent scene objects sharing geometry\n";
@@ -358,9 +373,11 @@ int main(int argc, char** argv) {
         device.update_buffer(imported->object_uniform_right, 0,
                              std::as_bytes(std::span(&right,1)));
         DrawIndexed left_draw{imported->pipeline, imported->vb, imported->ib,
-            0, imported->indices, {{0,camera},{2,imported->object_uniform_left}}, {}};
+            0, imported->indices, {{0,camera},{2,imported->object_uniform_left}}, {},
+            {{3,imported->albedo}}};
         DrawIndexed right_draw{imported->pipeline, imported->vb, imported->ib,
-            0, imported->indices, {{0,camera},{2,imported->object_uniform_right}}, {}};
+            0, imported->indices, {{0,camera},{2,imported->object_uniform_right}}, {},
+            {{3,imported->albedo}}};
         device.draw_indexed(left_draw);
         device.draw_indexed(right_draw);
       }
@@ -383,6 +400,7 @@ int main(int argc, char** argv) {
 
     if (imported) {
       device.destroy_pipeline(imported->pipeline);
+      device.destroy_texture(imported->albedo);
       device.destroy_buffer(imported->object_uniform_right);
       device.destroy_buffer(imported->object_uniform_left);
       device.destroy_buffer(imported->ib);

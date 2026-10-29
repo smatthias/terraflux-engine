@@ -54,6 +54,13 @@ struct GL {
   PFNGLGETPROGRAMINTERFACEIVPROC GetProgramInterfaceiv = get_proc<PFNGLGETPROGRAMINTERFACEIVPROC>("glGetProgramInterfaceiv");
   PFNGLGETPROGRAMRESOURCEIVPROC GetProgramResourceiv = get_proc<PFNGLGETPROGRAMRESOURCEIVPROC>("glGetProgramResourceiv");
   PFNGLGETPROGRAMRESOURCENAMEPROC GetProgramResourceName = get_proc<PFNGLGETPROGRAMRESOURCENAMEPROC>("glGetProgramResourceName");
+  PFNGLGETUNIFORMIVPROC GetUniformiv = get_proc<PFNGLGETUNIFORMIVPROC>("glGetUniformiv");
+  PFNGLGENTEXTURESPROC GenTextures = get_proc<PFNGLGENTEXTURESPROC>("glGenTextures");
+  PFNGLDELETETEXTURESPROC DeleteTextures = get_proc<PFNGLDELETETEXTURESPROC>("glDeleteTextures");
+  PFNGLBINDTEXTUREPROC BindTexture = get_proc<PFNGLBINDTEXTUREPROC>("glBindTexture");
+  PFNGLACTIVETEXTUREPROC ActiveTexture = get_proc<PFNGLACTIVETEXTUREPROC>("glActiveTexture");
+  PFNGLTEXIMAGE2DPROC TexImage2D = get_proc<PFNGLTEXIMAGE2DPROC>("glTexImage2D");
+  PFNGLTEXPARAMETERIPROC TexParameteri = get_proc<PFNGLTEXPARAMETERIPROC>("glTexParameteri");
   PFNGLDRAWELEMENTSPROC DrawElements = get_proc<PFNGLDRAWELEMENTSPROC>("glDrawElements");
   PFNGLENABLEPROC Enable = get_proc<PFNGLENABLEPROC>("glEnable");
   PFNGLDISABLEPROC Disable = get_proc<PFNGLDISABLEPROC>("glDisable");
@@ -202,6 +209,40 @@ void main() {
 }
 )GLSL";
 
+constexpr char kTexturedVertexShader[] = R"GLSL(#version 430 core
+layout(location=0) in vec3 POSITION;
+layout(location=1) in vec3 NORMAL;
+layout(location=3) in vec2 TEXCOORD;
+layout(std140,binding=0) uniform Camera { mat4 viewProjection; };
+layout(std140,binding=2) uniform Object {
+  mat4 model;
+  mat4 normalMatrix;
+  vec4 tint;
+};
+out vec3 surfaceNormal;
+out vec3 surfaceTint;
+out vec2 textureUv;
+void main() {
+  surfaceNormal = normalize(mat3(normalMatrix)*NORMAL);
+  surfaceTint = tint.rgb;
+  textureUv = TEXCOORD;
+  gl_Position = viewProjection*model*vec4(POSITION,1.0);
+}
+)GLSL";
+constexpr char kTexturedFragmentShader[] = R"GLSL(#version 430 core
+in vec3 surfaceNormal;
+in vec3 surfaceTint;
+in vec2 textureUv;
+layout(binding=3) uniform sampler2D AlbedoTexture;
+out vec4 fragColor;
+void main() {
+  vec3 sunlight=normalize(vec3(0.45,0.85,0.25));
+  float shade=0.28+0.72*max(dot(normalize(surfaceNormal),sunlight),0.0);
+  vec3 albedo=texture(AlbedoTexture,textureUv).rgb;
+  fragColor=vec4(albedo*surfaceTint*shade,1.0);
+}
+)GLSL";
+
 GLuint compile_shader(const GL& gl, GLenum stage, const char* source) {
   const GLuint shader = gl.CreateShader(stage);
   if (!shader) throw std::runtime_error("glCreateShader failed");
@@ -313,6 +354,26 @@ ShaderLayout reflect_program(const GL& gl, GLuint program, const ShaderLayout& e
     actual.bindings.push_back({name, ShaderResourceKind::StorageBuffer,
                               static_cast<std::uint32_t>(values[1]), stages});
   }
+  // Active sampler2D uniforms are not UBOs: reflect their texture slots.
+  gl.GetProgramInterfaceiv(program, GL_UNIFORM, GL_ACTIVE_RESOURCES, &count);
+  for (GLint i=0;i<count;++i) {
+    constexpr GLenum props[] = {
+      GL_NAME_LENGTH,GL_TYPE,GL_LOCATION,GL_BLOCK_INDEX,
+      GL_REFERENCED_BY_FRAGMENT_SHADER
+    };
+    GLint values[5]{};
+    gl.GetProgramResourceiv(program,GL_UNIFORM,static_cast<GLuint>(i),
+                            5,props,5,nullptr,values);
+    if (values[1]!=GL_SAMPLER_2D || values[3]!=-1) continue;
+    const auto name=resource_name(gl,program,GL_UNIFORM,
+                                   static_cast<GLuint>(i),values[0]);
+    GLint slot=-1;
+    gl.GetUniformiv(program,values[2],&slot);
+    if (slot<0 || !values[4])
+      throw std::invalid_argument("inactive or invalid sampler");
+    actual.bindings.push_back({name,ShaderResourceKind::SampledTexture,
+                               static_cast<std::uint32_t>(slot),kFragmentStage});
+  }
   validate_shader_reflection(expected, actual);
   return actual;
 }
@@ -341,11 +402,13 @@ GLint components_for(VertexFormat format) {
 
 struct OpenGLRenderDevice::Impl {
   struct GpuBuffer { GLuint name = 0; BufferUsage usage{}; };
+  struct GpuTexture { GLuint name = 0; };
   struct GpuPipeline { GLuint program = 0, vao = 0; PipelineDesc desc; };
 
   GL gl;
   ValidatingRenderDevice validator;
   std::unordered_map<std::uint32_t, GpuBuffer> buffers;
+  std::unordered_map<std::uint32_t, GpuTexture> textures;
   std::unordered_map<std::uint32_t, GpuPipeline> pipelines;
 
   ~Impl() {
@@ -354,6 +417,10 @@ struct OpenGLRenderDevice::Impl {
       (void)id;
       gl.DeleteVertexArrays(1, &pipeline.vao);
       gl.DeleteProgram(pipeline.program);
+    }
+    for (const auto& [id, texture] : textures) {
+      (void)id;
+      gl.DeleteTextures(1,&texture.name);
     }
     for (const auto& [id, buffer] : buffers) {
       (void)id;
@@ -401,6 +468,33 @@ void OpenGLRenderDevice::destroy_buffer(BufferHandle handle) {
   impl_->buffers.erase(handle.id);
 }
 
+TextureHandle OpenGLRenderDevice::create_texture2d(
+    TextureDesc desc, std::span<const std::byte> rgba8) {
+  const auto handle=impl_->validator.create_texture2d(desc,rgba8);
+  GLuint name=0;
+  impl_->gl.GenTextures(1,&name);
+  if (!name) {
+    impl_->validator.destroy_texture(handle);
+    throw std::runtime_error("glGenTextures failed");
+  }
+  impl_->gl.BindTexture(GL_TEXTURE_2D,name);
+  impl_->gl.TexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);
+  impl_->gl.TexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
+  impl_->gl.TexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_REPEAT);
+  impl_->gl.TexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_REPEAT);
+  impl_->gl.TexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,
+                        static_cast<GLsizei>(desc.width),static_cast<GLsizei>(desc.height),
+                        0,GL_RGBA,GL_UNSIGNED_BYTE,rgba8.data());
+  impl_->textures.emplace(handle.id,Impl::GpuTexture{name});
+  return handle;
+}
+void OpenGLRenderDevice::destroy_texture(TextureHandle handle) {
+  impl_->validator.destroy_texture(handle);
+  const GLuint name=impl_->textures.at(handle.id).name;
+  impl_->gl.DeleteTextures(1,&name);
+  impl_->textures.erase(handle.id);
+}
+
 PipelineHandle OpenGLRenderDevice::create_pipeline(PipelineDesc desc) {
   validate_shader_layout(desc.layout);
   const bool wildfire = std::any_of(desc.layout.bindings.begin(), desc.layout.bindings.end(),
@@ -413,10 +507,19 @@ PipelineHandle OpenGLRenderDevice::create_pipeline(PipelineDesc desc) {
         return binding.kind == ShaderResourceKind::UniformBuffer &&
                binding.name == "Object" && binding.slot == 2;
       });
+  const bool textured = std::any_of(desc.layout.bindings.begin(), desc.layout.bindings.end(),
+      [](const ShaderBinding& binding) {
+        return binding.kind==ShaderResourceKind::SampledTexture &&
+               binding.name=="AlbedoTexture" && binding.slot==3;
+      });
+  if (textured && !object)
+    throw std::invalid_argument("textured pipeline requires Object uniform");
   if (object && wildfire)
     throw std::invalid_argument("object and fire shaders are separate pipelines");
   for (const auto& binding : desc.layout.bindings)
     if (binding.kind != ShaderResourceKind::UniformBuffer &&
+        !(textured && binding.kind == ShaderResourceKind::SampledTexture &&
+          binding.name=="AlbedoTexture") &&
         !(wildfire && binding.kind == ShaderResourceKind::StorageBuffer &&
           binding.name == "FireState"))
       throw std::invalid_argument("unsupported OpenGL shader resource");
@@ -425,9 +528,11 @@ PipelineHandle OpenGLRenderDevice::create_pipeline(PipelineDesc desc) {
   try {
     vertex = compile_shader(impl_->gl, GL_VERTEX_SHADER,
                             wildfire ? kFireVertexShader :
+                            textured ? kTexturedVertexShader :
                             object ? kObjectVertexShader : kVertexShader);
     fragment = compile_shader(impl_->gl, GL_FRAGMENT_SHADER,
                               wildfire ? kFireFragmentShader :
+                              textured ? kTexturedFragmentShader :
                               object ? kObjectFragmentShader : kFragmentShader);
     program = impl_->gl.CreateProgram();
     if (!program) throw std::runtime_error("glCreateProgram failed");
@@ -499,6 +604,10 @@ void OpenGLRenderDevice::draw_indexed(const DrawIndexed& command) {
   for (const auto& bound : command.storage_buffers)
     impl_->gl.BindBufferBase(GL_SHADER_STORAGE_BUFFER, bound.slot,
                              impl_->buffers.at(bound.buffer.id).name);
+  for (const auto& bound : command.textures) {
+    impl_->gl.ActiveTexture(GL_TEXTURE0+bound.slot);
+    impl_->gl.BindTexture(GL_TEXTURE_2D,impl_->textures.at(bound.texture.id).name);
+  }
 
   if (pipeline.desc.depth_test) impl_->gl.Enable(GL_DEPTH_TEST);
   else impl_->gl.Disable(GL_DEPTH_TEST);

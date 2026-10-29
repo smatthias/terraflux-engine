@@ -43,3 +43,27 @@ validates the Object block's reflected resource name, slot, stage and
 144-byte size. This is an initial per-object material *color*, not a full
 material or texture pipeline. Texture imports, glTF, animation systems and
 render passes remain future stages.
+
+## Initial textured material pipeline
+
+OBJ `vt` coordinates are now parsed (including negative indices and normal
+combinations) and uploaded in a 32-byte position/normal/UV vertex layout.
+Each imported scene object uses the same RGBA8 albedo texture, independently
+multiplied by its object tint and directional lighting.
+
+The backend-neutral `TextureDesc`, `TextureHandle` and `TextureBinding`
+provide validated GPU resources with explicit lifetimes. OpenGL 4.3 binds a
+`sampler2D AlbedoTexture` at slot 3, and validates sampler reflection against
+the shared shader contract. `Material` currently describes base tint.
+
+Run with the included, portable ASCII PPM P3 checkerboard:
+```bash
+./build-gl/terraflux-terrain-viewer --obj examples/assets/pyramid.obj \
+  --texture examples/assets/checker.ppm
+```
+
+Without `--texture`, the viewer generates an in-memory checkerboard, so
+older `--obj` commands continue to work. P3 decoding handles comments,
+checks pixel counts and limits dimensions; it flips incoming top-first pixels
+to the bottom-first row convention used by OpenGL UVs. PNG, JPEG, normal maps,
+MTL loading, mipmapping and PBR remain future work.

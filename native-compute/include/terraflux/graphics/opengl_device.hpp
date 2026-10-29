@@ -21,6 +21,8 @@ class OpenGLRenderDevice final : public RenderDevice {
   void update_buffer(BufferHandle handle, std::size_t offset_bytes,
                      std::span<const std::byte> data) override;
   void destroy_buffer(BufferHandle handle) override;
+  TextureHandle create_texture2d(TextureDesc desc, std::span<const std::byte> rgba8) override;
+  void destroy_texture(TextureHandle handle) override;
   PipelineHandle create_pipeline(PipelineDesc desc) override;
   void destroy_pipeline(PipelineHandle handle) override;
   void draw_indexed(const DrawIndexed& command) override;
