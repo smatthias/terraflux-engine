@@ -236,7 +236,7 @@ int main(int argc, char** argv) {
       imported.emplace(ImportedGpu{asset_vb,asset_ib,asset_pipeline,
                                    static_cast<std::uint32_t>(geometry.indices.size())});
       std::cout << "Imported OBJ scene object: " << geometry.indices.size()/3
-                << " triangles\\n";
+                << " triangles\n";
     }
 
     double yaw = 0.45, pitch = 0.75, distance = scene_camera.starting_distance;
