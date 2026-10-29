@@ -197,3 +197,23 @@ All viewer GPU allocations now use the backend-neutral
 `graphics::RenderResourceOwner`. Buffers, textures, and pipelines are
 released at normal exit or when asset loading fails. Per-asset shared buffers
 remain supported; dynamic asset unloading is still future work.
+
+
+## Phase 9: Conservative frustum culling and opaque state grouping
+
+The engine computes a local bounding sphere once per imported OBJ/glTF mesh,
+transforms it conservatively for each scene instance, and rejects objects
+outside the camera's six OpenGL clip planes before issuing an asset draw.
+Nonuniform scales and shears use an upper-bound matrix norm, so objects are
+not incorrectly culled by a shrinking bounding sphere. Terrain and wildfire
+rendering remain outside object culling.
+
+Opaque draw commands go through a stable sorted queue by shader pipeline,
+mesh buffers, and material texture. The queue refreshes each object's uniform
+buffer immediately before its own draw, maintaining correct material tints
+when the same buffer serves multiple material ranges. This **groups state
+changes**; it is not hardware instancing or multiple draws merged into one.
+
+Run any asset viewer with `--profile` to see periodic lines reporting
+visible and culled instances, opaque draw calls, and state groups. The
+`--smoke-test` option prints the same diagnostics for one frame.

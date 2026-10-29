@@ -2,6 +2,7 @@
 #include <terraflux/graphics/terrain_upload.hpp>
 #include <terraflux/graphics/mesh_upload.hpp>
 #include <terraflux/graphics/resource_owner.hpp>
+#include <terraflux/graphics/visibility.hpp>
 #include <terraflux/assets/obj.hpp>
 #include <terraflux/assets/gltf.hpp>
 #include <terraflux/assets/material.hpp>
@@ -136,7 +137,7 @@ CameraGeometry camera_geometry(const terraflux::terrain::TerrainMesh& mesh) {
           std::max(200.0, 2.1 * std::max(upper.x - lower.x, upper.z - lower.z))};
 }
 
-void update_camera(terraflux::graphics::RenderDevice& device,
+terraflux::math::Mat4 update_camera(terraflux::graphics::RenderDevice& device,
                    terraflux::graphics::BufferHandle uniform, int width, int height,
                    const CameraGeometry& camera_geometry,
                    double yaw, double pitch, double distance,
@@ -163,6 +164,7 @@ void update_camera(terraflux::graphics::RenderDevice& device,
   camera[18] = static_cast<float>(fire_height);
   camera[19] = static_cast<float>(now);
   device.update_buffer(uniform, 0, std::as_bytes(std::span(camera)));
+  return vp;
 }
 }  // namespace
 
@@ -238,6 +240,8 @@ int main(int argc, char** argv) {
       std::vector<SceneInstance> scene_instances;
       terraflux::math::Mat4 scene_anchor=terraflux::math::Mat4::identity();
       bool is_gltf=false, uses_scene_file=false;
+      BoundingSphere primary_bounds{};
+      std::vector<BoundingSphere> additional_bounds;
       struct Section {
         std::uint32_t first=0,count=0;
         TextureHandle albedo{};
@@ -360,6 +364,9 @@ int main(int argc, char** argv) {
       const auto index_bytes = bytes_of(geometry.indices);
       ImportedGpu obj{};
       obj.is_gltf=use_gltf;
+      obj.primary_bounds=mesh_bounds(object);
+      for(const auto& mesh:extra_meshes)
+        obj.additional_bounds.push_back(mesh_bounds(mesh));
       obj.indices = static_cast<std::uint32_t>(geometry.indices.size());
       obj.separation = extent * 0.95;
       obj.local_center = {(min_pos.x + max_pos.x)*0.5, min_pos.y,
@@ -589,7 +596,8 @@ int main(int argc, char** argv) {
       }
       const double profile_render_start=glfwGetTime();
       std::uint32_t frame_draws=0;
-      update_camera(device, camera, width, height, scene_camera, yaw, pitch, distance,
+      const auto camera_vp=update_camera(device, camera, width, height, scene_camera,
+                    yaw, pitch, distance,
                     cell_size, fire_field ? fire_field->width : 1,
                     fire_field ? fire_field->height : 1, engine_time);
       device.clear_frame(width, height);
@@ -598,74 +606,76 @@ int main(int argc, char** argv) {
       if (fire_buffer) command.storage_buffers.push_back({1, *fire_buffer});
       device.draw_indexed(command);
       ++frame_draws;
-      if (imported && imported->is_gltf) {
-        // Preserve the selected glTF hierarchy: each imported node has an
-        // independent world matrix, material ranges share the geometry.
-        for(const auto& instance:imported->gltf_instances) {
-          const auto& mesh_index=instance.mesh_index;
-          const auto* sections=&imported->sections;
-          auto vb=imported->vb,ib=imported->ib;
-          if(mesh_index!=0) {
-            const auto& mesh=imported->additional_meshes.at(mesh_index-1);
-            sections=&mesh.sections;
-            vb=mesh.vb;
-            ib=mesh.ib;
+      OpaqueRenderQueue draw_queue;
+      std::size_t visible_instances=0,culled_instances=0;
+      if (imported) {
+        const auto frustum=Frustum::from_view_projection(camera_vp);
+        // Opaque assets only. Terrain/fire passes retain original ordering.
+        const auto enqueue=[&](BufferHandle vertex,BufferHandle index,
+                               const std::vector<ImportedGpu::Section>& sections,
+                               BufferHandle object_uniform,const math::Mat4& model,
+                               BoundingSphere bounds,math::Vec3 tint) {
+          if(!frustum.intersects(world_bounds(bounds,model))) {
+            ++culled_instances;
+            return;
           }
-          for(const auto& section:*sections) {
-            const auto uniform=make_object_uniform(instance.model,section.base_color);
-            device.update_buffer(instance.uniform,0,std::as_bytes(std::span(&uniform,1)));
-            device.draw_indexed({imported->pipeline,vb,ib,
-                section.first,section.count,{{0,camera},{2,instance.uniform}},
-                {},{{3,section.albedo}}});
-++frame_draws;
+          ++visible_instances;
+          for(const auto& section:sections) {
+            const auto& color=section.base_color;
+            const auto material=make_object_uniform(model,{
+                tint.x*color.x,tint.y*color.y,tint.z*color.z});
+            draw_queue.add({{imported->pipeline,vertex,index,
+                section.first,section.count,
+                {{0,camera},{2,object_uniform}},{},{{3,section.albedo}}},
+                object_uniform,material});
           }
-        }
-      }else if(imported && imported->uses_scene_file) {
-        for(const auto& instance:imported->scene_instances) {
-          const auto model=imported->scene_anchor*
-                           imported->scene.world_matrix(instance.node);
-          for(const auto& section:imported->sections) {
-            const auto& kd=section.base_color;
-            const auto uniform=make_object_uniform(model,
-                {0.16*kd.x,0.57*kd.y,0.95*kd.z});
-            device.update_buffer(instance.uniform,0,
-                                 std::as_bytes(std::span(&uniform,1)));
-            device.draw_indexed({imported->pipeline,imported->vb,imported->ib,
-                section.first,section.count,{{0,camera},{2,instance.uniform}},
-                {},{{3,section.albedo}}});
-++frame_draws;
+        };
+        if(imported->is_gltf) {
+          for(const auto& instance:imported->gltf_instances) {
+            auto vertex=imported->vb,index=imported->ib;
+            const auto* sections=&imported->sections;
+            auto bounds=imported->primary_bounds;
+            if(instance.mesh_index!=0) {
+              const auto& mesh=imported->additional_meshes.at(instance.mesh_index-1);
+              vertex=mesh.vb;index=mesh.ib;
+              sections=&mesh.sections;
+              bounds=imported->additional_bounds.at(instance.mesh_index-1);
+            }
+            enqueue(vertex,index,*sections,instance.uniform,instance.model,
+                    bounds,{1,1,1});
           }
+        }else if(imported->uses_scene_file) {
+          for(const auto& instance:imported->scene_instances) {
+            const auto model=imported->scene_anchor*
+                imported->scene.world_matrix(instance.node);
+            enqueue(imported->vb,imported->ib,imported->sections,instance.uniform,
+                    model,imported->primary_bounds,{0.16,0.57,0.95});
+          }
+        }else {
+          using terraflux::scene::Transform;
+          const double spread=imported->separation;
+          imported->scene.set_transform(imported->left_pivot,
+              Transform{{-spread,0,0},{0,engine_time*0.7,0},{1,1,1}});
+          imported->scene.set_transform(imported->right_pivot,
+              Transform{{spread,0.10*spread*std::sin(engine_time*1.4),0},
+                        {0,-engine_time*0.43,0},{1,1,1}});
+          enqueue(imported->vb,imported->ib,imported->sections,
+                  imported->object_uniform_left,
+                  imported->scene.world_matrix(imported->left_mesh),
+                  imported->primary_bounds,{0.16,0.57,0.95});
+          enqueue(imported->vb,imported->ib,imported->sections,
+                  imported->object_uniform_right,
+                  imported->scene.world_matrix(imported->right_mesh),
+                  imported->primary_bounds,{0.79,0.43,0.92});
         }
-      }else if (imported) {
-        using terraflux::scene::Transform;
-        const double spread = imported->separation;
-        // Per-object animation updates only UBO state; geometry remains fixed.
-        imported->scene.set_transform(imported->left_pivot,
-            Transform{{-spread, 0.0, 0.0}, {0.0, engine_time*0.7, 0.0}, {1.0,1.0,1.0}});
-        imported->scene.set_transform(imported->right_pivot,
-            Transform{{spread, 0.10*spread*std::sin(engine_time*1.4), 0.0},
-                      {0.0, -engine_time*0.43, 0.0}, {1.0,1.0,1.0}});
-        const auto left_world=imported->scene.world_matrix(imported->left_mesh);
-        const auto right_world=imported->scene.world_matrix(imported->right_mesh);
-        for(const auto& section:imported->sections) {
-          const auto& kd=section.base_color;
-          const auto left=make_object_uniform(left_world,
-              {0.16*kd.x,0.57*kd.y,0.95*kd.z});
-          device.update_buffer(imported->object_uniform_left,0,
-                               std::as_bytes(std::span(&left,1)));
-          device.draw_indexed({imported->pipeline,imported->vb,imported->ib,
-              section.first,section.count,{{0,camera},{2,imported->object_uniform_left}},
-              {},{{3,section.albedo}}});
-++frame_draws;
-          const auto right=make_object_uniform(right_world,
-              {0.79*kd.x,0.43*kd.y,0.92*kd.z});
-          device.update_buffer(imported->object_uniform_right,0,
-                               std::as_bytes(std::span(&right,1)));
-          device.draw_indexed({imported->pipeline,imported->vb,imported->ib,
-              section.first,section.count,{{0,camera},{2,imported->object_uniform_right}},
-              {},{{3,section.albedo}}});
-++frame_draws;
-        }
+      }
+      const auto queue_stats=draw_queue.submit(device);
+      frame_draws+=static_cast<std::uint32_t>(queue_stats.submitted);
+      if(options.smoke_test || (options.profile && profile_frames%120==0)) {
+        std::cout << "Visibility: " << visible_instances << " visible, "
+                  << culled_instances << " culled, "
+                  << queue_stats.submitted << " opaque draws, "
+                  << queue_stats.state_groups << " state groups\n";
       }
       if (options.smoke_test && imported) {
         const auto visible_asset = device.count_asset_pixels(width, height);
