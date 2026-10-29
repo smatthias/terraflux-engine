@@ -1,6 +1,7 @@
 #include <terraflux/graphics/opengl_device.hpp>
 #include <terraflux/graphics/terrain_upload.hpp>
 #include <terraflux/graphics/mesh_upload.hpp>
+#include <terraflux/graphics/resource_owner.hpp>
 #include <terraflux/assets/obj.hpp>
 #include <terraflux/assets/gltf.hpp>
 #include <terraflux/assets/material.hpp>
@@ -63,7 +64,7 @@ std::filesystem::path asset_path(const std::filesystem::path& directory,
 }
 
 struct Options {
-  bool smoke_test = false;
+  bool smoke_test = false, profile = false;
   std::string request_file, response_file, obj_file, gltf_file, texture_file, scene_file;
 };
 
@@ -72,6 +73,7 @@ Options parse_args(int argc, char** argv) {
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
     if (arg == "--smoke-test") options.smoke_test = true;
+    else if (arg == "--profile") options.profile = true;
     else if (arg == "--request" && i + 1 < argc) options.request_file = argv[++i];
     else if (arg == "--response" && i + 1 < argc) options.response_file = argv[++i];
     else if (arg == "--obj" && i + 1 < argc) options.obj_file = argv[++i];
@@ -79,7 +81,7 @@ Options parse_args(int argc, char** argv) {
     else if (arg == "--texture" && i + 1 < argc) options.texture_file = argv[++i];
     else if (arg == "--scene" && i + 1 < argc) options.scene_file = argv[++i];
     else throw std::invalid_argument(
-        "usage: terraflux-terrain-viewer [--request request.json --response response.json] [--obj model.obj | --gltf model.gltf] [--texture texture.ppm] [--scene scene.json with --obj] [--smoke-test]");
+        "usage: terraflux-terrain-viewer [--request request.json --response response.json] [--obj model.obj | --gltf model.gltf] [--texture texture.ppm] [--scene scene.json with --obj] [--profile] [--smoke-test]");
   }
   if (options.request_file.empty() != options.response_file.empty())
     throw std::invalid_argument("--request and --response must be provided together");
@@ -203,19 +205,20 @@ int main(int argc, char** argv) {
 
     using namespace terraflux::graphics;
     OpenGLRenderDevice device;
+    RenderResourceOwner owned(device);
     const auto vertices = bytes_of(upload.vertices);
     const auto indices = bytes_of(upload.indices);
-    const auto vb = device.create_buffer({BufferUsage::Vertex, vertices.size()}, vertices);
-    const auto ib = device.create_buffer({BufferUsage::Index, indices.size()}, indices);
+    const auto vb = owned.create_buffer({BufferUsage::Vertex, vertices.size()}, vertices);
+    const auto ib = owned.create_buffer({BufferUsage::Index, indices.size()}, indices);
     std::optional<BufferHandle> fire_buffer;
     if (fire_field) {
       const auto fire_bytes = std::as_bytes(std::span(fire_field->states));
-      fire_buffer = device.create_buffer({BufferUsage::Storage, fire_bytes.size()}, fire_bytes);
+      fire_buffer = owned.create_buffer({BufferUsage::Storage, fire_bytes.size()}, fire_bytes);
     }
     std::array<float, 20> initial_camera{};
     const auto camera_bytes = std::as_bytes(std::span(initial_camera));
-    const auto camera = device.create_buffer({BufferUsage::Uniform, camera_bytes.size()}, camera_bytes);
-    const auto pipeline = device.create_pipeline({
+    const auto camera = owned.create_buffer({BufferUsage::Uniform, camera_bytes.size()}, camera_bytes);
+    const auto pipeline = owned.create_pipeline({
         playback ? wildfire_shader_layout() : terrain_shader_layout(), true});
 
     // Two independent world transforms share the original asset VBO/IBO.
@@ -405,7 +408,7 @@ int main(int argc, char** argv) {
           image=terraflux::assets::read_ppm_p3(file);
         }
         const auto bytes=std::as_bytes(std::span(image.pixels));
-        const auto id=device.create_texture2d({image.width,image.height},bytes);
+        const auto id=owned.create_texture2d({image.width,image.height},bytes);
         obj.textures.emplace(key,id);
         return id;
       };
@@ -431,8 +434,8 @@ int main(int argc, char** argv) {
         return result;
       };
       obj.sections=build_sections(object);
-      obj.vb=device.create_buffer({BufferUsage::Vertex,vertex_bytes.size()},vertex_bytes);
-      obj.ib=device.create_buffer({BufferUsage::Index,index_bytes.size()},index_bytes);
+      obj.vb=owned.create_buffer({BufferUsage::Vertex,vertex_bytes.size()},vertex_bytes);
+      obj.ib=owned.create_buffer({BufferUsage::Index,index_bytes.size()},index_bytes);
       for(const auto& mesh:extra_meshes) {
         const auto upload=prepare_textured_asset_upload(mesh);
         const auto bytes=bytes_of(upload.vertices);
@@ -440,8 +443,8 @@ int main(int argc, char** argv) {
         ImportedGpu::AdditionalMesh extra{};
         extra.sections=build_sections(mesh);
         extra.indices=static_cast<std::uint32_t>(upload.indices.size());
-        extra.vb=device.create_buffer({BufferUsage::Vertex,bytes.size()},bytes);
-        extra.ib=device.create_buffer({BufferUsage::Index,indices_bytes.size()},indices_bytes);
+        extra.vb=owned.create_buffer({BufferUsage::Vertex,bytes.size()},bytes);
+        extra.ib=owned.create_buffer({BufferUsage::Index,indices_bytes.size()},indices_bytes);
         obj.additional_meshes.push_back(std::move(extra));
       }
       const auto init_object = make_object_uniform(terraflux::math::Mat4::identity());
@@ -456,7 +459,7 @@ int main(int argc, char** argv) {
           const auto model=anchor*world;
           const auto uniform=make_object_uniform(model,{1,1,1});
           const auto bytes=std::as_bytes(std::span(&uniform,1));
-          const auto handle=device.create_buffer({BufferUsage::Uniform,bytes.size()},bytes);
+          const auto handle=owned.create_buffer({BufferUsage::Uniform,bytes.size()},bytes);
           obj.gltf_instances.push_back({handle,mesh_index,model});
         }
       }else if(obj.uses_scene_file){
@@ -464,15 +467,15 @@ int main(int argc, char** argv) {
           const auto model=obj.scene_anchor*obj.scene.world_matrix(instance.node);
           const auto uniforms=make_object_uniform(model,{0.16,0.57,0.95});
           const auto bytes=std::as_bytes(std::span(&uniforms,1));
-          instance.uniform=device.create_buffer({BufferUsage::Uniform,bytes.size()},bytes);
+          instance.uniform=owned.create_buffer({BufferUsage::Uniform,bytes.size()},bytes);
         }
       }else{
-        obj.object_uniform_left = device.create_buffer(
+        obj.object_uniform_left = owned.create_buffer(
             {BufferUsage::Uniform,init_bytes.size()},init_bytes);
-        obj.object_uniform_right = device.create_buffer(
+        obj.object_uniform_right = owned.create_buffer(
             {BufferUsage::Uniform,init_bytes.size()},init_bytes);
       }
-      obj.pipeline = device.create_pipeline({textured_object_shader_layout(),true});
+      obj.pipeline = owned.create_pipeline({textured_object_shader_layout(),true});
       imported = std::move(obj);
       std::size_t triangle_count=imported->indices/3;
       std::size_t sections_count=imported->sections.size();
@@ -498,6 +501,8 @@ int main(int argc, char** argv) {
     bool playing = playback.has_value();
     bool previous_space = false, previous_home = false, previous_back = false, previous_forward = false;
     unsigned rendered_frames = 0;
+    std::uint64_t profile_frames = 0;
+    terraflux::runtime::FrameProfiler cpu_profiler(120);
 
     if (playback && options.smoke_test && playback->frames.size() > 1)
       playback_frame = 1; // exercise non-initial fire state in GPU smoke test
@@ -506,6 +511,7 @@ int main(int argc, char** argv) {
       glfwPollEvents();
       if (glfwGetKey(window.get(), GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
       const double now = glfwGetTime();
+      const double profile_update_start = glfwGetTime();
       const double elapsed = std::max(0.0, now - previous_time);
       const double delta = std::clamp(elapsed, 0.0, 0.1);
       previous_time = now;
@@ -514,6 +520,8 @@ int main(int argc, char** argv) {
       const auto fixed_report=scheduler.advance(elapsed,[&](double dt) {
         engine_time+=dt;
         if(playback && playing)playback_accumulator+=dt;
+        if(imported && imported->uses_scene_file)
+          terraflux::runtime::update_scene_components(imported->scene,dt);
       });
       (void)fixed_report;
       const bool space = glfwGetKey(window.get(), GLFW_KEY_SPACE) == GLFW_PRESS;
@@ -579,6 +587,8 @@ int main(int argc, char** argv) {
         if (options.smoke_test) throw std::runtime_error("no framebuffer in smoke test");
         continue;
       }
+      const double profile_render_start=glfwGetTime();
+      std::uint32_t frame_draws=0;
       update_camera(device, camera, width, height, scene_camera, yaw, pitch, distance,
                     cell_size, fire_field ? fire_field->width : 1,
                     fire_field ? fire_field->height : 1, engine_time);
@@ -587,6 +597,7 @@ int main(int argc, char** argv) {
           static_cast<std::uint32_t>(upload.indices.size()), {{0, camera}}, {}};
       if (fire_buffer) command.storage_buffers.push_back({1, *fire_buffer});
       device.draw_indexed(command);
+      ++frame_draws;
       if (imported && imported->is_gltf) {
         // Preserve the selected glTF hierarchy: each imported node has an
         // independent world matrix, material ranges share the geometry.
@@ -606,6 +617,7 @@ int main(int argc, char** argv) {
             device.draw_indexed({imported->pipeline,vb,ib,
                 section.first,section.count,{{0,camera},{2,instance.uniform}},
                 {},{{3,section.albedo}}});
+++frame_draws;
           }
         }
       }else if(imported && imported->uses_scene_file) {
@@ -621,6 +633,7 @@ int main(int argc, char** argv) {
             device.draw_indexed({imported->pipeline,imported->vb,imported->ib,
                 section.first,section.count,{{0,camera},{2,instance.uniform}},
                 {},{{3,section.albedo}}});
+++frame_draws;
           }
         }
       }else if (imported) {
@@ -643,6 +656,7 @@ int main(int argc, char** argv) {
           device.draw_indexed({imported->pipeline,imported->vb,imported->ib,
               section.first,section.count,{{0,camera},{2,imported->object_uniform_left}},
               {},{{3,section.albedo}}});
+++frame_draws;
           const auto right=make_object_uniform(right_world,
               {0.79*kd.x,0.43*kd.y,0.92*kd.z});
           device.update_buffer(imported->object_uniform_right,0,
@@ -650,6 +664,7 @@ int main(int argc, char** argv) {
           device.draw_indexed({imported->pipeline,imported->vb,imported->ib,
               section.first,section.count,{{0,camera},{2,imported->object_uniform_right}},
               {},{{3,section.albedo}}});
+++frame_draws;
         }
       }
       if (options.smoke_test && imported) {
@@ -664,39 +679,31 @@ int main(int argc, char** argv) {
           throw std::runtime_error("smoke test found no visible fire pixels");
         std::cout << "Visible fire pixels: " << visible_fire << '\n';
       }
+      const double profile_render_end=glfwGetTime();
+      cpu_profiler.record({profile_render_start-profile_update_start,
+                           profile_render_end-profile_render_start,frame_draws});
+      ++profile_frames;
+      if(options.profile && profile_frames%120==0) {
+        const auto measured=cpu_profiler.summary();
+        std::cout << "CPU profile (last " << measured.samples << " frames): update "
+                  << measured.mean_update_ms << " ms, render "
+                  << measured.mean_render_ms << " ms, worst "
+                  << measured.max_frame_ms << " ms, draw calls/frame "
+                  << measured.mean_draw_calls << '\n';
+      }
       glfwSwapBuffers(window.get());
       ++rendered_frames;
       if (options.smoke_test) break;
     }
 
-    if (imported) {
-      device.destroy_pipeline(imported->pipeline);
-      for(const auto& [name,handle]:imported->textures) {
-        (void)name;
-        device.destroy_texture(handle);
-      }
-      if(imported->is_gltf) {
-        for(const auto& instance:imported->gltf_instances)
-          device.destroy_buffer(instance.uniform);
-      }else if(imported->uses_scene_file) {
-        for(const auto& instance:imported->scene_instances)
-          device.destroy_buffer(instance.uniform);
-      }else{
-        device.destroy_buffer(imported->object_uniform_right);
-        device.destroy_buffer(imported->object_uniform_left);
-      }
-      for(const auto& mesh:imported->additional_meshes){
-        device.destroy_buffer(mesh.ib);
-        device.destroy_buffer(mesh.vb);
-      }
-      device.destroy_buffer(imported->ib);
-      device.destroy_buffer(imported->vb);
+    // Owned GPU resources release before OpenGL context teardown.
+    owned.reset();
+    if(options.smoke_test) {
+      const auto measured=cpu_profiler.summary();
+      std::cout << "CPU frame profile: update " << measured.mean_update_ms
+                << " ms, render " << measured.mean_render_ms
+                << " ms, draw calls " << measured.mean_draw_calls << '\n';
     }
-    device.destroy_pipeline(pipeline);
-    device.destroy_buffer(camera);
-    if (fire_buffer) device.destroy_buffer(*fire_buffer);
-    device.destroy_buffer(ib);
-    device.destroy_buffer(vb);
     if (options.smoke_test)
       std::cout << "OpenGL wildfire replay smoke test rendered " << rendered_frames << " frame(s)\n";
   } catch (const std::exception& e) {

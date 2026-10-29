@@ -173,3 +173,27 @@ factor. OBJ example animations and wildfire replay advance by simulated time
 rather than unpredictable wall-clock deltas. Input and rendering still
 occur each displayed frame. A versioned scene-file roundtrip and scheduler
 regression suite runs in native CTest even without OpenGL.
+
+
+## Phase 8: Spin components, GPU ownership and CPU profiling
+
+Scene nodes now support an optional serializable `spin` component containing
+angular velocity (radians per second). The 60 Hz fixed-step scheduler
+updates Spin components and their scene-local rotations, including parent
+nodes affecting child transforms.
+
+```bash
+./build-gl/terraflux-terrain-viewer \
+  --obj examples/assets/pyramid.obj \
+  --scene examples/scenes/twin_pyramids.json --profile
+```
+
+Both pyramids rotate according to scene JSON Spin components. `--profile`
+prints rolling CPU mean update/render times, worst combined frame, and
+average draw calls per frame over 120 samples. This is **CPU-side** profiling,
+not GPU timestamps.
+
+All viewer GPU allocations now use the backend-neutral
+`graphics::RenderResourceOwner`. Buffers, textures, and pipelines are
+released at normal exit or when asset loading fails. Per-asset shared buffers
+remain supported; dynamic asset unloading is still future work.
