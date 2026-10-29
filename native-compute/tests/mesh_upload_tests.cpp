@@ -28,7 +28,7 @@ void upload_nonuniform_world_transform() {
   require(near(dot,0),"correct inverse transpose normal against transformed edge");
 }
 void object_uniform_and_local_geometry() {
-  std::istringstream in("v 0 0 0\\nv 1 0 0\\nv 0 1 1\\nf 1 2 3\\n");
+  std::istringstream in("v 0 0 0\nv 1 0 0\nv 0 1 1\nf 1 2 3\n");
   const auto mesh=terraflux::assets::import_obj(in);
   const auto upload=terraflux::graphics::prepare_asset_upload(mesh);
   require(upload.indices.size()==3 && near(upload.vertices[1].position[0],1),
