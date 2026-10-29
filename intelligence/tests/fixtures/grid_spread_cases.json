@@ -1,5 +1,5 @@
 {
-  "contractVersion": "terraflux.compute/v1",
+  "contractVersion": "terraflux.compute/v2",
   "cases": [
     {
       "name": "isolated-ignition",
@@ -7,14 +7,24 @@
         "contract_version": "terraflux.compute/v1",
         "grid_key": "fixture-isolated",
         "cells": [
-          {"x": 0, "y": 0, "fuel_load": 0.1, "fuel_moisture": 1.0, "burn_susceptibility": 0.0}
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.1,
+            "fuel_moisture": 1.0,
+            "burn_susceptibility": 0.0
+          }
         ],
-        "ignition": {"x": 0, "y": 0},
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
         "steps": 5,
         "wind_speed_kmh": 0,
         "wind_direction_degrees": 0,
         "spread_threshold": 0.5
-      }
+      },
+      "expected_burned_cells": 1
     },
     {
       "name": "three-cell-eastward-spread",
@@ -22,16 +32,38 @@
         "contract_version": "terraflux.compute/v1",
         "grid_key": "fixture-eastward",
         "cells": [
-          {"x": 0, "y": 0, "fuel_load": 1.0, "fuel_moisture": 0.0, "burn_susceptibility": 1.0},
-          {"x": 1, "y": 0, "fuel_load": 1.0, "fuel_moisture": 0.0, "burn_susceptibility": 1.0},
-          {"x": 2, "y": 0, "fuel_load": 1.0, "fuel_moisture": 0.0, "burn_susceptibility": 1.0}
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 1.0,
+            "fuel_moisture": 0.0,
+            "burn_susceptibility": 1.0
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 1.0,
+            "fuel_moisture": 0.0,
+            "burn_susceptibility": 1.0
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 1.0,
+            "fuel_moisture": 0.0,
+            "burn_susceptibility": 1.0
+          }
         ],
-        "ignition": {"x": 0, "y": 0},
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
         "steps": 5,
         "wind_speed_kmh": 25,
         "wind_direction_degrees": 90,
         "spread_threshold": 0.5
-      }
+      },
+      "expected_burned_cells": 3
     },
     {
       "name": "diagonal-wind-sensitive-spread",
@@ -39,17 +71,6142 @@
         "contract_version": "terraflux.compute/v1",
         "grid_key": "fixture-diagonal",
         "cells": [
-          {"x": 0, "y": 0, "fuel_load": 0.7, "fuel_moisture": 0.25, "burn_susceptibility": 0.75},
-          {"x": 1, "y": 1, "fuel_load": 0.7, "fuel_moisture": 0.25, "burn_susceptibility": 0.75},
-          {"x": 1, "y": 0, "fuel_load": 0.2, "fuel_moisture": 0.9, "burn_susceptibility": 0.1},
-          {"x": 0, "y": 1, "fuel_load": 0.2, "fuel_moisture": 0.9, "burn_susceptibility": 0.1}
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.7,
+            "fuel_moisture": 0.25,
+            "burn_susceptibility": 0.75
+          },
+          {
+            "x": 1,
+            "y": 1,
+            "fuel_load": 0.7,
+            "fuel_moisture": 0.25,
+            "burn_susceptibility": 0.75
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.2,
+            "fuel_moisture": 0.9,
+            "burn_susceptibility": 0.1
+          },
+          {
+            "x": 0,
+            "y": 1,
+            "fuel_load": 0.2,
+            "fuel_moisture": 0.9,
+            "burn_susceptibility": 0.1
+          }
         ],
-        "ignition": {"x": 0, "y": 0},
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
         "steps": 4,
         "wind_speed_kmh": 70,
         "wind_direction_degrees": 45,
         "spread_threshold": 0.5
-      }
+      },
+      "expected_burned_cells": 2
+    },
+    {
+      "name": "terrain-uphill-climbs-ridge",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "fixture-terrain-uphill",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5,
+            "elevation_meters": 0.0
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5,
+            "elevation_meters": 11.0
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5,
+            "elevation_meters": 22.0
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5,
+            "elevation_meters": 33.0
+          },
+          {
+            "x": 4,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5,
+            "elevation_meters": 44.0
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 6,
+        "wind_speed_kmh": 0,
+        "wind_direction_degrees": 0,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 5
+    },
+    {
+      "name": "terrain-ignored-under-v1-contract",
+      "request": {
+        "contract_version": "terraflux.compute/v1",
+        "grid_key": "fixture-terrain-v1-replay",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5,
+            "elevation_meters": 0.0
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5,
+            "elevation_meters": 11.0
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5,
+            "elevation_meters": 22.0
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5,
+            "elevation_meters": 33.0
+          },
+          {
+            "x": 4,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5,
+            "elevation_meters": 44.0
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 6,
+        "wind_speed_kmh": 0,
+        "wind_direction_degrees": 0,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 1
+    },
+    {
+      "name": "terrain-absent-ridge-stays-isolated",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "fixture-terrain-absent",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 4,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 6,
+        "wind_speed_kmh": 0,
+        "wind_direction_degrees": 0,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 1
+    },
+    {
+      "name": "terrain-midslope-ignition-runs-uphill-only",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "fixture-terrain-midslope",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 0.0
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 11.0
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 22.0
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 33.0
+          },
+          {
+            "x": 4,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 44.0
+          }
+        ],
+        "ignition": {
+          "x": 2,
+          "y": 0
+        },
+        "steps": 6,
+        "wind_speed_kmh": 0,
+        "wind_direction_degrees": 0,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 3
+    },
+    {
+      "name": "terrain-flat-elevation-matches-no-elevation",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "fixture-terrain-flat",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.7,
+            "fuel_moisture": 0.25,
+            "burn_susceptibility": 0.75,
+            "elevation_meters": 500.0
+          },
+          {
+            "x": 1,
+            "y": 1,
+            "fuel_load": 0.7,
+            "fuel_moisture": 0.25,
+            "burn_susceptibility": 0.75,
+            "elevation_meters": 500.0
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.2,
+            "fuel_moisture": 0.9,
+            "burn_susceptibility": 0.1,
+            "elevation_meters": 500.0
+          },
+          {
+            "x": 0,
+            "y": 1,
+            "fuel_load": 0.2,
+            "fuel_moisture": 0.9,
+            "burn_susceptibility": 0.1,
+            "elevation_meters": 500.0
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 4,
+        "wind_speed_kmh": 70,
+        "wind_direction_degrees": 225,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 2
+    },
+    {
+      "name": "terrain-partial-elevation-is-filled",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "terrain-partial-elevation-is-filled",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5,
+            "elevation_meters": 0.0
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5,
+            "elevation_meters": 11.0
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5,
+            "elevation_meters": 33.0
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 6,
+        "wind_speed_kmh": 0,
+        "wind_direction_degrees": 0,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 4
+    },
+    {
+      "name": "terrain-diagonal-uses-longer-run",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "fixture-terrain-diagonal",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5,
+            "elevation_meters": 0.0
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5,
+            "elevation_meters": 11.0
+          },
+          {
+            "x": 1,
+            "y": 1,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5,
+            "elevation_meters": 11.0
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 6,
+        "wind_speed_kmh": 0,
+        "wind_direction_degrees": 0,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 2
+    },
+    {
+      "name": "terrain-cell-size-steepens-and-saturates",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "fixture-terrain-cellsize",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5,
+            "elevation_meters": 0.0
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5,
+            "elevation_meters": 11.0
+          },
+          {
+            "x": 1,
+            "y": 1,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5,
+            "elevation_meters": 11.0
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 6,
+        "wind_speed_kmh": 0,
+        "wind_direction_degrees": 0,
+        "spread_threshold": 0.5,
+        "cell_size_meters": 10.0
+      },
+      "expected_burned_cells": 3
+    },
+    {
+      "name": "terrain-calm-steep-downhill-blocks-decent-fuel",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "fixture-down-calm",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 33.0
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 22.0
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 11.0
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 0.0
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 6,
+        "wind_speed_kmh": 0,
+        "wind_direction_degrees": 0,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 1
+    },
+    {
+      "name": "terrain-tailwind-carries-fire-downhill",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "fixture-down-tailwind",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 33.0
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 22.0
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 11.0
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 0.0
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 6,
+        "wind_speed_kmh": 80,
+        "wind_direction_degrees": 270,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 4
+    },
+    {
+      "name": "terrain-moderate-tailwind-carries-fire-downhill",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "fixture-down-halfwind",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 33.0
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 22.0
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 11.0
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 0.0
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 6,
+        "wind_speed_kmh": 40,
+        "wind_direction_degrees": 270,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 4
+    },
+    {
+      "name": "terrain-headwind-keeps-downhill-penalty",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "fixture-down-headwind",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 33.0
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 22.0
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 11.0
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 0.0
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 6,
+        "wind_speed_kmh": 80,
+        "wind_direction_degrees": 90,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 1
+    },
+    {
+      "name": "terrain-steep-downhill-penalty-is-half-of-uphill",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "fixture-down-asym",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.9,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 54.0
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.9,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 36.0
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.9,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 18.0
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.9,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 0.0
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 6,
+        "wind_speed_kmh": 0,
+        "wind_direction_degrees": 0,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 4
+    },
+    {
+      "name": "flat-moderate-tailwind-drives-spread-v2",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "fixture-flat-wind-v2",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 6,
+        "wind_speed_kmh": 32,
+        "wind_direction_degrees": 270,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 4
+    },
+    {
+      "name": "flat-moderate-tailwind-drives-spread-v1",
+      "request": {
+        "contract_version": "terraflux.compute/v1",
+        "grid_key": "fixture-flat-wind-v1",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 6,
+        "wind_speed_kmh": 32,
+        "wind_direction_degrees": 90,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 1
+    },
+    {
+      "name": "wind-headwind-blocks-strong-fuel-v2",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "fixture-head-v2",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 6,
+        "wind_speed_kmh": 80,
+        "wind_direction_degrees": 90,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 1
+    },
+    {
+      "name": "wind-headwind-is-neutral-under-v1",
+      "request": {
+        "contract_version": "terraflux.compute/v1",
+        "grid_key": "fixture-head-v1",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 6,
+        "wind_speed_kmh": 80,
+        "wind_direction_degrees": 270,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 4
+    },
+    {
+      "name": "wind-headwind-calm-control-spreads",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "fixture-head-calm",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 6,
+        "wind_speed_kmh": 0,
+        "wind_direction_degrees": 0,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 4
+    },
+    {
+      "name": "wind-crosswind-is-not-half-a-tailwind",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "fixture-cross-flat",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 6,
+        "wind_speed_kmh": 80,
+        "wind_direction_degrees": 0,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 1
+    },
+    {
+      "name": "terrain-crosswind-leaves-uphill-preheating-intact",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "fixture-cross-up",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5,
+            "elevation_meters": 0.0
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5,
+            "elevation_meters": 11.0
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5,
+            "elevation_meters": 22.0
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5,
+            "elevation_meters": 33.0
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 6,
+        "wind_speed_kmh": 80,
+        "wind_direction_degrees": 0,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 4
+    },
+    {
+      "name": "terrain-crosswind-gives-no-downhill-relief",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "fixture-cross-down",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 33.0
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 22.0
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 11.0
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 0.0
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 6,
+        "wind_speed_kmh": 80,
+        "wind_direction_degrees": 0,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 1
+    },
+    {
+      "name": "terrain-quartering-tailwind-partially-relieves-downhill",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "fixture-quarter-down",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 33.0
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 22.0
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 11.0
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 0.0
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 6,
+        "wind_speed_kmh": 80,
+        "wind_direction_degrees": 225,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 4
+    },
+    {
+      "name": "terrain-steep-uphill-beats-headwind",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "fixture-head-steep-up",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 0.0
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 18.0
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 36.0
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 54.0
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 6,
+        "wind_speed_kmh": 80,
+        "wind_direction_degrees": 90,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 4
+    },
+    {
+      "name": "terrain-gentle-uphill-loses-to-headwind",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "fixture-head-gentle-up",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 0.0
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 5.0
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 10.0
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 15.0
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 6,
+        "wind_speed_kmh": 80,
+        "wind_direction_degrees": 90,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 1
+    },
+    {
+      "name": "wind-from-000-meteorological-v2",
+      "note": "v2 meteorological: north wind pushes fire south (-y)",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "fixture-wind-from-000-v2",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 0,
+            "y": 1,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 0,
+            "y": 2,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 0,
+            "y": -1,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 0,
+            "y": -2,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": -1,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": -2,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 4,
+        "wind_speed_kmh": 80,
+        "wind_direction_degrees": 0,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 3,
+      "expected_burned": [
+        [
+          0,
+          -2
+        ],
+        [
+          0,
+          -1
+        ],
+        [
+          0,
+          0
+        ]
+      ]
+    },
+    {
+      "name": "wind-from-090-meteorological-v2",
+      "note": "v2 meteorological: east wind pushes fire west (-x)",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "fixture-wind-from-090-v2",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 0,
+            "y": 1,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 0,
+            "y": 2,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 0,
+            "y": -1,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 0,
+            "y": -2,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": -1,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": -2,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 4,
+        "wind_speed_kmh": 80,
+        "wind_direction_degrees": 90,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 3,
+      "expected_burned": [
+        [
+          -2,
+          0
+        ],
+        [
+          -1,
+          0
+        ],
+        [
+          0,
+          0
+        ]
+      ]
+    },
+    {
+      "name": "wind-from-180-meteorological-v2",
+      "note": "v2 meteorological: south wind pushes fire north (+y)",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "fixture-wind-from-180-v2",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 0,
+            "y": 1,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 0,
+            "y": 2,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 0,
+            "y": -1,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 0,
+            "y": -2,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": -1,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": -2,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 4,
+        "wind_speed_kmh": 80,
+        "wind_direction_degrees": 180,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 3,
+      "expected_burned": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          1
+        ],
+        [
+          0,
+          2
+        ]
+      ]
+    },
+    {
+      "name": "wind-from-270-meteorological-v2",
+      "note": "v2 meteorological: west wind pushes fire east (+x)",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "fixture-wind-from-270-v2",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 0,
+            "y": 1,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 0,
+            "y": 2,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 0,
+            "y": -1,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 0,
+            "y": -2,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": -1,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": -2,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 4,
+        "wind_speed_kmh": 80,
+        "wind_direction_degrees": 270,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 3,
+      "expected_burned": [
+        [
+          0,
+          0
+        ],
+        [
+          1,
+          0
+        ],
+        [
+          2,
+          0
+        ]
+      ]
+    },
+    {
+      "name": "wind-toward-000-legacy-v1",
+      "note": "v1 legacy (frozen): angle 0 blows TOWARD bearing 0",
+      "request": {
+        "contract_version": "terraflux.compute/v1",
+        "grid_key": "fixture-wind-toward-000-v1",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.4,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": 0,
+            "y": 1,
+            "fuel_load": 0.4,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": 0,
+            "y": 2,
+            "fuel_load": 0.4,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.4,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.4,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": 0,
+            "y": -1,
+            "fuel_load": 0.4,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": 0,
+            "y": -2,
+            "fuel_load": 0.4,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": -1,
+            "y": 0,
+            "fuel_load": 0.4,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": -2,
+            "y": 0,
+            "fuel_load": 0.4,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.6
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 4,
+        "wind_speed_kmh": 80,
+        "wind_direction_degrees": 0,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 3,
+      "expected_burned": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          1
+        ],
+        [
+          0,
+          2
+        ]
+      ]
+    },
+    {
+      "name": "wind-toward-090-legacy-v1",
+      "note": "v1 legacy (frozen): angle 90 blows TOWARD bearing 90",
+      "request": {
+        "contract_version": "terraflux.compute/v1",
+        "grid_key": "fixture-wind-toward-090-v1",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.4,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": 0,
+            "y": 1,
+            "fuel_load": 0.4,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": 0,
+            "y": 2,
+            "fuel_load": 0.4,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.4,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.4,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": 0,
+            "y": -1,
+            "fuel_load": 0.4,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": 0,
+            "y": -2,
+            "fuel_load": 0.4,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": -1,
+            "y": 0,
+            "fuel_load": 0.4,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": -2,
+            "y": 0,
+            "fuel_load": 0.4,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.6
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 4,
+        "wind_speed_kmh": 80,
+        "wind_direction_degrees": 90,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 3,
+      "expected_burned": [
+        [
+          0,
+          0
+        ],
+        [
+          1,
+          0
+        ],
+        [
+          2,
+          0
+        ]
+      ]
+    },
+    {
+      "name": "wind-toward-180-legacy-v1",
+      "note": "v1 legacy (frozen): angle 180 blows TOWARD bearing 180",
+      "request": {
+        "contract_version": "terraflux.compute/v1",
+        "grid_key": "fixture-wind-toward-180-v1",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.4,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": 0,
+            "y": 1,
+            "fuel_load": 0.4,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": 0,
+            "y": 2,
+            "fuel_load": 0.4,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.4,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.4,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": 0,
+            "y": -1,
+            "fuel_load": 0.4,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": 0,
+            "y": -2,
+            "fuel_load": 0.4,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": -1,
+            "y": 0,
+            "fuel_load": 0.4,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": -2,
+            "y": 0,
+            "fuel_load": 0.4,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.6
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 4,
+        "wind_speed_kmh": 80,
+        "wind_direction_degrees": 180,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 3,
+      "expected_burned": [
+        [
+          0,
+          -2
+        ],
+        [
+          0,
+          -1
+        ],
+        [
+          0,
+          0
+        ]
+      ]
+    },
+    {
+      "name": "wind-toward-270-legacy-v1",
+      "note": "v1 legacy (frozen): angle 270 blows TOWARD bearing 270",
+      "request": {
+        "contract_version": "terraflux.compute/v1",
+        "grid_key": "fixture-wind-toward-270-v1",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.4,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": 0,
+            "y": 1,
+            "fuel_load": 0.4,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": 0,
+            "y": 2,
+            "fuel_load": 0.4,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.4,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.4,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": 0,
+            "y": -1,
+            "fuel_load": 0.4,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": 0,
+            "y": -2,
+            "fuel_load": 0.4,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": -1,
+            "y": 0,
+            "fuel_load": 0.4,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": -2,
+            "y": 0,
+            "fuel_load": 0.4,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.6
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 4,
+        "wind_speed_kmh": 80,
+        "wind_direction_degrees": 270,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 3,
+      "expected_burned": [
+        [
+          -2,
+          0
+        ],
+        [
+          -1,
+          0
+        ],
+        [
+          0,
+          0
+        ]
+      ]
+    },
+    {
+      "name": "extreme-wind-300-tailwind-flat",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "fx-w300-tail",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 6,
+        "wind_speed_kmh": 300,
+        "wind_direction_degrees": 270,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 4
+    },
+    {
+      "name": "extreme-wind-150-tailwind-flat-same-as-80",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "fx-w150-tail",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 6,
+        "wind_speed_kmh": 150,
+        "wind_direction_degrees": 270,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 4
+    },
+    {
+      "name": "extreme-wind-300-headwind-blocks-strong-fuel",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "fx-w300-head",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 6,
+        "wind_speed_kmh": 300,
+        "wind_direction_degrees": 90,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 1
+    },
+    {
+      "name": "extreme-wind-300-crosswind-no-effect",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "fx-w300-cross",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 6,
+        "wind_speed_kmh": 300,
+        "wind_direction_degrees": 0,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 1
+    },
+    {
+      "name": "extreme-cliff-60deg-uphill-saturates-like-30",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "fx-cliff-up",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5,
+            "elevation_meters": 0.0
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5,
+            "elevation_meters": 51.962
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5,
+            "elevation_meters": 103.924
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5,
+            "elevation_meters": 155.88600000000002
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 6,
+        "wind_speed_kmh": 0,
+        "wind_direction_degrees": 0,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 4
+    },
+    {
+      "name": "extreme-cliff-60deg-downhill-saturates-like-30",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "fx-cliff-down",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 155.88600000000002
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 103.924
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 51.962
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 0.0
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 6,
+        "wind_speed_kmh": 0,
+        "wind_direction_degrees": 0,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 1
+    },
+    {
+      "name": "extreme-vertical-rise-5000m-per-cell",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "fx-vertical",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5,
+            "elevation_meters": 0.0
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5,
+            "elevation_meters": 5000.0
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5,
+            "elevation_meters": 10000.0
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 6,
+        "wind_speed_kmh": 0,
+        "wind_direction_degrees": 0,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 3
+    },
+    {
+      "name": "extreme-gale-up-cliff-zero-fuel-never-ignites",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "fx-nofuel",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 1.0,
+            "fuel_moisture": 0.0,
+            "burn_susceptibility": 1.0,
+            "elevation_meters": 0.0
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.0,
+            "fuel_moisture": 0.6,
+            "burn_susceptibility": 0.0,
+            "elevation_meters": 51.962
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 1.0,
+            "fuel_moisture": 0.0,
+            "burn_susceptibility": 1.0,
+            "elevation_meters": 103.924
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 6,
+        "wind_speed_kmh": 300,
+        "wind_direction_degrees": 270,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 1
+    },
+    {
+      "name": "extreme-gale-headwind-down-cliff-perfect-fuel-still-burns",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "fx-gale-head-down",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 1.0,
+            "fuel_moisture": 0.0,
+            "burn_susceptibility": 1.0,
+            "elevation_meters": 155.88600000000002
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 1.0,
+            "fuel_moisture": 0.0,
+            "burn_susceptibility": 1.0,
+            "elevation_meters": 103.924
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 1.0,
+            "fuel_moisture": 0.0,
+            "burn_susceptibility": 1.0,
+            "elevation_meters": 51.962
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 1.0,
+            "fuel_moisture": 0.0,
+            "burn_susceptibility": 1.0,
+            "elevation_meters": 0.0
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 6,
+        "wind_speed_kmh": 300,
+        "wind_direction_degrees": 90,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 4
+    },
+    {
+      "name": "extreme-gale-headwind-down-cliff-decent-fuel-blocked",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "fx-gale-head-down-dec",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 155.88600000000002
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 103.924
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 51.962
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 0.0
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 6,
+        "wind_speed_kmh": 300,
+        "wind_direction_degrees": 90,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 1
+    },
+    {
+      "name": "extreme-gale-tailwind-down-cliff-relieved",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "fx-gale-tail-down",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5,
+            "elevation_meters": 335.886
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5,
+            "elevation_meters": 223.924
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5,
+            "elevation_meters": 111.962
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5,
+            "elevation_meters": 0.0
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 6,
+        "wind_speed_kmh": 300,
+        "wind_direction_degrees": 270,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 4
+    },
+    {
+      "name": "extreme-gale-headwind-vs-45deg-uphill-slope-wins",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "fx-head-vs-steep",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 0.0
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 30.0
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 60.0
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 90.0
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 6,
+        "wind_speed_kmh": 300,
+        "wind_direction_degrees": 90,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 4
+    },
+    {
+      "name": "extreme-gale-headwind-vs-8deg-uphill-wind-wins",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "fx-head-vs-gentle",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 0.0
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 4.216
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 8.432
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 12.648
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 6,
+        "wind_speed_kmh": 300,
+        "wind_direction_degrees": 90,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 1
+    },
+    {
+      "name": "extreme-threshold-1-needs-saturated-score",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "fx-thr1",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 1.0,
+            "fuel_moisture": 0.0,
+            "burn_susceptibility": 1.0,
+            "elevation_meters": 0.0
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 1.0,
+            "fuel_moisture": 0.0,
+            "burn_susceptibility": 1.0,
+            "elevation_meters": 30.0
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 1.0,
+            "fuel_moisture": 0.0,
+            "burn_susceptibility": 1.0,
+            "elevation_meters": 40.919
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 6,
+        "wind_speed_kmh": 0,
+        "wind_direction_degrees": 0,
+        "spread_threshold": 1.0
+      },
+      "expected_burned_cells": 2
+    },
+    {
+      "name": "extreme-ignition-on-bare-rock-does-not-take-v2",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "extreme-ignition-on-bare-rock-does-not-take-v2",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.0,
+            "fuel_moisture": 1.0,
+            "burn_susceptibility": 0.0
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 1.0,
+            "fuel_moisture": 0.0,
+            "burn_susceptibility": 1.0
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 1.0,
+            "fuel_moisture": 0.0,
+            "burn_susceptibility": 1.0
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 4,
+        "wind_speed_kmh": 0,
+        "wind_direction_degrees": 0,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 0,
+      "expected_burned": []
+    },
+    {
+      "name": "extreme-ignition-on-bare-rock-burns-under-frozen-v1",
+      "request": {
+        "contract_version": "terraflux.compute/v1",
+        "grid_key": "extreme-ignition-on-bare-rock-burns-under-frozen-v1",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.0,
+            "fuel_moisture": 1.0,
+            "burn_susceptibility": 0.0
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 1.0,
+            "fuel_moisture": 0.0,
+            "burn_susceptibility": 1.0
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 1.0,
+            "fuel_moisture": 0.0,
+            "burn_susceptibility": 1.0
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 4,
+        "wind_speed_kmh": 0,
+        "wind_direction_degrees": 0,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 3,
+      "expected_burned": [
+        [
+          0,
+          0
+        ],
+        [
+          1,
+          0
+        ],
+        [
+          2,
+          0
+        ]
+      ]
+    },
+    {
+      "name": "partial-terrain-filled-void-on-a-climb",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "partial-terrain-filled-void-on-a-climb",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5,
+            "elevation_meters": 0
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5,
+            "elevation_meters": 11
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5,
+            "elevation_meters": 33
+          },
+          {
+            "x": 4,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5,
+            "elevation_meters": 44
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 8,
+        "wind_speed_kmh": 0,
+        "wind_direction_degrees": 0,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 5
+    },
+    {
+      "name": "partial-terrain-filled-void-on-a-descent",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "partial-terrain-filled-void-on-a-descent",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 44
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 22
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 11
+          },
+          {
+            "x": 4,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 0
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 8,
+        "wind_speed_kmh": 0,
+        "wind_direction_degrees": 0,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 1
+    },
+    {
+      "name": "partial-terrain-alternating-voids-filled",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "partial-terrain-alternating-voids-filled",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 44
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 22
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": 4,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 0
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 8,
+        "wind_speed_kmh": 0,
+        "wind_direction_degrees": 0,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 1
+    },
+    {
+      "name": "partial-terrain-void-on-ignition-filled-to-ring-level",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "partial-terrain-void-on-ignition-filled-to-ring-level",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": -1,
+            "y": -1,
+            "elevation_meters": 11.0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": -1,
+            "y": 0,
+            "elevation_meters": 11.0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": -1,
+            "y": 1,
+            "elevation_meters": 11.0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 0,
+            "y": -1,
+            "elevation_meters": 11.0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 0,
+            "y": 1,
+            "elevation_meters": 11.0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 1,
+            "y": -1,
+            "elevation_meters": 11.0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "elevation_meters": 11.0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 1,
+            "y": 1,
+            "elevation_meters": 11.0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 8,
+        "wind_speed_kmh": 0,
+        "wind_direction_degrees": 0,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 1
+    },
+    {
+      "name": "partial-terrain-2d-void-filled-no-routing",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "partial-terrain-2d-void-filled-no-routing",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 40.0
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 40.0
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 40.0
+          },
+          {
+            "x": 0,
+            "y": 1,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 29.0
+          },
+          {
+            "x": 1,
+            "y": 1,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 29.0
+          },
+          {
+            "x": 2,
+            "y": 1,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": 0,
+            "y": 2,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 18.0
+          },
+          {
+            "x": 1,
+            "y": 2,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 18.0
+          },
+          {
+            "x": 2,
+            "y": 2,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 18.0
+          }
+        ],
+        "ignition": {
+          "x": 1,
+          "y": 0
+        },
+        "steps": 8,
+        "wind_speed_kmh": 0,
+        "wind_direction_degrees": 0,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 3
+    },
+    {
+      "name": "partial-terrain-wind-still-applies-in-voids",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "partial-terrain-wind-still-applies-in-voids",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5,
+            "elevation_meters": 0
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5,
+            "elevation_meters": 0
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 8,
+        "wind_speed_kmh": 80,
+        "wind_direction_degrees": 270,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 4
+    },
+    {
+      "name": "blocker-river-holds-in-gale",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "blocker-river-holds-in-gale",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 0,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 0,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 0,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 0,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.0,
+            "fuel_moisture": 1.0,
+            "burn_susceptibility": 0.0
+          },
+          {
+            "x": 3,
+            "y": 1,
+            "fuel_load": 0.0,
+            "fuel_moisture": 1.0,
+            "burn_susceptibility": 0.0
+          },
+          {
+            "x": 3,
+            "y": 2,
+            "fuel_load": 0.0,
+            "fuel_moisture": 1.0,
+            "burn_susceptibility": 0.0
+          },
+          {
+            "x": 3,
+            "y": 3,
+            "fuel_load": 0.0,
+            "fuel_moisture": 1.0,
+            "burn_susceptibility": 0.0
+          },
+          {
+            "x": 3,
+            "y": 4,
+            "fuel_load": 0.0,
+            "fuel_moisture": 1.0,
+            "burn_susceptibility": 0.0
+          },
+          {
+            "x": 4,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 4,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 4,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 4,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 4,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 6,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 6,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 6,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 6,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 6,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 2
+        },
+        "steps": 14,
+        "wind_speed_kmh": 300,
+        "wind_direction_degrees": 270,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 15
+    },
+    {
+      "name": "blocker-absent-cells-hold-in-gale",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "blocker-absent-cells-hold-in-gale",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 0,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 0,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 0,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 0,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 4,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 4,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 4,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 4,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 4,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 6,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 6,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 6,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 6,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 6,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 2
+        },
+        "steps": 14,
+        "wind_speed_kmh": 300,
+        "wind_direction_degrees": 270,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 15
+    },
+    {
+      "name": "blocker-river-gap-funnels-fire",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "blocker-river-gap-funnels-fire",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 0,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 0,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 0,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 0,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.0,
+            "fuel_moisture": 1.0,
+            "burn_susceptibility": 0.0
+          },
+          {
+            "x": 3,
+            "y": 1,
+            "fuel_load": 0.0,
+            "fuel_moisture": 1.0,
+            "burn_susceptibility": 0.0
+          },
+          {
+            "x": 3,
+            "y": 2,
+            "fuel_load": 0.0,
+            "fuel_moisture": 1.0,
+            "burn_susceptibility": 0.0
+          },
+          {
+            "x": 3,
+            "y": 3,
+            "fuel_load": 0.0,
+            "fuel_moisture": 1.0,
+            "burn_susceptibility": 0.0
+          },
+          {
+            "x": 3,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 4,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 4,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 4,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 4,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 4,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 6,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 6,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 6,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 6,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 6,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 2
+        },
+        "steps": 14,
+        "wind_speed_kmh": 0,
+        "wind_direction_degrees": 0,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 31
+    },
+    {
+      "name": "blocker-diagonal-river-no-corner-cutting",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "blocker-diagonal-river-no-corner-cutting",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 0,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 0,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 0,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 0,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.0,
+            "fuel_moisture": 1.0,
+            "burn_susceptibility": 0.0
+          },
+          {
+            "x": 1,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 1,
+            "fuel_load": 0.0,
+            "fuel_moisture": 1.0,
+            "burn_susceptibility": 0.0
+          },
+          {
+            "x": 2,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 3,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 3,
+            "y": 2,
+            "fuel_load": 0.0,
+            "fuel_moisture": 1.0,
+            "burn_susceptibility": 0.0
+          },
+          {
+            "x": 3,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 3,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 4,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 4,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 4,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 4,
+            "y": 3,
+            "fuel_load": 0.0,
+            "fuel_moisture": 1.0,
+            "burn_susceptibility": 0.0
+          },
+          {
+            "x": 4,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 4,
+            "fuel_load": 0.0,
+            "fuel_moisture": 1.0,
+            "burn_susceptibility": 0.0
+          },
+          {
+            "x": 6,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 6,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 6,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 6,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 6,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 4
+        },
+        "steps": 14,
+        "wind_speed_kmh": 300,
+        "wind_direction_degrees": 270,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 15
+    },
+    {
+      "name": "blocker-diagonal-absent-cells-no-corner-cutting",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "blocker-diagonal-absent-cells-no-corner-cutting",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 0,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 0,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 0,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 0,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 3,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 3,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 3,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 4,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 4,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 4,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 4,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 6,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 6,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 6,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 6,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 6,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 4
+        },
+        "steps": 14,
+        "wind_speed_kmh": 0,
+        "wind_direction_degrees": 0,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 15
+    },
+    {
+      "name": "blocker-diagonal-river-leaks-under-frozen-v1",
+      "request": {
+        "contract_version": "terraflux.compute/v1",
+        "grid_key": "blocker-diagonal-river-leaks-under-frozen-v1",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 0,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 0,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 0,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 0,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.0,
+            "fuel_moisture": 1.0,
+            "burn_susceptibility": 0.0
+          },
+          {
+            "x": 1,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 1,
+            "fuel_load": 0.0,
+            "fuel_moisture": 1.0,
+            "burn_susceptibility": 0.0
+          },
+          {
+            "x": 2,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 3,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 3,
+            "y": 2,
+            "fuel_load": 0.0,
+            "fuel_moisture": 1.0,
+            "burn_susceptibility": 0.0
+          },
+          {
+            "x": 3,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 3,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 4,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 4,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 4,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 4,
+            "y": 3,
+            "fuel_load": 0.0,
+            "fuel_moisture": 1.0,
+            "burn_susceptibility": 0.0
+          },
+          {
+            "x": 4,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 4,
+            "fuel_load": 0.0,
+            "fuel_moisture": 1.0,
+            "burn_susceptibility": 0.0
+          },
+          {
+            "x": 6,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 6,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 6,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 6,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 6,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 4
+        },
+        "steps": 14,
+        "wind_speed_kmh": 0,
+        "wind_direction_degrees": 0,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 30
+    },
+    {
+      "name": "blocker-dry-rock-burns-under-frozen-v1",
+      "request": {
+        "contract_version": "terraflux.compute/v1",
+        "grid_key": "blocker-dry-rock-burns-under-frozen-v1",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 0,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 0,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 0,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 0,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.0,
+            "fuel_moisture": 0.0,
+            "burn_susceptibility": 1.0
+          },
+          {
+            "x": 3,
+            "y": 1,
+            "fuel_load": 0.0,
+            "fuel_moisture": 0.0,
+            "burn_susceptibility": 1.0
+          },
+          {
+            "x": 3,
+            "y": 2,
+            "fuel_load": 0.0,
+            "fuel_moisture": 0.0,
+            "burn_susceptibility": 1.0
+          },
+          {
+            "x": 3,
+            "y": 3,
+            "fuel_load": 0.0,
+            "fuel_moisture": 0.0,
+            "burn_susceptibility": 1.0
+          },
+          {
+            "x": 3,
+            "y": 4,
+            "fuel_load": 0.0,
+            "fuel_moisture": 0.0,
+            "burn_susceptibility": 1.0
+          },
+          {
+            "x": 4,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 4,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 4,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 4,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 4,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 6,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 6,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 6,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 6,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 6,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 2
+        },
+        "steps": 14,
+        "wind_speed_kmh": 0,
+        "wind_direction_degrees": 0,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 35
+    },
+    {
+      "name": "blocker-dry-rock-holds-under-v2",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "blocker-dry-rock-holds-under-v2",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 0,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 0,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 0,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 0,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.0,
+            "fuel_moisture": 0.0,
+            "burn_susceptibility": 1.0
+          },
+          {
+            "x": 3,
+            "y": 1,
+            "fuel_load": 0.0,
+            "fuel_moisture": 0.0,
+            "burn_susceptibility": 1.0
+          },
+          {
+            "x": 3,
+            "y": 2,
+            "fuel_load": 0.0,
+            "fuel_moisture": 0.0,
+            "burn_susceptibility": 1.0
+          },
+          {
+            "x": 3,
+            "y": 3,
+            "fuel_load": 0.0,
+            "fuel_moisture": 0.0,
+            "burn_susceptibility": 1.0
+          },
+          {
+            "x": 3,
+            "y": 4,
+            "fuel_load": 0.0,
+            "fuel_moisture": 0.0,
+            "burn_susceptibility": 1.0
+          },
+          {
+            "x": 4,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 4,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 4,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 4,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 4,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 6,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 6,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 6,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 6,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 6,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 2
+        },
+        "steps": 14,
+        "wind_speed_kmh": 0,
+        "wind_direction_degrees": 0,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 15
+    },
+    {
+      "name": "blocker-weak-break-holds-in-calm",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "blocker-weak-break-holds-in-calm",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 0,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 0,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 0,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 0,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.2,
+            "fuel_moisture": 0.6,
+            "burn_susceptibility": 0.4
+          },
+          {
+            "x": 3,
+            "y": 1,
+            "fuel_load": 0.2,
+            "fuel_moisture": 0.6,
+            "burn_susceptibility": 0.4
+          },
+          {
+            "x": 3,
+            "y": 2,
+            "fuel_load": 0.2,
+            "fuel_moisture": 0.6,
+            "burn_susceptibility": 0.4
+          },
+          {
+            "x": 3,
+            "y": 3,
+            "fuel_load": 0.2,
+            "fuel_moisture": 0.6,
+            "burn_susceptibility": 0.4
+          },
+          {
+            "x": 3,
+            "y": 4,
+            "fuel_load": 0.2,
+            "fuel_moisture": 0.6,
+            "burn_susceptibility": 0.4
+          },
+          {
+            "x": 4,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 4,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 4,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 4,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 4,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 6,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 6,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 6,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 6,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 6,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 2
+        },
+        "steps": 14,
+        "wind_speed_kmh": 0,
+        "wind_direction_degrees": 0,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 15
+    },
+    {
+      "name": "blocker-weak-break-fails-in-tailwind",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "blocker-weak-break-fails-in-tailwind",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 0,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 0,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 0,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 0,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.2,
+            "fuel_moisture": 0.6,
+            "burn_susceptibility": 0.4
+          },
+          {
+            "x": 3,
+            "y": 1,
+            "fuel_load": 0.2,
+            "fuel_moisture": 0.6,
+            "burn_susceptibility": 0.4
+          },
+          {
+            "x": 3,
+            "y": 2,
+            "fuel_load": 0.2,
+            "fuel_moisture": 0.6,
+            "burn_susceptibility": 0.4
+          },
+          {
+            "x": 3,
+            "y": 3,
+            "fuel_load": 0.2,
+            "fuel_moisture": 0.6,
+            "burn_susceptibility": 0.4
+          },
+          {
+            "x": 3,
+            "y": 4,
+            "fuel_load": 0.2,
+            "fuel_moisture": 0.6,
+            "burn_susceptibility": 0.4
+          },
+          {
+            "x": 4,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 4,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 4,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 4,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 4,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 6,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 6,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 6,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 6,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 6,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 2
+        },
+        "steps": 14,
+        "wind_speed_kmh": 80,
+        "wind_direction_degrees": 270,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 35
+    },
+    {
+      "name": "blocker-weak-break-holds-in-headwind",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "blocker-weak-break-holds-in-headwind",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 0,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 0,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 0,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 0,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.2,
+            "fuel_moisture": 0.6,
+            "burn_susceptibility": 0.4
+          },
+          {
+            "x": 3,
+            "y": 1,
+            "fuel_load": 0.2,
+            "fuel_moisture": 0.6,
+            "burn_susceptibility": 0.4
+          },
+          {
+            "x": 3,
+            "y": 2,
+            "fuel_load": 0.2,
+            "fuel_moisture": 0.6,
+            "burn_susceptibility": 0.4
+          },
+          {
+            "x": 3,
+            "y": 3,
+            "fuel_load": 0.2,
+            "fuel_moisture": 0.6,
+            "burn_susceptibility": 0.4
+          },
+          {
+            "x": 3,
+            "y": 4,
+            "fuel_load": 0.2,
+            "fuel_moisture": 0.6,
+            "burn_susceptibility": 0.4
+          },
+          {
+            "x": 4,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 4,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 4,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 4,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 4,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 6,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 6,
+            "y": 1,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 6,
+            "y": 2,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 6,
+            "y": 3,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 6,
+            "y": 4,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 2
+        },
+        "steps": 14,
+        "wind_speed_kmh": 300,
+        "wind_direction_degrees": 90,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 15
+    },
+    {
+      "name": "fill-unmeasured-river-does-not-pull-the-bank",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "fill-unmeasured-river-does-not-pull-the-bank",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 100.0
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 100.0
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.0,
+            "fuel_moisture": 1.0,
+            "burn_susceptibility": 0.0
+          },
+          {
+            "x": 4,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 40.0
+          },
+          {
+            "x": 5,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 40.0
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 8,
+        "wind_speed_kmh": 0,
+        "wind_direction_degrees": 0,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 3
+    },
+    {
+      "name": "fill-measured-road-is-a-valid-hit",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "fill-measured-road-is-a-valid-hit",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 100.0
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 100.0
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.0,
+            "fuel_moisture": 1.0,
+            "burn_susceptibility": 0.0,
+            "elevation_meters": 70.0
+          },
+          {
+            "x": 4,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 40.0
+          },
+          {
+            "x": 5,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6,
+            "elevation_meters": 40.0
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 8,
+        "wind_speed_kmh": 0,
+        "wind_direction_degrees": 0,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 2
+    },
+    {
+      "name": "fill-slope-cannot-carry-fire-over-zero-fuel",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "fill-slope-cannot-carry-fire-over-zero-fuel",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "elevation_meters": 0.0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.0,
+            "fuel_moisture": 0.0,
+            "burn_susceptibility": 1.0
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "elevation_meters": 60.0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.3,
+            "burn_susceptibility": 0.8
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 8,
+        "wind_speed_kmh": 300,
+        "wind_direction_degrees": 270,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 1
     }
   ]
 }
