@@ -99,6 +99,78 @@ void main() {
 }
 )GLSL";
 
+
+constexpr char kFireVertexShader[] = R"GLSL(#version 430 core
+layout(location = 0) in vec3 POSITION;
+layout(location = 1) in vec3 NORMAL;
+layout(std140, binding = 0) uniform Camera {
+  mat4 viewProjection;
+  vec4 fireGrid;
+};
+out vec3 surfaceNormal;
+out float elevation;
+out vec2 localGridMeters;
+void main() {
+  surfaceNormal = NORMAL;
+  elevation = POSITION.y;
+  localGridMeters = vec2(POSITION.x, -POSITION.z);
+  gl_Position = viewProjection * vec4(POSITION, 1.0);
+}
+)GLSL";
+
+constexpr char kFireFragmentShader[] = R"GLSL(#version 430 core
+in vec3 surfaceNormal;
+in float elevation;
+in vec2 localGridMeters;
+layout(std140, binding = 0) uniform Camera {
+  mat4 viewProjection;
+  vec4 fireGrid; // x = cell size, y = width, z = height, w = animation seconds
+};
+layout(std430, binding = 1) readonly buffer FireState { uint fireStates[]; };
+out vec4 fragColor;
+
+void main() {
+  vec3 sun = normalize(vec3(0.45, 0.85, 0.25));
+  float light = 0.30 + 0.70 * max(0.0, dot(normalize(surfaceNormal), sun));
+  vec3 ground = mix(vec3(0.11, 0.33, 0.20), vec3(0.60, 0.55, 0.42),
+                    clamp(elevation / 140.0, 0.0, 1.0)) * light;
+
+  // Each cell contributes a rounded radial footprint, not a square block.
+  // Look up neighboring cell centers so adjacent active fires merge smoothly.
+  // Out-of-grid centers and holes never contribute; rasterization is already
+  // clipped to the real terrain mesh, so no color can appear beyond its edge.
+  vec2 gridPos = localGridMeters / fireGrid.x;
+  ivec2 nearest = ivec2(floor(gridPos + vec2(0.5)));
+  ivec2 dimensions = ivec2(fireGrid.yz);
+  float burn = 0.0, flame = 0.0;
+  for (int dy = -1; dy <= 1; ++dy) {
+    for (int dx = -1; dx <= 1; ++dx) {
+      ivec2 cell = nearest + ivec2(dx, dy);
+      if (cell.x < 0 || cell.y < 0 ||
+          cell.x >= dimensions.x || cell.y >= dimensions.y) continue;
+      uint state = fireStates[cell.y * dimensions.x + cell.x];
+      if (state == 0u || state == 3u) continue;
+      vec2 delta = gridPos - vec2(cell);
+      // Organic boundary distortion is small enough to keep the fire local.
+      float wobble = 0.065 * sin(11.0 * delta.x + 9.0 * delta.y +
+                                  2.4 * fireGrid.w) *
+                                   cos(8.0 * delta.y - 1.5 * fireGrid.w);
+      float radius = length(delta) + wobble;
+      if (state == 2u)
+        flame = max(flame, 1.0 - smoothstep(0.48, 0.83, radius));
+      else if (state == 1u)
+        burn = max(burn, 1.0 - smoothstep(0.55, 0.86, radius));
+    }
+  }
+  ground = mix(ground, vec3(0.13, 0.12, 0.13), 0.93 * burn);
+  float pulse = 0.86 + 0.14 * sin(5.0 * fireGrid.w + gridPos.x * 1.3);
+  vec3 fireColor = mix(vec3(0.79, 0.075, 0.01),
+                       vec3(1.0, 0.46, 0.025), clamp(flame, 0.0, 1.0));
+  ground = mix(ground, fireColor * pulse, flame);
+  fragColor = vec4(ground, 1.0);
+}
+)GLSL";
+
 GLuint compile_shader(const GL& gl, GLenum stage, const char* source) {
   const GLuint shader = gl.CreateShader(stage);
   if (!shader) throw std::runtime_error("glCreateShader failed");
@@ -169,9 +241,30 @@ ShaderLayout reflect_program(const GL& gl, GLuint program, const ShaderLayout& e
                             5, props, 5, nullptr, values);
     const auto name = resource_name(gl, program, GL_UNIFORM_BLOCK,
                                     static_cast<GLuint>(i), values[0]);
-    if (name == "Camera" && values[4] != 64)
+    const auto is_fire = std::any_of(expected.bindings.begin(), expected.bindings.end(),
+        [](const ShaderBinding& binding) {
+          return binding.kind == ShaderResourceKind::StorageBuffer &&
+                 binding.name == "FireState";
+        });
+    if (name == "Camera" && values[4] != (is_fire ? 80 : 64))
       throw std::runtime_error("Camera UBO does not have one std140 mat4");
     actual.bindings.push_back({name, ShaderResourceKind::UniformBuffer,
+                              static_cast<std::uint32_t>(values[1]),
+                              (values[2] ? kVertexStage : 0U) |
+                              (values[3] ? kFragmentStage : 0U)});
+  }
+  gl.GetProgramInterfaceiv(program, GL_SHADER_STORAGE_BLOCK, GL_ACTIVE_RESOURCES, &count);
+  for (GLint i = 0; i < count; ++i) {
+    constexpr GLenum props[] = {
+      GL_NAME_LENGTH, GL_BUFFER_BINDING,
+      GL_REFERENCED_BY_VERTEX_SHADER, GL_REFERENCED_BY_FRAGMENT_SHADER
+    };
+    GLint values[4] = {};
+    gl.GetProgramResourceiv(program, GL_SHADER_STORAGE_BLOCK, static_cast<GLuint>(i),
+                            4, props, 4, nullptr, values);
+    const auto name = resource_name(gl, program, GL_SHADER_STORAGE_BLOCK,
+                                    static_cast<GLuint>(i), values[0]);
+    actual.bindings.push_back({name, ShaderResourceKind::StorageBuffer,
                               static_cast<std::uint32_t>(values[1]),
                               (values[2] ? kVertexStage : 0U) |
                               (values[3] ? kFragmentStage : 0U)});
@@ -185,6 +278,7 @@ GLenum target_for(BufferUsage usage) {
     case BufferUsage::Vertex: return GL_ARRAY_BUFFER;
     case BufferUsage::Index: return GL_ELEMENT_ARRAY_BUFFER;
     case BufferUsage::Uniform: return GL_UNIFORM_BUFFER;
+    case BufferUsage::Storage: return GL_SHADER_STORAGE_BUFFER;
   }
   throw std::invalid_argument("unknown buffer usage");
 }
@@ -265,14 +359,23 @@ void OpenGLRenderDevice::destroy_buffer(BufferHandle handle) {
 
 PipelineHandle OpenGLRenderDevice::create_pipeline(PipelineDesc desc) {
   validate_shader_layout(desc.layout);
+  const bool wildfire = std::any_of(desc.layout.bindings.begin(), desc.layout.bindings.end(),
+      [](const ShaderBinding& binding) {
+        return binding.kind == ShaderResourceKind::StorageBuffer &&
+               binding.name == "FireState";
+      });
   for (const auto& binding : desc.layout.bindings)
-    if (binding.kind != ShaderResourceKind::UniformBuffer)
-      throw std::invalid_argument("terrain OpenGL backend only supports uniform buffers currently");
+    if (binding.kind != ShaderResourceKind::UniformBuffer &&
+        !(wildfire && binding.kind == ShaderResourceKind::StorageBuffer &&
+          binding.name == "FireState"))
+      throw std::invalid_argument("unsupported OpenGL shader resource");
 
   GLuint vertex = 0, fragment = 0, program = 0, vao = 0;
   try {
-    vertex = compile_shader(impl_->gl, GL_VERTEX_SHADER, kVertexShader);
-    fragment = compile_shader(impl_->gl, GL_FRAGMENT_SHADER, kFragmentShader);
+    vertex = compile_shader(impl_->gl, GL_VERTEX_SHADER,
+                            wildfire ? kFireVertexShader : kVertexShader);
+    fragment = compile_shader(impl_->gl, GL_FRAGMENT_SHADER,
+                              wildfire ? kFireFragmentShader : kFragmentShader);
     program = impl_->gl.CreateProgram();
     if (!program) throw std::runtime_error("glCreateProgram failed");
     impl_->gl.AttachShader(program, vertex);
@@ -340,6 +443,9 @@ void OpenGLRenderDevice::draw_indexed(const DrawIndexed& command) {
   }
   for (const auto& bound : command.uniform_buffers)
     impl_->gl.BindBufferBase(GL_UNIFORM_BUFFER, bound.slot, impl_->buffers.at(bound.buffer.id).name);
+  for (const auto& bound : command.storage_buffers)
+    impl_->gl.BindBufferBase(GL_SHADER_STORAGE_BUFFER, bound.slot,
+                             impl_->buffers.at(bound.buffer.id).name);
 
   if (pipeline.desc.depth_test) impl_->gl.Enable(GL_DEPTH_TEST);
   else impl_->gl.Disable(GL_DEPTH_TEST);

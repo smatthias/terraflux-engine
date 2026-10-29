@@ -108,7 +108,9 @@ CameraGeometry camera_geometry(const terraflux::terrain::TerrainMesh& mesh) {
 void update_camera(terraflux::graphics::RenderDevice& device,
                    terraflux::graphics::BufferHandle uniform, int width, int height,
                    const CameraGeometry& camera_geometry,
-                   double yaw, double pitch, double distance) {
+                   double yaw, double pitch, double distance,
+                   double cell_size, std::uint32_t fire_width,
+                   std::uint32_t fire_height, double now) {
   using terraflux::math::Vec3;
   using terraflux::math::Mat4;
   const Vec3 target = camera_geometry.target;
@@ -123,8 +125,12 @@ void update_camera(terraflux::graphics::RenderDevice& device,
       static_cast<double>(width) / static_cast<double>(height), 1.0,
       std::max(12000.0, distance * 8.0));
   const Mat4 vp = proj * view;
-  std::array<float, 16> camera{};
+  std::array<float, 20> camera{};
   for (std::size_t i = 0; i < 16; ++i) camera[i] = static_cast<float>(vp.values[i]);
+  camera[16] = static_cast<float>(cell_size);
+  camera[17] = static_cast<float>(fire_width);
+  camera[18] = static_cast<float>(fire_height);
+  camera[19] = static_cast<float>(now);
   device.update_buffer(uniform, 0, std::as_bytes(std::span(camera)));
 }
 }  // namespace
@@ -150,6 +156,8 @@ int main(int argc, char** argv) {
       if (!cell.elevation_meters && cell.fuel_load > 0) cell.elevation_meters = 0.0;
     const auto mesh = terraflux::terrain::build_terrain_mesh(grid, cell_size);
     auto upload = terraflux::graphics::prepare_terrain_upload(mesh);
+    std::optional<terraflux::replay::FireField> fire_field;
+    if (playback) fire_field.emplace(terraflux::replay::make_fire_field(grid));
     if (upload.indices.empty()) throw std::runtime_error("scenario terrain has no drawable triangles");
     const auto scene_camera = camera_geometry(mesh);
 
@@ -170,10 +178,16 @@ int main(int argc, char** argv) {
     const auto indices = bytes_of(upload.indices);
     const auto vb = device.create_buffer({BufferUsage::Vertex, vertices.size()}, vertices);
     const auto ib = device.create_buffer({BufferUsage::Index, indices.size()}, indices);
-    std::array<float, 16> initial_camera{};
+    std::optional<BufferHandle> fire_buffer;
+    if (fire_field) {
+      const auto fire_bytes = std::as_bytes(std::span(fire_field->states));
+      fire_buffer = device.create_buffer({BufferUsage::Storage, fire_bytes.size()}, fire_bytes);
+    }
+    std::array<float, 20> initial_camera{};
     const auto camera_bytes = std::as_bytes(std::span(initial_camera));
     const auto camera = device.create_buffer({BufferUsage::Uniform, camera_bytes.size()}, camera_bytes);
-    const auto pipeline = device.create_pipeline({terrain_shader_layout(), true});
+    const auto pipeline = device.create_pipeline({
+        playback ? wildfire_shader_layout() : terrain_shader_layout(), true});
 
     double yaw = 0.45, pitch = 0.75, distance = scene_camera.starting_distance;
     double previous_time = glfwGetTime(), last_step_time = previous_time;
@@ -215,8 +229,8 @@ int main(int argc, char** argv) {
           last_step_time = now;
         }
         if (playback_frame != uploaded_frame) {
-          terraflux::replay::apply_frame(mesh, playback->frames[playback_frame], upload);
-          device.update_buffer(vb, 0, bytes_of(upload.vertices));
+          terraflux::replay::apply_frame(playback->frames[playback_frame], *fire_field);
+          device.update_buffer(*fire_buffer, 0, std::as_bytes(std::span(fire_field->states)));
           uploaded_frame = playback_frame;
           const auto& current = playback->frames[playback_frame];
           std::string title = "TerraFlux - " + playback->grid_key +
@@ -251,10 +265,14 @@ int main(int argc, char** argv) {
         if (options.smoke_test) throw std::runtime_error("no framebuffer in smoke test");
         continue;
       }
-      update_camera(device, camera, width, height, scene_camera, yaw, pitch, distance);
+      update_camera(device, camera, width, height, scene_camera, yaw, pitch, distance,
+                    cell_size, fire_field ? fire_field->width : 1,
+                    fire_field ? fire_field->height : 1, now);
       device.clear_frame(width, height);
-      device.draw_indexed({pipeline, vb, ib, 0,
-          static_cast<std::uint32_t>(upload.indices.size()), {{0, camera}}});
+      DrawIndexed command{pipeline, vb, ib, 0,
+          static_cast<std::uint32_t>(upload.indices.size()), {{0, camera}}, {}};
+      if (fire_buffer) command.storage_buffers.push_back({1, *fire_buffer});
+      device.draw_indexed(command);
       glfwSwapBuffers(window.get());
       ++rendered_frames;
       if (options.smoke_test) break;
@@ -262,6 +280,7 @@ int main(int argc, char** argv) {
 
     device.destroy_pipeline(pipeline);
     device.destroy_buffer(camera);
+    if (fire_buffer) device.destroy_buffer(*fire_buffer);
     device.destroy_buffer(ib);
     device.destroy_buffer(vb);
     if (options.smoke_test)

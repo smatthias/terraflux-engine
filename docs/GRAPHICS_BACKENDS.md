@@ -105,3 +105,24 @@ cumulative burned cells. Playback currently loads the complete JSON in memory.
 **Note:** This is a deterministic visualization of the existing simplified
 cellular automaton, not a calibrated wildfire forecast. PS4/PSSL remains
 separate, subject to authorized platform tooling.
+
+## Rounded wildfire fronts and terrain bounds
+
+Fire visualization now uses a separate `FireField` grid packed into an OpenGL
+4.3 shader storage buffer (SSBO), instead of interpolated fire-state vertex
+colors. Each fragment checks a 3x3 neighborhood of cell centers to render
+rounded, blended active-fire and burned footprints. Tiny edge variation and
+color pulsation soften the cellular appearance while preserving **exact
+simulation frames and coordinates**. Holes are marked absent and out-of-grid
+queries are rejected on the CPU; the shader bounds-checks all lookups.
+The rasterized fire surface cannot extend beyond the terrain geometry.
+
+Only the storage buffer is updated for each replay step. The geometry vertex
+and index buffers remain static; shader-lit terrain color is unchanged.
+No visual smoothing modifies the scientific/simulation fire spread model.
+
+The GPU field uses a bounded dense rectangle of at most 4 million cells; very
+wide sparse grids should later be tiled rather than allocating unbounded GPU
+buffers. The OpenGL backend reflects `GL_SHADER_STORAGE_BLOCK` alongside
+vertex attributes and uniform blocks. This API remains a desktop GPU backend;
+the PS4/PSSL shader can later consume the same declared `FireState` layout.

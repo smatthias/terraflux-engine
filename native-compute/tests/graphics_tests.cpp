@@ -98,8 +98,8 @@ void test_create_draw_destroy() {
   const auto vb = device.create_buffer({BufferUsage::Vertex, vertex_bytes.size()}, vertex_bytes);
   const auto ib = device.create_buffer({BufferUsage::Index, index_bytes.size()}, index_bytes);
   const auto pipeline = device.create_pipeline({terrain_shader_layout(), true});
-  device.draw_indexed({pipeline, vb, ib, 0, 6, {}});
-  device.draw_indexed({pipeline, vb, ib, 3, 3, {}});
+  device.draw_indexed({pipeline, vb, ib, 0, 6, {}, {}});
+  device.draw_indexed({pipeline, vb, ib, 3, 3, {}, {}});
   require(device.draw_count() == 2, "valid indexed draws must be recorded");
   require(device.live_buffer_count() == 2 && device.live_pipeline_count() == 1,
           "device must own resources");
@@ -109,7 +109,7 @@ void test_create_draw_destroy() {
   require(device.live_buffer_count() == 0 && device.live_pipeline_count() == 0,
           "resources should be released");
   must_throw([&] { device.destroy_buffer(vb); }, "double destroy must be rejected");
-  must_throw([&] { device.draw_indexed({pipeline, vb, ib, 0, 3, {}}); },
+  must_throw([&] { device.draw_indexed({pipeline, vb, ib, 0, 3, {}, {}}); },
              "stale resource handles must not be valid");
 }
 
@@ -121,16 +121,16 @@ void test_draw_range_checks() {
   auto index_bytes = std::as_bytes(std::span(upload.indices));
   const auto ib = device.create_buffer({BufferUsage::Index, index_bytes.size()}, index_bytes);
   const auto pipeline = device.create_pipeline({terrain_shader_layout(), true});
-  must_throw([&] { device.draw_indexed({pipeline, vb, ib, 3, 6, {}}); },
+  must_throw([&] { device.draw_indexed({pipeline, vb, ib, 3, 6, {}, {}}); },
              "out of range index count must be rejected");
-  must_throw([&] { device.draw_indexed({pipeline, vb, ib, 0, 4, {}}); },
+  must_throw([&] { device.draw_indexed({pipeline, vb, ib, 0, 4, {}, {}}); },
              "draw must consist of full triangles");
-  must_throw([&] { device.draw_indexed({pipeline, ib, vb, 0, 3, {}}); },
+  must_throw([&] { device.draw_indexed({pipeline, ib, vb, 0, 3, {}, {}}); },
              "index/vertex buffer usage mismatch must fail");
   upload.indices[0] = 99;
   auto invalid_bytes = std::as_bytes(std::span(upload.indices));
   const auto bad_ib = device.create_buffer({BufferUsage::Index, invalid_bytes.size()}, invalid_bytes);
-  must_throw([&] { device.draw_indexed({pipeline, vb, bad_ib, 0, 6, {}}); },
+  must_throw([&] { device.draw_indexed({pipeline, vb, bad_ib, 0, 6, {}, {}}); },
              "index referencing missing vertex must be rejected");
 }
 
@@ -160,16 +160,40 @@ void test_uniform_buffer_updates() {
   const auto vb = device.create_buffer({BufferUsage::Vertex, vb_bytes.size()}, vb_bytes);
   const auto ib = device.create_buffer({BufferUsage::Index, ib_bytes.size()}, ib_bytes);
   const auto pipeline = device.create_pipeline({terrain_shader_layout(), true});
-  device.draw_indexed({pipeline, vb, ib, 0, 6, {{0, uniform}}});
+  device.draw_indexed({pipeline, vb, ib, 0, 6, {{0, uniform}}, {}});
   require(device.draw_count() == 1, "camera buffer draw must validate");
-  must_throw([&] { device.draw_indexed({pipeline, vb, ib, 0, 6, {{1, uniform}}}); },
+  must_throw([&] { device.draw_indexed({pipeline, vb, ib, 0, 6, {{1, uniform}}, {}}); },
              "undeclared uniform slot must fail");
-  must_throw([&] { device.draw_indexed({pipeline, vb, ib, 0, 6, {{0, vb}}}); },
+  must_throw([&] { device.draw_indexed({pipeline, vb, ib, 0, 6, {{0, vb}}, {}}); },
              "incorrect uniform buffer usage must fail");
   device.destroy_buffer(uniform);
   must_throw([&] { device.update_buffer(uniform, 0, bytes); }, "destroyed uniform buffer must reject update");
 }
 
+void test_storage_buffer_validation() {
+  ValidatingRenderDevice device;
+  auto layout = wildfire_shader_layout();
+  validate_shader_layout(layout);
+  const std::uint32_t empty[4] = {0,0,0,0};
+  const auto initial = std::as_bytes(std::span(empty));
+  const auto field = device.create_buffer({BufferUsage::Storage, initial.size()}, initial);
+  const auto upload = quad_upload();
+  const auto vb = device.create_buffer(
+      {BufferUsage::Vertex, std::as_bytes(std::span(upload.vertices)).size()},
+      std::as_bytes(std::span(upload.vertices)));
+  const auto ib = device.create_buffer(
+      {BufferUsage::Index, std::as_bytes(std::span(upload.indices)).size()},
+      std::as_bytes(std::span(upload.indices)));
+  const auto pipeline = device.create_pipeline({layout, true});
+  device.draw_indexed({pipeline, vb, ib, 0, 6, {}, {{1, field}}});
+  must_throw([&] { device.draw_indexed({pipeline, vb, ib, 0, 6, {}, {}}); },
+             "missing field storage buffer must be rejected");
+  must_throw([&] { device.draw_indexed({pipeline, vb, ib, 0, 6, {}, {{1, vb}}}); },
+             "vertex buffer cannot be bound as shader storage");
+  must_throw([&] { device.draw_indexed({pipeline, vb, ib, 0, 6, {}, {{2, field}}}); },
+             "storage binding must match shader layout");
+  device.destroy_buffer(field);
+}
 void test_bad_mesh_upload() {
   auto upload = quad_upload();
   terraflux::terrain::TerrainMesh bad;
@@ -197,7 +221,8 @@ int main() {
     test_reject_incomplete_buffers();
     test_bad_mesh_upload();
     test_uniform_buffer_updates();
-    std::cout << "TerraFlux graphics contracts: 9 tests passed\n";
+    test_storage_buffer_validation();
+    std::cout << "TerraFlux graphics contracts: 10 tests passed\n";
   } catch (const std::exception& error) {
     std::cerr << "TerraFlux graphics test failed: " << error.what() << '\n';
     return 1;
