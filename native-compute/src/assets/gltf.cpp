@@ -66,7 +66,7 @@ std::vector<std::uint8_t> decode_base64(const std::string& uri) {
   for(std::size_t i=0;i<source.size();i+=4){
     bool end=i+4==source.size();
     bool pad2=source[i+2]=='=',pad3=source[i+3]=='=';
-    if((pad2||pad3)&&!end || (pad2&&!pad3))
+    if(((pad2 || pad3) && !end) || (pad2 && !pad3))
       throw std::invalid_argument("invalid glTF base64 padding");
     int a=six(source[i]),b=six(source[i+1]);
     int c=pad2?0:six(source[i+2]),d=pad3?0:six(source[i+3]);
@@ -260,7 +260,6 @@ GltfModel import_gltf(const std::string& json_text,
                                   uint(field(attributes,"POSITION"),"POSITION"));
     if(positions.component!=5126 || positions.type!="VEC3")
       throw std::invalid_argument("POSITION must be FLOAT VEC3");
-    const Accessor* ignored=nullptr;(void)ignored;
     const auto has_normals=optional(attributes,"NORMAL")!=nullptr;
     const auto has_uv=optional(attributes,"TEXCOORD_0")!=nullptr;
     Accessor normal{},uv{};

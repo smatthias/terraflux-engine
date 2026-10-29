@@ -1,7 +1,10 @@
 #include <terraflux/assets/gltf.hpp>
 #include <terraflux/graphics/mesh_upload.hpp>
 
+#include <bit>
 #include <cmath>
+#include <cstdint>
+#include <vector>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -81,6 +84,33 @@ void external_buffer_callback(const std::string& json) {
          return {};
        });},"empty callback output rejected");
   require(invoked,"glTF external URI resolver invoked");
+
+  // Supply the same valid binary data with the external-buffer callback.
+  std::vector<std::uint8_t> raw;
+  const auto append_word=[&](std::uint32_t value) {
+    for(int i=0;i<4;++i) raw.push_back(
+        static_cast<std::uint8_t>((value>>(i*8))&255));
+  };
+  for(const float value:std::vector<float>{
+      -.6f,0,-.5f, .6f,0,-.5f, 0,0,.65f, 0,1,0,
+      -.55f,.25f,-.75f, .55f,.25f,-.75f, 0,.3f,.95f, 0,1,0,
+      0,0,1,0,.5f,1,.5f,.5f
+  })append_word(std::bit_cast<std::uint32_t>(value));
+  for(const std::uint16_t value:std::vector<std::uint16_t>{
+      0,2,1,0,1,3, 1,2,3,2,0,3
+  }) {
+    raw.push_back(static_cast<std::uint8_t>(value&255));
+    raw.push_back(static_cast<std::uint8_t>(value>>8));
+  }
+  require(raw.size()==152,"fixture external buffer length");
+  const auto resolved=terraflux::assets::import_gltf(external,
+       [&](const std::string& uri) {
+         require(uri=="geometry.bin","external URI resolved by caller");
+         return raw;
+       });
+  require(resolved.mesh.indices.size()==12 &&
+          resolved.mesh.sections.size()==2,
+          "external glTF .bin produces complete mesh");
 }
 }
 int main(int argc,char** argv) {
