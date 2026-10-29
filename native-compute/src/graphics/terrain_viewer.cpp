@@ -217,6 +217,12 @@ int main(int argc, char** argv) {
     // Their own std140 object UBOs are refreshed every frame (not mesh data).
     struct ImportedGpu {
       BufferHandle vb, ib, object_uniform_left, object_uniform_right;
+      struct GltfInstance {
+        BufferHandle uniform;
+        terraflux::math::Mat4 model;
+      };
+      std::vector<GltfInstance> gltf_instances;
+      bool is_gltf=false;
       struct Section {
         std::uint32_t first=0,count=0;
         TextureHandle albedo{};
@@ -243,6 +249,7 @@ int main(int argc, char** argv) {
       };
       std::map<std::string,LocatedMaterial> material_files;
       terraflux::assets::Mesh object;
+      std::vector<terraflux::math::Mat4> node_worlds;
       if(use_gltf) {
         const auto resolver=[&](const std::string& uri) {
           const auto path=asset_path(source_folder,uri);
@@ -254,6 +261,8 @@ int main(int argc, char** argv) {
         };
         auto asset=terraflux::assets::import_gltf(read_file(source_file),resolver);
         object=std::move(asset.mesh);
+        for(const auto& instance:asset.instances)
+          node_worlds.push_back(instance.world);
         for(const auto& [name,material]:asset.materials)
           material_files.emplace(name,LocatedMaterial{material,source_folder});
       } else {
@@ -280,29 +289,48 @@ int main(int argc, char** argv) {
         max_pos.x = std::max(max_pos.x, p.x); max_pos.y = std::max(max_pos.y, p.y);
         max_pos.z = std::max(max_pos.z, p.z);
       }
+      if(use_gltf) {
+        // Fit the *assembled* scene. Each node's model matrix remains
+        // independent, and local geometry stays in one shared GPU VBO.
+        auto lower=max_pos,upper=min_pos;
+        for(const auto& world:node_worlds) {
+          for(int bx=0;bx<2;++bx)for(int by=0;by<2;++by)for(int bz=0;bz<2;++bz) {
+            const auto p=world.transformPoint({
+                bx?max_pos.x:min_pos.x,by?max_pos.y:min_pos.y,bz?max_pos.z:min_pos.z});
+            lower.x=std::min(lower.x,p.x);lower.y=std::min(lower.y,p.y);
+            lower.z=std::min(lower.z,p.z);
+            upper.x=std::max(upper.x,p.x);upper.y=std::max(upper.y,p.y);
+            upper.z=std::max(upper.z,p.z);
+          }
+        }
+        min_pos=lower;max_pos=upper;
+      }
       const double extent = std::max({max_pos.x-min_pos.x, max_pos.y-min_pos.y,
                                       max_pos.z-min_pos.z});
-      if (!(extent > 0.0)) throw std::runtime_error("OBJ has no spatial extent");
+      if (!(extent > 0.0)) throw std::runtime_error("imported model has no spatial extent");
       const double scale = (scene_camera.starting_distance * 0.095) / extent;
       const auto geometry = prepare_textured_asset_upload(object); // local + UV
       const auto vertex_bytes = bytes_of(geometry.vertices);
       const auto index_bytes = bytes_of(geometry.indices);
       ImportedGpu obj{};
+      obj.is_gltf=use_gltf;
       obj.indices = static_cast<std::uint32_t>(geometry.indices.size());
       obj.separation = extent * 0.95;
       obj.local_center = {(min_pos.x + max_pos.x)*0.5, min_pos.y,
                           (min_pos.z + max_pos.z)*0.5};
-      const auto anchor = obj.scene.create_node("Terrain anchor");
-      obj.left_pivot = obj.scene.create_node("Rotating left", anchor);
-      obj.right_pivot = obj.scene.create_node("Rotating right", anchor);
-      obj.left_mesh = obj.scene.create_node("Mesh left", obj.left_pivot);
-      obj.right_mesh = obj.scene.create_node("Mesh right", obj.right_pivot);
-      obj.scene.set_transform(anchor, {
-          scene_camera.target, {}, {scale,scale,scale}});
-      obj.scene.set_transform(obj.left_mesh, {
-          obj.local_center * -1.0, {}, {1,1,1}});
-      obj.scene.set_transform(obj.right_mesh, {
-          obj.local_center * -1.0, {}, {1,1,1}});
+      if(!use_gltf) {
+        const auto anchor = obj.scene.create_node("Terrain anchor");
+        obj.left_pivot = obj.scene.create_node("Rotating left", anchor);
+        obj.right_pivot = obj.scene.create_node("Rotating right", anchor);
+        obj.left_mesh = obj.scene.create_node("Mesh left", obj.left_pivot);
+        obj.right_mesh = obj.scene.create_node("Mesh right", obj.right_pivot);
+        obj.scene.set_transform(anchor, {
+            scene_camera.target, {}, {scale,scale,scale}});
+        obj.scene.set_transform(obj.left_mesh, {
+            obj.local_center * -1.0, {}, {1,1,1}});
+        obj.scene.set_transform(obj.right_mesh, {
+            obj.local_center * -1.0, {}, {1,1,1}});
+      }
       const auto cached_texture=[&](const std::filesystem::path& source) {
         const std::string key=source.empty()?
              (use_gltf?"__white__":"__checkerboard__"):
@@ -343,14 +371,32 @@ int main(int argc, char** argv) {
       obj.ib = device.create_buffer({BufferUsage::Index,index_bytes.size()},index_bytes);
       const auto init_object = make_object_uniform(terraflux::math::Mat4::identity());
       const auto init_bytes = std::as_bytes(std::span(&init_object,1));
-      obj.object_uniform_left = device.create_buffer(
-          {BufferUsage::Uniform,init_bytes.size()},init_bytes);
-      obj.object_uniform_right = device.create_buffer(
-          {BufferUsage::Uniform,init_bytes.size()},init_bytes);
+      if(use_gltf) {
+        const auto anchor=terraflux::math::Mat4::translation(scene_camera.target) *
+            terraflux::math::Mat4::scaling({scale,scale,scale}) *
+            terraflux::math::Mat4::translation(obj.local_center*-1.0);
+        if(node_worlds.size()>1024)
+          throw std::length_error("glTF viewer supports at most 1024 mesh instances");
+        for(const auto& world:node_worlds) {
+          const auto model=anchor*world;
+          const auto uniform=make_object_uniform(model,{1,1,1});
+          const auto bytes=std::as_bytes(std::span(&uniform,1));
+          const auto handle=device.create_buffer({BufferUsage::Uniform,bytes.size()},bytes);
+          obj.gltf_instances.push_back({handle,model});
+        }
+      }else{
+        obj.object_uniform_left = device.create_buffer(
+            {BufferUsage::Uniform,init_bytes.size()},init_bytes);
+        obj.object_uniform_right = device.create_buffer(
+            {BufferUsage::Uniform,init_bytes.size()},init_bytes);
+      }
       obj.pipeline = device.create_pipeline({textured_object_shader_layout(),true});
       imported = std::move(obj);
       std::cout << (use_gltf?"Imported glTF: ":"Imported OBJ: ") << geometry.indices.size()/3
-                << " triangles, " << imported->sections.size() << " material ranges, " << imported->textures.size() << " textures, two instances sharing geometry\n";
+                << " triangles, " << imported->sections.size() << " material ranges, "
+                << imported->textures.size() << " textures, "
+                << (use_gltf?imported->gltf_instances.size():2)
+                << " instances sharing geometry\n";
     }
 
     double yaw = 0.45, pitch = 0.75, distance = scene_camera.starting_distance;
@@ -437,7 +483,19 @@ int main(int argc, char** argv) {
           static_cast<std::uint32_t>(upload.indices.size()), {{0, camera}}, {}};
       if (fire_buffer) command.storage_buffers.push_back({1, *fire_buffer});
       device.draw_indexed(command);
-      if (imported) {
+      if (imported && imported->is_gltf) {
+        // Preserve the selected glTF hierarchy: each imported node has an
+        // independent world matrix, material ranges share the geometry.
+        for(const auto& instance:imported->gltf_instances) {
+          for(const auto& section:imported->sections) {
+            const auto uniform=make_object_uniform(instance.model,section.base_color);
+            device.update_buffer(instance.uniform,0,std::as_bytes(std::span(&uniform,1)));
+            device.draw_indexed({imported->pipeline,imported->vb,imported->ib,
+                section.first,section.count,{{0,camera},{2,instance.uniform}},
+                {},{{3,section.albedo}}});
+          }
+        }
+      }else if (imported) {
         using terraflux::scene::Transform;
         const double spread = imported->separation;
         // Per-object animation updates only UBO state; geometry remains fixed.
@@ -489,8 +547,13 @@ int main(int argc, char** argv) {
         (void)name;
         device.destroy_texture(handle);
       }
-      device.destroy_buffer(imported->object_uniform_right);
-      device.destroy_buffer(imported->object_uniform_left);
+      if(imported->is_gltf) {
+        for(const auto& instance:imported->gltf_instances)
+          device.destroy_buffer(instance.uniform);
+      }else{
+        device.destroy_buffer(imported->object_uniform_right);
+        device.destroy_buffer(imported->object_uniform_left);
+      }
       device.destroy_buffer(imported->ib);
       device.destroy_buffer(imported->vb);
     }

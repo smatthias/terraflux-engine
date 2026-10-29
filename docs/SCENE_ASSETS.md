@@ -105,3 +105,26 @@ scope: node/scene transforms, GLB, images/PNG/JPEG, skinning, animation, morph
 targets, sparse accessors, compressed extensions and advanced PBR.
 External binary URIs are resolved beneath the glTF file directory; absolute
 and parent-directory paths are disallowed. OBJ and wildfire modes still work.
+
+## glTF scene hierarchy and shared mesh instances
+
+The importer now honors glTF 2.0 scene selection, named parent/child nodes,
+TRS composition (including normalized quaternion rotation), and explicit
+column-major node matrices. It validates parent uniqueness, cycles,
+unresolvable references, singular transforms, and malformed scene roots.
+Inactive-scene nodes are preserved but not drawn.
+
+The viewer renders each active node's composed world matrix with a separate
+model uniform while reusing **one shared GPU mesh and its textures**. It fits
+the assembled model, not an individual primitive, onto the terrain. Unlike the
+OBJ demonstration's two intentionally rotating copies, glTF nodes retain
+their authored relative positions, orientations and scale.
+
+```bash
+./build-gl/terraflux-terrain-viewer --gltf examples/assets/tetra.gltf
+```
+
+The fixture now contains a root assembly with two transformed child mesh
+instances and an unused secondary scene. The importer still supports **one
+underlying mesh** and static hierarchies; multiple independent mesh assets,
+animation, skeletons, morph targets, full glTF materials and images are next.
