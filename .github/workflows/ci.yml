@@ -25,6 +25,9 @@ jobs:
           cmake -S native-compute -B build -DCMAKE_BUILD_TYPE=Release
           cmake --build build --parallel 2
 
+      - name: Run native grid tests
+        run: ctest --test-dir build --output-on-failure
+
       - name: Run Python tests
         env:
           PYTHONPATH: intelligence
