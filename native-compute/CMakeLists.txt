@@ -18,6 +18,7 @@ target_link_libraries(terraflux-compute-runner PRIVATE terraflux_compute)
 add_library(terraflux_graphics STATIC
   src/graphics/render_device.cpp
   src/graphics/terrain_upload.cpp
+  src/replay.cpp
 )
 target_include_directories(terraflux_graphics PUBLIC include)
 target_compile_features(terraflux_graphics PUBLIC cxx_std_20)
@@ -40,6 +41,10 @@ if(BUILD_TESTING)
   add_executable(terraflux-graphics-tests tests/graphics_tests.cpp)
   target_link_libraries(terraflux-graphics-tests PRIVATE terraflux_graphics)
   add_test(NAME terraflux-graphics-tests COMMAND terraflux-graphics-tests)
+
+  add_executable(terraflux-replay-tests tests/replay_tests.cpp)
+  target_link_libraries(terraflux-replay-tests PRIVATE terraflux_graphics)
+  add_test(NAME terraflux-replay-tests COMMAND terraflux-replay-tests)
 endif()
 
 # Opt-in desktop GPU renderer. Headless simulation builds need no graphics packages.
