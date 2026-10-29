@@ -93,6 +93,43 @@ void invalid_scene_hierarchy(const std::string& json) {
   rejects([&]{(void)terraflux::assets::import_gltf(replace_first(
       json,"\"scene\": 0", "\"scene\": 8"));},"invalid selected scene");
 }
+void matrix_and_scene_selection(const std::string& json) {
+  const auto alternate=replace_first(json,"\"scene\": 0","\"scene\": 1");
+  const auto alt=terraflux::assets::import_gltf(alternate);
+  require(alt.instances.size()==1 && alt.instances[0].node_index==3,
+          "secondary glTF scene chooses a different root");
+  const auto origin=alt.instances[0].world.transformPoint({0,0,0});
+  require(std::abs(origin.z-10)<1e-8,"selected alternate scene world transform");
+
+  const auto from=R"JSON("translation": [
+        1.15,
+        0,
+        0
+      ],
+      "scale": [
+        0.75,
+        1.2,
+        0.75
+      ])JSON";
+  const auto to=R"JSON("matrix": [
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        1.5, 2, 0, 1
+      ])JSON";
+  const auto matrix_doc=replace_first(json,from,to);
+  const auto transformed=terraflux::assets::import_gltf(matrix_doc);
+  require(transformed.instances.size()==2,"matrix transform preserves two instances");
+  const auto p=transformed.instances[1].world.transformPoint({0,0,0});
+  require(std::abs(p.x-1.5)<1e-8 && std::abs(p.y-2.0)<1e-8,
+          "column-major explicit glTF matrix transform");
+
+  const auto conflict=replace_first(json,from,
+     std::string(to)+R"JSON(,
+      "translation": [0, 0, 0])JSON");
+  rejects([&]{(void)terraflux::assets::import_gltf(conflict);},
+          "matrix and TRS on one node rejected");
+}
 void external_buffer_callback(const std::string& json) {
   const auto original="data:application/octet-stream;base64,";
   const auto pos=json.find(original);
@@ -155,7 +192,8 @@ int main(int argc,char** argv) {
     valid_mesh(json);
     rejects_invalid_contracts(json);
     invalid_scene_hierarchy(json);
+    matrix_and_scene_selection(json);
     external_buffer_callback(json);
-    std::cout<<"glTF 2.0: 4 test groups passed\n";
+    std::cout<<"glTF 2.0: 5 test groups passed\n";
   }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
 }
