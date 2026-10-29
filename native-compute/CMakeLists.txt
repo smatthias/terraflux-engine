@@ -41,3 +41,18 @@ if(BUILD_TESTING)
   target_link_libraries(terraflux-graphics-tests PRIVATE terraflux_graphics)
   add_test(NAME terraflux-graphics-tests COMMAND terraflux-graphics-tests)
 endif()
+
+# Opt-in desktop GPU renderer. Headless simulation builds need no graphics packages.
+option(TERRAFLUX_WITH_OPENGL "Build desktop OpenGL 4.3 terrain viewer" OFF)
+if(TERRAFLUX_WITH_OPENGL)
+  find_package(glfw3 3.3 REQUIRED)
+  find_package(OpenGL REQUIRED)
+
+  add_library(terraflux_opengl STATIC src/graphics/opengl_device.cpp)
+  target_include_directories(terraflux_opengl PUBLIC include)
+  target_compile_features(terraflux_opengl PUBLIC cxx_std_20)
+  target_link_libraries(terraflux_opengl PUBLIC terraflux_graphics glfw OpenGL::GL)
+
+  add_executable(terraflux-terrain-viewer src/graphics/terrain_viewer.cpp)
+  target_link_libraries(terraflux-terrain-viewer PRIVATE terraflux_opengl)
+endif()
