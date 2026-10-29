@@ -56,6 +56,13 @@ void Scene::set_transform(NodeId node, const Transform& value) {
   nodes_[node].local = value;
 }
 
+void Scene::set_mesh_instance(NodeId node, bool enabled) {
+  check_node(node);
+  if (node == root() && enabled)
+    throw std::invalid_argument("scene root cannot be a drawable mesh instance");
+  nodes_[node].mesh_instance = enabled;
+}
+
 const Node& Scene::get(NodeId node) const {
   check_node(node);
   return nodes_[node];

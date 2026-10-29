@@ -7,6 +7,8 @@ add_library(terraflux_compute STATIC
   src/elevation_fill.cpp
   src/math.cpp
   src/scene.cpp
+  src/scene_io.cpp
+  src/runtime.cpp
   src/assets/obj.cpp
   src/assets/material.cpp
   src/assets/gltf.cpp
@@ -42,6 +44,11 @@ if(BUILD_TESTING)
   add_executable(terraflux-scene-tests tests/scene_tests.cpp)
   target_link_libraries(terraflux-scene-tests PRIVATE terraflux_compute)
   add_test(NAME terraflux-scene-tests COMMAND terraflux-scene-tests)
+
+  add_executable(terraflux-runtime-tests tests/runtime_tests.cpp)
+  target_link_libraries(terraflux-runtime-tests PRIVATE terraflux_compute)
+  add_test(NAME terraflux-runtime-tests COMMAND terraflux-runtime-tests
+      "${CMAKE_SOURCE_DIR}/../examples/scenes/twin_pyramids.json")
 
   add_executable(terraflux-gltf-tests tests/gltf_tests.cpp)
   target_link_libraries(terraflux-gltf-tests PRIVATE terraflux_graphics)

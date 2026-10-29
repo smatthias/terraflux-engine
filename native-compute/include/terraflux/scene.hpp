@@ -26,6 +26,7 @@ struct Node {
   NodeId parent = 0;
   std::string name;
   Transform local{};
+  bool mesh_instance = false; // Draw the scene's primary asset at this node.
 };
 
 class Scene {
@@ -35,6 +36,7 @@ class Scene {
   NodeId create_node(std::string name, NodeId parent = root());
   void set_parent(NodeId node, NodeId parent);
   void set_transform(NodeId node, const Transform& value);
+  void set_mesh_instance(NodeId node, bool enabled);
   const Node& get(NodeId node) const;
   std::size_t size() const { return nodes_.size(); }
   math::Mat4 world_matrix(NodeId node) const;
