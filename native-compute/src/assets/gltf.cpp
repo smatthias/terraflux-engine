@@ -258,7 +258,8 @@ void import_nodes(const Json::Object& doc,GltfModel& result) {
     node.local=node_transform(o);
     if(const auto* mesh=optional(o,"mesh")){
       const auto idx=uint(*mesh,"mesh");
-      if(idx!=0)throw std::invalid_argument("glTF scene references unsupported mesh index");
+      if(idx>=result.meshes.size())
+        throw std::invalid_argument("glTF node references invalid mesh index");
       node.mesh_index=idx;
     }
     if(const auto* children=optional(o,"children")){
@@ -320,7 +321,7 @@ void import_nodes(const Json::Object& doc,GltfModel& result) {
     validate_affine(node.world);
     node.in_scene=true;
     if(node.mesh_index)
-      result.instances.push_back({id,node.world});
+      result.instances.push_back({id,*node.mesh_index,node.world});
     for(auto child:node.children)visit(child,node.world,depth+1);
   };
   for(const auto id:roots){
@@ -348,8 +349,8 @@ GltfModel import_gltf(const std::string& json_text,
   const auto& accessors=array(field(doc,"accessors"));
   const auto& meshes=array(field(doc,"meshes"));
   if(buffers_json.empty() || buffers_json.size()>16 || views_json.size()>100'000 ||
-     accessors.size()>100'000 || meshes.size()!=1)
-    throw std::invalid_argument("glTF subset requires exactly one mesh and 1..16 buffers");
+     accessors.size()>100'000 || meshes.empty() || meshes.size()>128)
+    throw std::invalid_argument("glTF requires 1..128 meshes and 1..16 buffers");
   std::vector<std::vector<std::uint8_t>> buffers;
   buffers.reserve(buffers_json.size());
   for(const auto& entry:buffers_json){
@@ -404,7 +405,11 @@ GltfModel import_gltf(const std::string& json_text,
     result.materials.emplace("gltf-material-"+std::to_string(i),m);
   }
 
-  const auto& mesh_o=object(meshes.front());
+  result.meshes.reserve(meshes.size());
+  std::size_t total_vertices=0,total_indices=0;
+  for(const auto& mesh_entry:meshes) {
+  Mesh mesh;
+  const auto& mesh_o=object(mesh_entry);
   const auto& primitives=array(field(mesh_o,"primitives"));
   if(primitives.empty() || primitives.size()>4096)
     throw std::invalid_argument("glTF has no drawable primitives");
@@ -439,8 +444,12 @@ GltfModel import_gltf(const std::string& json_text,
     }
     if(index_count<3 || index_count%3!=0)
       throw std::invalid_argument("glTF triangles require index count multiple of 3");
-    const auto base=result.mesh.vertices.size();
-    if(base+positions.count>2'000'000 || result.mesh.indices.size()+index_count>6'000'000)
+    const auto base=mesh.vertices.size();
+    total_vertices+=positions.count;
+    total_indices+=index_count;
+    if(base+positions.count>2'000'000 || mesh.indices.size()+index_count>6'000'000 ||
+       total_vertices+positions.count>2'000'000 ||
+       total_indices+index_count>6'000'000)
       throw std::length_error("glTF geometry exceeds resource limit");
     for(std::size_t i=0;i<positions.count;++i) {
       const auto p=vector3(positions,i);
@@ -449,30 +458,30 @@ GltfModel import_gltf(const std::string& json_text,
         n=normalized({value[0],value[1],value[2]});}
       math::Vec2 texture{};
       if(has_uv){const auto value=vector2(uv,i);texture={value[0],value[1]};}
-      result.mesh.vertices.push_back({{p[0],p[1],p[2]},n,texture});
+      mesh.vertices.push_back({{p[0],p[1],p[2]},n,texture});
     }
     for(std::size_t i=0;i<index_count;++i){
       const auto local=indexed?index_value(indices,i):static_cast<std::uint32_t>(i);
       if(local>=positions.count)throw std::invalid_argument("glTF triangle index out of range");
-      result.mesh.indices.push_back(static_cast<std::uint32_t>(base+local));
+      mesh.indices.push_back(static_cast<std::uint32_t>(base+local));
     }
     // Synthesize smooth normals only when absent, using area-weighted faces.
     if(!has_normals){
-      for(std::size_t i=result.mesh.indices.size()-index_count;i<result.mesh.indices.size();i+=3){
-        const auto a=result.mesh.indices[i],b=result.mesh.indices[i+1],
-                   c=result.mesh.indices[i+2];
-        const auto& va=result.mesh.vertices[a].position;
-        const auto& vb=result.mesh.vertices[b].position;
-        const auto& vc=result.mesh.vertices[c].position;
+      for(std::size_t i=mesh.indices.size()-index_count;i<mesh.indices.size();i+=3){
+        const auto a=mesh.indices[i],b=mesh.indices[i+1],
+                   c=mesh.indices[i+2];
+        const auto& va=mesh.vertices[a].position;
+        const auto& vb=mesh.vertices[b].position;
+        const auto& vc=mesh.vertices[c].position;
         const auto cross=(vb-va).cross(vc-va);
         if(!(cross.dot(cross)>1e-24))
           throw std::invalid_argument("degenerate glTF triangle");
-        result.mesh.vertices[a].normal=result.mesh.vertices[a].normal+cross;
-        result.mesh.vertices[b].normal=result.mesh.vertices[b].normal+cross;
-        result.mesh.vertices[c].normal=result.mesh.vertices[c].normal+cross;
+        mesh.vertices[a].normal=mesh.vertices[a].normal+cross;
+        mesh.vertices[b].normal=mesh.vertices[b].normal+cross;
+        mesh.vertices[c].normal=mesh.vertices[c].normal+cross;
       }
-      for(std::size_t i=base;i<result.mesh.vertices.size();++i)
-        result.mesh.vertices[i].normal=normalized(result.mesh.vertices[i].normal);
+      for(std::size_t i=base;i<mesh.vertices.size();++i)
+        mesh.vertices[i].normal=normalized(mesh.vertices[i].normal);
     }
     std::string material_name;
     if(const auto* material=optional(primitive,"material")){
@@ -481,8 +490,10 @@ GltfModel import_gltf(const std::string& json_text,
         throw std::invalid_argument("glTF material index out of range");
       material_name="gltf-material-"+std::to_string(id);
     }
-    result.mesh.sections.push_back({static_cast<std::uint32_t>(
-       result.mesh.indices.size()-index_count),static_cast<std::uint32_t>(index_count),material_name});
+    mesh.sections.push_back({static_cast<std::uint32_t>(
+       mesh.indices.size()-index_count),static_cast<std::uint32_t>(index_count),material_name});
+  }
+  result.meshes.push_back(std::move(mesh));
   }
   import_nodes(doc,result);
   return result;

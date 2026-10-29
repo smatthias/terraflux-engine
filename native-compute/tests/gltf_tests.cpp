@@ -29,17 +29,19 @@ std::string replace_first(std::string text,const std::string& from,
 }
 void valid_mesh(const std::string& json) {
   const auto model=terraflux::assets::import_gltf(json);
-  require(model.mesh.vertices.size()==8 && model.mesh.indices.size()==12,
+  require(model.meshes.size()==1 &&
+          model.meshes.at(0).vertices.size()==8 && model.meshes.at(0).indices.size()==12,
           "two glTF primitives preserve vertex and index data");
-  require(model.mesh.sections.size()==2 && model.mesh.sections[0].index_count==6 &&
-          model.mesh.sections[1].first_index==6,"per-primitive draw ranges");
-  require(model.mesh.sections[0].material_name=="gltf-material-0" &&
-          model.mesh.sections[1].material_name=="gltf-material-1","material mapping");
+  require(model.meshes.at(0).sections.size()==2 && model.meshes.at(0).sections[0].index_count==6 &&
+          model.meshes.at(0).sections[1].first_index==6,"per-primitive draw ranges");
+  require(model.meshes.at(0).sections[0].material_name=="gltf-material-0" &&
+          model.meshes.at(0).sections[1].material_name=="gltf-material-1","material mapping");
   require(std::abs(model.materials.at("gltf-material-0").base_color.y-0.7)<1e-6,
           "PBR baseColorFactor imported");
-  require(std::abs(model.mesh.vertices[2].position.z-0.65)<1e-5 &&
-          std::abs(model.mesh.vertices[2].uv.x-0.5)<1e-6,"position and UV extraction");
-  require(model.nodes.size()==4 && model.instances.size()==2,
+  require(std::abs(model.meshes.at(0).vertices[2].position.z-0.65)<1e-5 &&
+          std::abs(model.meshes.at(0).vertices[2].uv.x-0.5)<1e-6,"position and UV extraction");
+  require(model.nodes.size()==4 && model.instances.size()==2 &&
+          model.instances[0].mesh_index==0 && model.instances[1].mesh_index==0,
           "scene hierarchy instances share one mesh");
   require(model.nodes[0].children.size()==2 && !model.nodes[3].in_scene,
           "scene selects only the root and its descendants");
@@ -52,7 +54,7 @@ void valid_mesh(const std::string& json) {
           "glTF quaternion Y rotation");
   const auto scaled=model.instances[1].world.transformDirection({0,1,0});
   require(std::abs(scaled.y-1.2)<1e-5, "glTF node nonuniform scale");
-  auto gpu=terraflux::graphics::prepare_textured_asset_upload(model.mesh);
+  auto gpu=terraflux::graphics::prepare_textured_asset_upload(model.meshes.at(0));
   require(gpu.vertices.size()==8 && gpu.indices.size()==12,"GPU upload glTF");
 }
 void rejects_invalid_contracts(const std::string& json) {
@@ -130,6 +132,34 @@ void matrix_and_scene_selection(const std::string& json) {
   rejects([&]{(void)terraflux::assets::import_gltf(conflict);},
           "matrix and TRS on one node rejected");
 }
+
+void multiple_distinct_meshes(const std::string& json) {
+  const auto model=terraflux::assets::import_gltf(json);
+  require(model.meshes.size()==2, "two distinct imported meshes");
+  require(model.meshes[0].indices.size()==12 && model.meshes[1].indices.size()==6,
+          "distinct mesh geometry and index buffers");
+  require(model.meshes[0].sections.size()==2 && model.meshes[1].sections.size()==1,
+          "each mesh owns its own material sections");
+  require(model.meshes[0].sections[0].material_name=="gltf-material-0" &&
+          model.meshes[1].sections[0].material_name=="gltf-material-1",
+          "distinct mesh materials");
+  require(model.instances.size()==4, "four selected mesh-node instances");
+  require(model.instances[0].mesh_index==0 && model.instances[1].mesh_index==0 &&
+          model.instances[2].mesh_index==1 && model.instances[3].mesh_index==1,
+          "mesh index preserved through hierarchy");
+  require(model.nodes[3].in_scene==false, "inactive alternate scene excluded");
+  for(const auto& mesh:model.meshes) {
+    const auto gpu=terraflux::graphics::prepare_textured_asset_upload(mesh);
+    require(gpu.vertices.size()==mesh.vertices.size() &&
+            gpu.indices.size()==mesh.indices.size(), "both meshes upload independently");
+  }
+  const auto missing_mesh=replace_first(json,"\"mesh\": 1","\"mesh\": 1000");
+  rejects([&]{(void)terraflux::assets::import_gltf(missing_mesh);},
+          "missing referenced mesh rejected");
+  const auto too_many=replace_first(json,"\"mesh\": 1","\"mesh\": -1");
+  rejects([&]{(void)terraflux::assets::import_gltf(too_many);},
+          "negative mesh index rejected");
+}
 void external_buffer_callback(const std::string& json) {
   const auto original="data:application/octet-stream;base64,";
   const auto pos=json.find(original);
@@ -177,14 +207,14 @@ void external_buffer_callback(const std::string& json) {
          require(uri=="geometry.bin","external URI resolved by caller");
          return raw;
        });
-  require(resolved.mesh.indices.size()==12 &&
-          resolved.mesh.sections.size()==2,
+  require(resolved.meshes.at(0).indices.size()==12 &&
+          resolved.meshes.at(0).sections.size()==2,
           "external glTF .bin produces complete mesh");
 }
 }
 int main(int argc,char** argv) {
   try {
-    if(argc!=2)throw std::invalid_argument("gltf-tests expects fixture path");
+    if(argc!=3)throw std::invalid_argument("gltf-tests expects base and multi-mesh fixture paths");
     std::ifstream file(argv[1],std::ios::binary);
     if(!file)throw std::runtime_error("cannot open glTF test fixture");
     const std::string json((std::istreambuf_iterator<char>(file)),
@@ -194,6 +224,11 @@ int main(int argc,char** argv) {
     invalid_scene_hierarchy(json);
     matrix_and_scene_selection(json);
     external_buffer_callback(json);
-    std::cout<<"glTF 2.0: 5 test groups passed\n";
+    std::ifstream multi_file(argv[2],std::ios::binary);
+    if(!multi_file)throw std::runtime_error("cannot open glTF multi-mesh fixture");
+    const std::string multi_json((std::istreambuf_iterator<char>(multi_file)),
+                                  std::istreambuf_iterator<char>());
+    multiple_distinct_meshes(multi_json);
+    std::cout<<"glTF 2.0: 6 test groups passed\n";
   }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
 }

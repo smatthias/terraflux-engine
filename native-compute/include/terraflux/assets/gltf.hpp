@@ -14,9 +14,9 @@ namespace terraflux::assets {
 // Limited but spec-aligned static glTF 2.0 .gltf importer.
 // Supports embedded base64 binary or externally resolved .bin data, FLOAT
 // POSITION/NORMAL/TEXCOORD_0, 8/16/32-bit indices and TRIANGLES primitives.
-// Combines primitives of mesh[0] into one shared geometry buffer and preserves
-// scene nodes and their world matrices as mesh instances. Current subset has
-// one reusable mesh, but can instantiate it many times in the selected scene.
+// Imports each mesh separately, retaining its primitive material ranges;
+// nodes can instance any imported mesh with shared GPU buffers per mesh.
+
 struct GltfNode {
   std::string name;
   math::Mat4 local = math::Mat4::identity();
@@ -28,10 +28,11 @@ struct GltfNode {
 };
 struct GltfMeshInstance {
   std::uint32_t node_index = 0;
+  std::uint32_t mesh_index = 0;
   math::Mat4 world = math::Mat4::identity();
 };
 struct GltfModel {
-  Mesh mesh;
+  std::vector<Mesh> meshes;
   MaterialLibrary materials;
   std::vector<GltfNode> nodes;
   std::vector<GltfMeshInstance> instances;
