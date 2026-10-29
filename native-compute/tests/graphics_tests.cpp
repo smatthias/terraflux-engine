@@ -2,6 +2,7 @@
 #include <terraflux/graphics/terrain_upload.hpp>
 #include <terraflux/grid.hpp>
 #include <terraflux/terrain_mesh.hpp>
+#include <terraflux/graphics/mesh_upload.hpp>
 #include <array>
 
 #include <cmath>
@@ -219,6 +220,32 @@ void test_object_uniform_bindings() {
              "undeclared object UBO slot rejected");
 }
 
+void test_texture_resources() {
+  ValidatingRenderDevice device;
+  std::array<std::byte,16> pixels{};
+  auto texture=device.create_texture2d({2,2},pixels);
+  require(device.live_texture_count()==1,"texture allocated");
+  must_throw([&]{(void)device.create_texture2d({2,2},
+      std::span<const std::byte>(pixels.data(),8));},"reject incomplete RGBA data");
+  must_throw([&]{(void)device.create_texture2d({5000,2},pixels);},"reject huge texture");
+  const auto upload=quad_upload();
+  const auto vbBytes=std::as_bytes(std::span(upload.vertices));
+  const auto ibBytes=std::as_bytes(std::span(upload.indices));
+  auto vb=device.create_buffer({BufferUsage::Vertex,vbBytes.size()},vbBytes);
+  auto ib=device.create_buffer({BufferUsage::Index,ibBytes.size()},ibBytes);
+  auto pipeline=device.create_pipeline({textured_object_shader_layout(),true});
+  must_throw([&]{device.draw_indexed({pipeline,vb,ib,0,6,{}, {}, {}});},
+             "must bind textured material");
+  device.draw_indexed({pipeline,vb,ib,0,6,{}, {}, {{3,texture}}});
+  require(device.draw_count()==1,"textured draw accepted");
+  must_throw([&]{device.draw_indexed({pipeline,vb,ib,0,6,{}, {},
+             {{3,texture},{3,texture}}});},"duplicate texture slots rejected");
+  must_throw([&]{device.draw_indexed({pipeline,vb,ib,0,6,{}, {},
+             {{1,texture}}});},"undeclared texture unit rejected");
+  device.destroy_texture(texture);
+  must_throw([&]{device.draw_indexed({pipeline,vb,ib,0,6,{}, {},
+             {{3,texture}}});},"stale texture rejected");
+}
 void test_bad_mesh_upload() {
   auto upload = quad_upload();
   terraflux::terrain::TerrainMesh bad;
@@ -248,7 +275,8 @@ int main() {
     test_uniform_buffer_updates();
     test_storage_buffer_validation();
     test_object_uniform_bindings();
-    std::cout << "TerraFlux graphics contracts: 11 tests passed\n";
+    test_texture_resources();
+    std::cout << "TerraFlux graphics contracts: 12 tests passed\n";
   } catch (const std::exception& error) {
     std::cerr << "TerraFlux graphics test failed: " << error.what() << '\n';
     return 1;

@@ -1,6 +1,8 @@
 #include <terraflux/graphics/mesh_upload.hpp>
 
 #include <cmath>
+#include <type_traits>
+#include <cstddef>
 #include <cstddef>
 #include <limits>
 #include <stdexcept>
@@ -72,6 +74,40 @@ TerrainUpload prepare_asset_upload(const assets::Mesh& mesh, const math::Mat4& w
 
 TerrainUpload prepare_asset_upload(const assets::Mesh& mesh) {
   return prepare_asset_upload(mesh, math::Mat4::identity());
+}
+
+TexturedMeshUpload prepare_textured_asset_upload(const assets::Mesh& mesh) {
+  if (mesh.vertices.empty() || mesh.indices.empty())
+    throw std::invalid_argument("textured mesh requires triangles");
+  TexturedMeshUpload out;
+  out.vertices.reserve(mesh.vertices.size());
+  out.indices=mesh.indices;
+  for (const auto& v : mesh.vertices) {
+    out.vertices.push_back({{
+        checked_float(v.position.x),checked_float(v.position.y),checked_float(v.position.z)
+      },{
+        checked_float(v.normal.x),checked_float(v.normal.y),checked_float(v.normal.z)
+      },{
+        checked_float(v.uv.x),checked_float(v.uv.y)
+      }});
+  }
+  for (const auto id : out.indices)
+    if (id>=out.vertices.size())
+      throw std::invalid_argument("textured mesh references missing vertex");
+  return out;
+}
+
+ShaderLayout textured_object_shader_layout() {
+  return {static_cast<std::uint32_t>(sizeof(TexturedGpuVertex)),
+    {{"POSITION",0,VertexFormat::Float3,
+          static_cast<std::uint32_t>(offsetof(TexturedGpuVertex,position))},
+     {"NORMAL",1,VertexFormat::Float3,
+          static_cast<std::uint32_t>(offsetof(TexturedGpuVertex,normal))},
+     {"TEXCOORD",3,VertexFormat::Float2,
+          static_cast<std::uint32_t>(offsetof(TexturedGpuVertex,uv))}},
+    {{"Camera",ShaderResourceKind::UniformBuffer,0,kVertexStage},
+     {"Object",ShaderResourceKind::UniformBuffer,2,kVertexStage},
+     {"AlbedoTexture",ShaderResourceKind::SampledTexture,3,kFragmentStage}}};
 }
 
 ObjectUniform make_object_uniform(const math::Mat4& world, math::Vec3 tint) {

@@ -51,6 +51,14 @@ struct BufferHandle {
   constexpr explicit operator bool() const { return id != 0; }
   constexpr bool operator==(const BufferHandle&) const = default;
 };
+struct TextureHandle {
+  std::uint32_t id=0;
+  constexpr explicit operator bool() const {return id!=0;}
+  constexpr bool operator==(const TextureHandle&) const = default;
+};
+struct TextureDesc {
+  std::uint32_t width=0,height=0; // 4 channels, RGBA8
+};
 struct PipelineHandle {
   std::uint32_t id = 0;
   constexpr explicit operator bool() const { return id != 0; }
@@ -72,6 +80,10 @@ struct StorageBufferBinding {
   BufferHandle buffer;
 };
 
+struct TextureBinding {
+  std::uint32_t slot=0;
+  TextureHandle texture;
+};
 struct DrawIndexed {
   PipelineHandle pipeline;
   BufferHandle vertex_buffer;
@@ -80,6 +92,7 @@ struct DrawIndexed {
   std::uint32_t index_count = 0;
   std::vector<UniformBufferBinding> uniform_buffers;
   std::vector<StorageBufferBinding> storage_buffers;
+  std::vector<TextureBinding> textures{};
 };
 
 // The engine owns this interface; no OpenGL, GLFW, PSSL, or console types
@@ -91,6 +104,9 @@ class RenderDevice {
   virtual void destroy_buffer(BufferHandle handle) = 0;
   virtual void update_buffer(BufferHandle handle, std::size_t offset_bytes,
                              std::span<const std::byte> data) = 0;
+  virtual TextureHandle create_texture2d(TextureDesc desc,
+                                      std::span<const std::byte> rgba8) = 0;
+  virtual void destroy_texture(TextureHandle handle) = 0;
   virtual PipelineHandle create_pipeline(PipelineDesc desc) = 0;
   virtual void destroy_pipeline(PipelineHandle handle) = 0;
   virtual void draw_indexed(const DrawIndexed& command) = 0;
@@ -105,12 +121,15 @@ class ValidatingRenderDevice final : public RenderDevice {
   void destroy_buffer(BufferHandle handle) override;
   void update_buffer(BufferHandle handle, std::size_t offset_bytes,
                      std::span<const std::byte> data) override;
+  TextureHandle create_texture2d(TextureDesc desc, std::span<const std::byte> rgba8) override;
+  void destroy_texture(TextureHandle handle) override;
   PipelineHandle create_pipeline(PipelineDesc desc) override;
   void destroy_pipeline(PipelineHandle handle) override;
   void draw_indexed(const DrawIndexed& command) override;
   std::size_t draw_count() const { return draw_count_; }
   std::size_t live_buffer_count() const { return buffers_.size(); }
   std::size_t live_pipeline_count() const { return pipelines_.size(); }
+  std::size_t live_texture_count() const { return textures_.size(); }
 
  private:
   struct StoredBuffer {
@@ -120,6 +139,7 @@ class ValidatingRenderDevice final : public RenderDevice {
   std::uint32_t next_id_ = 1;
   std::unordered_map<std::uint32_t, StoredBuffer> buffers_;
   std::unordered_map<std::uint32_t, PipelineDesc> pipelines_;
+  std::unordered_map<std::uint32_t, TextureDesc> textures_;
   std::size_t draw_count_ = 0;
   std::uint32_t allocate_id();
 };

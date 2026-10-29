@@ -48,6 +48,24 @@ void object_uniform_and_local_geometry() {
   catch(const std::invalid_argument&){bad=true;}
   require(bad,"out-of-range material tint rejected");
 }
+void upload_textured_uv() {
+  std::istringstream input(R"OBJ(v 0 0 0
+v 1 0 0
+v 0 1 0
+vt 0.2 0.8
+vt 0.7 0.3
+f 1/1 2/2 3/1
+)OBJ");
+  const auto mesh=terraflux::assets::import_obj(input);
+  const auto gpu=terraflux::graphics::prepare_textured_asset_upload(mesh);
+  require(gpu.vertices.size()==3 && gpu.indices.size()==3,"textured mesh triangles");
+  require(near(gpu.vertices[0].uv[0],0.2)&&near(gpu.vertices[1].uv[1],0.3),
+          "OBJ UV survives 32-byte upload");
+  const auto layout=terraflux::graphics::textured_object_shader_layout();
+  terraflux::graphics::validate_shader_layout(layout);
+  require(layout.vertex_stride_bytes==32 && layout.attributes.size()==3 &&
+          layout.bindings.size()==3,"texture shader contract");
+}
 void reject_singular_world_matrix(){
   std::istringstream in("v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n");
   auto mesh=terraflux::assets::import_obj(in);
@@ -62,7 +80,8 @@ int main(){
   try{
     upload_nonuniform_world_transform();
     object_uniform_and_local_geometry();
+    upload_textured_uv();
     reject_singular_world_matrix();
-    std::cout<<"TerraFlux OBJ upload: 3 tests passed\n";
+    std::cout<<"TerraFlux OBJ upload: 4 tests passed\n";
   }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
 }

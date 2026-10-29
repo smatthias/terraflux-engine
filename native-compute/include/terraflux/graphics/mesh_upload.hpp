@@ -4,6 +4,7 @@
 #include <terraflux/graphics/terrain_upload.hpp>
 #include <terraflux/math.hpp>
 #include <array>
+#include <vector>
 
 namespace terraflux::graphics {
 
@@ -22,6 +23,17 @@ struct ObjectUniform {
   std::array<float, 4> tint{};
 };
 static_assert(sizeof(ObjectUniform) == 144);
+
+struct TexturedGpuVertex {
+  float position[3]{},normal[3]{},uv[2]{};
+};
+static_assert(sizeof(TexturedGpuVertex)==8*sizeof(float));
+struct TexturedMeshUpload {
+  std::vector<TexturedGpuVertex> vertices;
+  std::vector<std::uint32_t> indices;
+};
+TexturedMeshUpload prepare_textured_asset_upload(const assets::Mesh& mesh);
+ShaderLayout textured_object_shader_layout();
 
 ObjectUniform make_object_uniform(const math::Mat4& world,
                                   math::Vec3 tint = {0.19, 0.55, 0.94});

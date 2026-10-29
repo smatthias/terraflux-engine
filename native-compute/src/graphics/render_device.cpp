@@ -107,6 +107,22 @@ void ValidatingRenderDevice::destroy_buffer(BufferHandle handle) {
     throw std::invalid_argument("unknown or already destroyed buffer handle");
 }
 
+TextureHandle ValidatingRenderDevice::create_texture2d(
+    TextureDesc desc, std::span<const std::byte> rgba8) {
+  if (!desc.width || !desc.height ||
+      desc.width>4096 || desc.height>4096 ||
+      static_cast<std::uint64_t>(desc.width)*desc.height>4'000'000 ||
+      rgba8.size()!=static_cast<std::size_t>(desc.width)*desc.height*4)
+    throw std::invalid_argument("invalid RGBA8 texture dimensions or pixels");
+  const auto id=allocate_id();
+  textures_.emplace(id,desc);
+  return {id};
+}
+void ValidatingRenderDevice::destroy_texture(TextureHandle handle) {
+  if (textures_.erase(handle.id)!=1)
+    throw std::invalid_argument("unknown or destroyed texture");
+}
+
 PipelineHandle ValidatingRenderDevice::create_pipeline(PipelineDesc desc) {
   validate_shader_layout(desc.layout);
   const auto id = allocate_id();
@@ -178,6 +194,24 @@ void ValidatingRenderDevice::draw_indexed(const DrawIndexed& command) {
     if (required.kind == ShaderResourceKind::StorageBuffer &&
         !storage_slots.contains(required.slot))
       throw std::invalid_argument("required shader storage buffer not bound");
+  std::unordered_set<std::uint32_t> texture_slots;
+  for (const auto& bound : command.textures) {
+    if (!texture_slots.insert(bound.slot).second)
+      throw std::invalid_argument("duplicate texture slot");
+    if (!textures_.contains(bound.texture.id))
+      throw std::invalid_argument("unknown or destroyed texture binding");
+    const auto& declared=pipeline->second.layout.bindings;
+    const auto found=std::find_if(declared.begin(),declared.end(),
+      [&](const ShaderBinding& binding) {
+        return binding.kind==ShaderResourceKind::SampledTexture &&
+               binding.slot==bound.slot;
+      });
+    if (found==declared.end()) throw std::invalid_argument("undeclared texture slot");
+  }
+  for (const auto& binding : pipeline->second.layout.bindings)
+    if (binding.kind==ShaderResourceKind::SampledTexture &&
+        !texture_slots.contains(binding.slot))
+      throw std::invalid_argument("required texture missing");
   ++draw_count_;
 }
 
