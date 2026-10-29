@@ -84,3 +84,24 @@ instances reuse the same GPU texture. `--texture` explicitly overrides maps.
 MTL and texture references must be relative and cannot traverse `..`.
 This is not yet a complete MTL parser: material options and advanced PBR
 channels aren't supported, and PPM P3 remains the initial image format.
+
+## Static glTF 2.0 support (first milestone)
+
+The C++ engine imports .gltf JSON containing embedded base64 or local external
+binary buffers. It verifies bufferView offsets, accessor types and ranges,
+triangle indices, material references and supported primitive modes. A mesh
+with multiple TRIANGLES primitives becomes several GPU material draw ranges.
+PBR baseColorFactor is mapped to the existing diffuse material color and
+rendered over a plain white 1x1 texture.
+
+Run the sample model:
+```bash
+./build-gl/terraflux-terrain-viewer --gltf examples/assets/tetra.gltf
+```
+
+Current scope: one static mesh with FLOAT positions, normals and UVs, and
+unsigned indices. Unsupported features are rejected or explicitly outside
+scope: node/scene transforms, GLB, images/PNG/JPEG, skinning, animation, morph
+targets, sparse accessors, compressed extensions and advanced PBR.
+External binary URIs are resolved beneath the glTF file directory; absolute
+and parent-directory paths are disallowed. OBJ and wildfire modes still work.

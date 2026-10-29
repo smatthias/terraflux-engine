@@ -2,6 +2,7 @@
 #include <terraflux/graphics/terrain_upload.hpp>
 #include <terraflux/graphics/mesh_upload.hpp>
 #include <terraflux/assets/obj.hpp>
+#include <terraflux/assets/gltf.hpp>
 #include <terraflux/assets/material.hpp>
 #include <terraflux/scene.hpp>
 #include <terraflux/grid.hpp>
@@ -61,7 +62,7 @@ std::filesystem::path asset_path(const std::filesystem::path& directory,
 
 struct Options {
   bool smoke_test = false;
-  std::string request_file, response_file, obj_file, texture_file;
+  std::string request_file, response_file, obj_file, gltf_file, texture_file;
 };
 
 Options parse_args(int argc, char** argv) {
@@ -72,14 +73,17 @@ Options parse_args(int argc, char** argv) {
     else if (arg == "--request" && i + 1 < argc) options.request_file = argv[++i];
     else if (arg == "--response" && i + 1 < argc) options.response_file = argv[++i];
     else if (arg == "--obj" && i + 1 < argc) options.obj_file = argv[++i];
+    else if (arg == "--gltf" && i + 1 < argc) options.gltf_file = argv[++i];
     else if (arg == "--texture" && i + 1 < argc) options.texture_file = argv[++i];
     else throw std::invalid_argument(
-        "usage: terraflux-terrain-viewer [--request request.json --response response.json] [--obj model.obj --texture texture.ppm] [--smoke-test]");
+        "usage: terraflux-terrain-viewer [--request request.json --response response.json] [--obj model.obj | --gltf model.gltf] [--texture texture.ppm] [--smoke-test]");
   }
   if (options.request_file.empty() != options.response_file.empty())
     throw std::invalid_argument("--request and --response must be provided together");
-  if (!options.texture_file.empty() && options.obj_file.empty())
-    throw std::invalid_argument("--texture requires --obj");
+  if (!options.obj_file.empty() && !options.gltf_file.empty())
+    throw std::invalid_argument("--obj and --gltf are mutually exclusive");
+  if (!options.texture_file.empty() && options.obj_file.empty() && options.gltf_file.empty())
+    throw std::invalid_argument("--texture requires --obj or --gltf");
   return options;
 }
 
@@ -229,10 +233,44 @@ int main(int argc, char** argv) {
       terraflux::math::Vec3 local_center{};
     };
     std::optional<ImportedGpu> imported;
-    if (!options.obj_file.empty()) {
-      std::ifstream model_file(options.obj_file);
-      if (!model_file) throw std::runtime_error("cannot open OBJ " + options.obj_file);
-      const auto object = terraflux::assets::import_obj(model_file);
+    if (!options.obj_file.empty() || !options.gltf_file.empty()) {
+      const bool use_gltf=!options.gltf_file.empty();
+      const auto source_file=use_gltf?options.gltf_file:options.obj_file;
+      const auto source_folder=std::filesystem::path(source_file).parent_path();
+      struct LocatedMaterial {
+        terraflux::assets::Material material;
+        std::filesystem::path folder;
+      };
+      std::map<std::string,LocatedMaterial> material_files;
+      terraflux::assets::Mesh object;
+      if(use_gltf) {
+        const auto resolver=[&](const std::string& uri) {
+          const auto path=asset_path(source_folder,uri);
+          const auto size=std::filesystem::file_size(path);
+          if(size>64'000'000)
+            throw std::invalid_argument("external glTF buffer larger than 64MB");
+          const auto contents=read_file(path.string());
+          return std::vector<std::uint8_t>(contents.begin(),contents.end());
+        };
+        auto asset=terraflux::assets::import_gltf(read_file(source_file),resolver);
+        object=std::move(asset.mesh);
+        for(const auto& [name,material]:asset.materials)
+          material_files.emplace(name,LocatedMaterial{material,source_folder});
+      } else {
+        std::ifstream model_file(options.obj_file);
+        if (!model_file) throw std::runtime_error("cannot open OBJ "+options.obj_file);
+        object=terraflux::assets::import_obj(model_file);
+        for(const auto& reference:object.material_libraries) {
+          const auto path=asset_path(source_folder,reference);
+          std::ifstream file(path);
+          if(!file) throw std::runtime_error("cannot open material library: "+path.string());
+          const auto parsed=terraflux::assets::parse_mtl(file);
+          for(const auto& [name,material]:parsed)
+            if(!material_files.emplace(name,LocatedMaterial{material,path.parent_path()}).second)
+              throw std::invalid_argument("duplicate material in libraries: "+name);
+        }
+      }
+      if(object.vertices.empty())throw std::invalid_argument("imported mesh has no vertices");
       auto min_pos = object.vertices.front().position;
       auto max_pos = min_pos;
       for (const auto& vertex : object.vertices) {
@@ -247,22 +285,6 @@ int main(int argc, char** argv) {
       if (!(extent > 0.0)) throw std::runtime_error("OBJ has no spatial extent");
       const double scale = (scene_camera.starting_distance * 0.095) / extent;
       const auto geometry = prepare_textured_asset_upload(object); // local + UV
-      struct LocatedMaterial {
-        terraflux::assets::Material material;
-        std::filesystem::path folder;
-      };
-      std::map<std::string,LocatedMaterial> material_files;
-      const auto obj_folder=std::filesystem::path(options.obj_file).parent_path();
-      for(const auto& reference:object.material_libraries) {
-        const auto path=asset_path(obj_folder,reference);
-        std::ifstream file(path);
-        if(!file) throw std::runtime_error("cannot open material library: "+path.string());
-        const auto parsed=terraflux::assets::parse_mtl(file);
-        for(const auto& [name,material]:parsed) {
-          if(!material_files.emplace(name,LocatedMaterial{material,path.parent_path()}).second)
-            throw std::invalid_argument("duplicate material in libraries: "+name);
-        }
-      }
       const auto vertex_bytes = bytes_of(geometry.vertices);
       const auto index_bytes = bytes_of(geometry.indices);
       ImportedGpu obj{};
@@ -282,12 +304,15 @@ int main(int argc, char** argv) {
       obj.scene.set_transform(obj.right_mesh, {
           obj.local_center * -1.0, {}, {1,1,1}});
       const auto cached_texture=[&](const std::filesystem::path& source) {
-        const std::string key=source.empty()?"__checkerboard__":
+        const std::string key=source.empty()?
+             (use_gltf?"__white__":"__checkerboard__"):
                               source.lexically_normal().generic_string();
         if(const auto it=obj.textures.find(key);it!=obj.textures.end())
           return it->second;
         terraflux::assets::ImageRgba8 image;
-        if(source.empty()) image=terraflux::assets::checkerboard_image();
+        if(source.empty())
+          image=use_gltf?terraflux::assets::ImageRgba8{1,1,{255,255,255,255}}:
+                         terraflux::assets::checkerboard_image();
         else {
           std::ifstream file(source);
           if(!file) throw std::runtime_error("cannot open material texture: "+source.string());
@@ -324,7 +349,7 @@ int main(int argc, char** argv) {
           {BufferUsage::Uniform,init_bytes.size()},init_bytes);
       obj.pipeline = device.create_pipeline({textured_object_shader_layout(),true});
       imported = std::move(obj);
-      std::cout << "Imported OBJ: " << geometry.indices.size()/3
+      std::cout << (use_gltf?"Imported glTF: ":"Imported OBJ: ") << geometry.indices.size()/3
                 << " triangles, " << imported->sections.size() << " material ranges, " << imported->textures.size() << " textures, two instances sharing geometry\n";
     }
 
