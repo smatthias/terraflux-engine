@@ -40,7 +40,7 @@ void validate_shader_layout(const ShaderLayout& layout) {
   for (const auto& binding : layout.bindings) {
     if (binding.name.empty() || !binding_names.insert(binding.name).second ||
         binding.stages == 0 || (binding.stages & ~(kVertexStage | kFragmentStage)) != 0)
-      throw std::invalid_argument("invalid shader binding declaration");
+      throw std::invalid_argument("invalid shader binding declaration: " + binding.name + " kind=" + std::to_string(static_cast<int>(binding.kind)) + " slot=" + std::to_string(binding.slot) + " stages=" + std::to_string(binding.stages));
   }
   for (std::size_t a = 0; a < layout.bindings.size(); ++a) {
     for (std::size_t b = a + 1; b < layout.bindings.size(); ++b) {
