@@ -8,6 +8,7 @@ add_library(terraflux_compute STATIC
   src/math.cpp
   src/scene.cpp
   src/assets/obj.cpp
+  src/assets/material.cpp
   src/terrain_mesh.cpp
 )
 target_include_directories(terraflux_compute PUBLIC include)
@@ -40,6 +41,10 @@ if(BUILD_TESTING)
   add_executable(terraflux-scene-tests tests/scene_tests.cpp)
   target_link_libraries(terraflux-scene-tests PRIVATE terraflux_compute)
   add_test(NAME terraflux-scene-tests COMMAND terraflux-scene-tests)
+
+  add_executable(terraflux-material-tests tests/material_tests.cpp)
+  target_link_libraries(terraflux-material-tests PRIVATE terraflux_compute)
+  add_test(NAME terraflux-material-tests COMMAND terraflux-material-tests)
 
   add_executable(terraflux-mesh-upload-tests tests/mesh_upload_tests.cpp)
   target_link_libraries(terraflux-mesh-upload-tests PRIVATE terraflux_graphics)

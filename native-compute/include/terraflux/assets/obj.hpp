@@ -11,6 +11,7 @@ namespace terraflux::assets {
 struct MeshVertex {
   math::Vec3 position;
   math::Vec3 normal;
+  math::Vec2 uv{};
 };
 
 struct Mesh {

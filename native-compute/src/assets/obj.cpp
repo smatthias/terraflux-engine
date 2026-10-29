@@ -36,30 +36,32 @@ std::size_t index(const std::string& token, std::size_t count) {
   return static_cast<std::size_t>(resolved);
 }
 
-struct Corner { std::size_t position; std::size_t normal; bool has_normal; };
-
-Corner corner(const std::string& token, std::size_t position_count, std::size_t normal_count) {
-  const auto slash = token.find('/');
-  if (slash == std::string::npos)
-    return {index(token, position_count), 0, false};
-  const auto second = token.find('/', slash + 1);
-  if (second != std::string::npos && token.find('/', second + 1) != std::string::npos)
+struct Corner {
+  std::size_t position=0, normal=0, texcoord=0;
+  bool has_normal=false, has_texcoord=false;
+};
+Corner corner(const std::string& text, std::size_t positions,
+              std::size_t texcoords, std::size_t normals) {
+  const auto slash=text.find('/');
+  if(slash==std::string::npos) return {index(text,positions),0,0,false,false};
+  const auto second=text.find('/',slash+1);
+  if(second!=std::string::npos && text.find('/',second+1)!=std::string::npos)
     throw std::invalid_argument("invalid OBJ face corner");
-  const auto position = index(token.substr(0, slash), position_count);
-  if (second == std::string::npos) {
-    if (slash + 1 == token.size()) throw std::invalid_argument("empty OBJ texture index");
-    return {position, 0, false};
+  Corner value{};
+  value.position=index(text.substr(0,slash),positions);
+  const auto uv_end=second==std::string::npos ? text.size() : second;
+  const auto uv=text.substr(slash+1,uv_end-slash-1);
+  if(!uv.empty()) {
+    value.texcoord=index(uv,texcoords);
+    value.has_texcoord=true;
+  } else if(second==std::string::npos)
+    throw std::invalid_argument("missing OBJ texture index");
+  if(second!=std::string::npos) {
+    if(second+1==text.size()) throw std::invalid_argument("missing OBJ normal index");
+    value.normal=index(text.substr(second+1),normals);
+    value.has_normal=true;
   }
-  if (second == slash + 1 && second + 1 == token.size())
-    throw std::invalid_argument("empty OBJ normal index");
-  if (second != slash + 1 && second != token.size() - 1) {
-    // Texture coordinates are accepted as syntax, but not yet stored.
-    const auto tex_token = token.substr(slash + 1, second - slash - 1);
-    if (tex_token == "0") throw std::invalid_argument("invalid OBJ texture index");
-  }
-  if (second + 1 == token.size())
-    throw std::invalid_argument("empty OBJ normal index");
-  return {position, index(token.substr(second + 1), normal_count), true};
+  return value;
 }
 
 math::Vec3 normalized_normal(math::Vec3 n) {
@@ -73,6 +75,7 @@ math::Vec3 normalized_normal(math::Vec3 n) {
 Mesh import_obj(std::istream& source) {
   Mesh mesh;
   std::vector<math::Vec3> positions, normals;
+  std::vector<math::Vec2> texcoords;
   std::string line;
   std::size_t line_number = 0;
   constexpr std::size_t kMaxPositions = 2'000'000;
@@ -95,13 +98,19 @@ Mesh import_obj(std::istream& source) {
         if (normals.size() >= kMaxPositions) throw std::length_error("OBJ normal limit exceeded");
         normals.push_back(normalized_normal(parsed));
       }
+    } else if (tag == "vt") {
+      std::string u,v;
+      if (!(row >> u >> v)) throw std::invalid_argument("incomplete OBJ UV");
+      if (texcoords.size() >= kMaxPositions)
+        throw std::length_error("OBJ UV limit exceeded");
+      texcoords.push_back({coordinate(u,line_number),coordinate(v,line_number)});
     } else if (tag == "f") {
       std::vector<Corner> face;
       std::string token;
       while (row >> token) {
         if (token.starts_with('#')) break;
         if (face.size() >= 64) throw std::length_error("OBJ polygon exceeds 64 corners");
-        face.push_back(corner(token, positions.size(), normals.size()));
+        face.push_back(corner(token, positions.size(), texcoords.size(), normals.size()));
       }
       if (face.size() < 3) throw std::invalid_argument("OBJ face needs 3+ corners");
       for (std::size_t i = 1; i + 1 < face.size(); ++i) {
@@ -115,10 +124,11 @@ Mesh import_obj(std::istream& source) {
         for (const auto& entry : triangle) {
           const auto normal = entry.has_normal ? normals[entry.normal] : flat;
           mesh.indices.push_back(static_cast<std::uint32_t>(mesh.vertices.size()));
-          mesh.vertices.push_back({positions[entry.position], normal});
+          mesh.vertices.push_back({positions[entry.position], normal,
+                                   entry.has_texcoord ? texcoords[entry.texcoord] : math::Vec2{}});
         }
       }
-    } else if (tag == "vt" || tag == "o" || tag == "g" || tag == "s" ||
+    } else if (tag == "o" || tag == "g" || tag == "s" ||
                tag == "usemtl" || tag == "mtllib") {
       // Accepted metadata. UVs/materials are reserved for the next phase.
     } else {

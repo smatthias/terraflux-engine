@@ -75,6 +75,29 @@ f -3//-1 -2//-1 -1//-1
   require(mesh.indices.size()==3 && near(mesh.vertices[0].normal.z,-1), "explicit normals");
   require(near(mesh.vertices[2].position.y,1), "relative index");
 }
+void obj_uv_coordinates() {
+  std::istringstream in(R"OBJ(v 0 0 0
+v 1 0 0
+v 0 1 0
+vt 0.25 0.75
+vt 1.0 0.0
+vn 0 0 1
+f 1/1/1 2/2/1 3/1/1
+)OBJ");
+  auto mesh=terraflux::assets::import_obj(in);
+  require(near(mesh.vertices[0].uv.x,0.25) && near(mesh.vertices[0].uv.y,0.75),"UV 1");
+  require(near(mesh.vertices[1].uv.x,1.0),"UV 2");
+  std::istringstream negative(R"OBJ(v 0 0 0
+v 1 0 0
+v 0 1 0
+vt 0 0
+vt 0 1
+vt 1 1
+f -3/-3 -2/-2 -1/-1
+)OBJ");
+  mesh=terraflux::assets::import_obj(negative);
+  require(near(mesh.vertices[1].uv.y,1.0),"negative UV indices");
+}
 void obj_rejection() {
   const auto load=[](const std::string& content) {
     std::istringstream input(content);
@@ -92,9 +115,10 @@ int main() {
     scene_hierarchy();
     scene_rotation_and_validation();
     obj_triangulation();
+    obj_uv_coordinates();
     obj_explicit_normals_and_negative_indices();
     obj_rejection();
-    std::cout << "TerraFlux scene and OBJ importer: 5 tests passed\n";
+    std::cout << "TerraFlux scene and OBJ importer: 6 tests passed\n";
   } catch(const std::exception& e) {
     std::cerr << "Scene/OBJ test failed: " << e.what() << '\n';
     return 1;
