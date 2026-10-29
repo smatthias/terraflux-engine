@@ -57,7 +57,203 @@ PYTHONPATH=intelligence \
 
 ## Simulation contract
 
-Current contract version: `terraflux.compute/v1`.
+Current contract version: `terraflux.compute/v2`.
+
+| Version | Status | Semantics |
+| --- | --- | --- |
+| `terraflux.compute/v1` | accepted (legacy) | fuel, moisture, susceptibility, wind. `elevation_meters` is accepted but **ignored**. |
+| `terraflux.compute/v2` | current | v1 plus `cell_size_meters`, a terrain (slope) term, a signed and stronger wind term, and **meteorological wind direction** (blows *from*); see below. |
+
+A request is evaluated under the semantics of the version it declares and the
+response echoes that version. Stored v1 requests therefore replay bit-for-bit
+on both engines even if they carry elevation data; terrain is opt-in by sending
+`v2`. Requests declaring any other version are rejected. The version was bumped
+because `elevation_meters` was already a legal v1 input and giving it an effect
+would otherwise have silently changed v1 results.
+
+### Environmental drivers: wind and terrain (v2)
+
+Each `GridCell` may carry an optional `elevation_meters`. Under `v2`, when both
+the burning cell and its neighbour have an elevation, the slope angle between
+them is
+
+```
+angle = atan((z_target - z_source) / run) * 180 / pi
+run   = cell_size_meters            (orthogonal neighbour)
+      = cell_size_meters * sqrt(2)  (diagonal neighbour)
+```
+
+The spread score is then
+
+```
+wind_norm  = clamp(wind_speed_kmh / 80, 0, 1)
+wind_cos   = -cos(bearing - wind_direction)           # -1 head wind, 0 cross wind, +1 tail wind
+tail_drive = wind_norm * max( wind_cos, 0)            # 0..1
+head_drive = wind_norm * max(-wind_cos, 0)            # 0..1
+
+wind     = tail_drive * 0.25 - head_drive * 0.10
+uphill   = +0.15  * clamp( angle / 30, 0, 1)
+downhill = -0.075 * clamp(-angle / 30, 0, 1) * (1 - tail_drive)
+
+score = fuel_load * 0.35 + (1 - fuel_moisture) * 0.25 + burn_susceptibility * 0.25
+      + wind + uphill + downhill
+```
+
+Wind and slope are each projected onto the direction of spread and summed,
+the scalar form of the FARSITE / Rothermel wind–slope vector combination.
+
+#### Wind direction convention
+
+Angles are compass degrees, clockwise from the grid's **+y axis = north**:
+`0` = north (+y), `90` = east (+x), `180` = south (−y), `270` = west (−x).
+`bearing` is the compass direction from the burning cell to its neighbour.
+
+| Version | `wind_direction_degrees` means | `270` does |
+| --- | --- | --- |
+| `v2` | **meteorological — the direction the wind blows FROM**, as in weather data (METAR, NOAA, ECMWF) | a west wind: pushes fire east (+x) |
+| `v1` (frozen) | the direction the wind blows *toward* | pushes fire west (−x) |
+
+Real weather feeds can therefore be passed to `v2` unchanged. **Migrating a
+v1 request to v2 is not just a version-string change:** either rotate its
+wind angles by 180° (if they were pre-converted to "blows toward"), or leave
+them as they are if they were raw meteorological values — in which case v1
+was pushing the fire the wrong way. If your grid's +y axis points south (as
+raster row indices usually do), flip `y` before building the request or the
+north–south component will be reversed.
+
+- **Tail wind** is the strongest single environmental term (weight 0.25;
+  v1 used 0.15). On open flat ground it is the only driver and can carry
+  marginal fuel on its own.
+- **Head wind** penalises spread (a backing fire), but modestly (0.10):
+  backing fires are slower than calm fires yet keep spreading in continuous
+  fuel. v1 treated a head wind as neutral.
+- **Cross wind** has no component along the spread path and contributes
+  nothing to that step. v1's unsigned alignment counted it as half a tail
+  wind; v2 does not. Consequently a wind blowing along the contour leaves the
+  uphill bonus fully intact (the fuel above is still preheated from below) and
+  gives no relief to the downhill penalty. Quartering winds are scaled by the
+  cosine.
+- **Uphill** adds up to +0.15 at 30°. Fire climbs fast because the flames tilt
+  into the slope and preheat the fuel above, which then ignites more easily;
+  the field rule of thumb is a doubling of spread rate per ~10°, expressed
+  here linearly in angle. Wind never reduces this bonus; a head wind competes
+  with it additively — a steep slope beats a gale, a gentle slope loses to it.
+- **Downhill is deliberately not the mirror image.** The penalty is half the
+  uphill bonus (−0.075 at −30°) and is scaled by `(1 - tail_drive)`: a strong
+  tail wind tilts the flames back into the fuel and drives fire downhill at
+  essentially full strength. This sits between Rothermel (no downslope effect)
+  and McArthur (symmetric), in line with Sullivan et al. (2014).
+- **Flat** terrain, or a pair of cells where *either* elevation is missing,
+  contributes exactly `0.0`.
+
+#### Partial elevation coverage (engine-side void filling)
+
+DEM data is routinely incomplete (sensor voids, water bodies, tile edges,
+corrupt values), so under `v2` the engine fills elevation voids itself before
+simulating. For each cell without elevation it finds the nearest cell *with*
+elevation along each of the 8 compass rays (passing through other voids,
+stopping at grid holes or after 1024 cells) and combines the hits by inverse
+distance — the same scheme as GDAL's `FillNodata`. The hits are found with
+one linear sweep per direction, so the cost is O(cells) however sparse the
+data; the 1024-cell limit is a quality bound, not a cost bound. This is exact linear interpolation
+across 1-D gaps, exact for an isolated void on a planar slope, gives a water
+body its shore level, and never extrapolates beyond a DEM edge (edge voids
+take the nearest known value). Known cells are never modified. Voids that
+cannot be reached — nothing known at all, cut off by grid holes, or beyond
+the search limit — stay void and are evaluated flat, pair by pair.
+
+**Rays do not cross unmeasured blockers.** A zero-fuel cell without elevation
+(typically a river, which is NoData in many DEMs) ends a ray like a grid
+hole. Otherwise the far bank would pull shoreline cells toward its own
+height — in a gorge this invented a saturated 34° slope on a flat plateau —
+and bias spread along the bank and into any gap in the line. A blocker
+*with* a measured elevation (a road with DEM values) is a legitimate hit.
+Blocker voids themselves are not filled: their elevation is never read.
+Filled values are convex combinations of real measurements, so the fill can
+produce wrong *gradients* but never values outside the range of its inputs,
+and the slope term saturates at ±30° in any case.
+
+Filling can never let fire cross zero fuel: the no-fuel rule and the corner
+rule are evaluated before the score, so a blocker's elevation — measured or
+estimated — never takes part in a spread decision. This is pinned by
+adversarial tests (a 30° climb into a dry blocker in a 300 km/h tail wind).
+
+Why this matters: without filling, a void was flat on both the step into it
+and the step out of it, which acted as a barrier on climbs and a bridge on
+descents (including 2-D routing around a penalised slope). Filling removes
+those artifacts; what remains is genuine information loss — on a planar
+slope with 5 % voids, ~88 % of runs are identical to full coverage, and the
+residual grows with void cluster size and local terrain noise.
+
+**What is recoverable.** Scattered voids recover well down to very low
+coverage: on 300 m-amplitude synthetic hills, 10 % coverage is filled
+completely with ~5 m RMSE, 2 % with ~27 m. A large contiguous hole is filled
+completely too (a plane is recovered exactly, whatever the hole size), but
+only the *trend* across it: features smaller than the hole are gone — a
+300×300-cell hole over 120-cell-wavelength hills fills with ~65 m RMSE. The
+fill is a convex combination of real values, so it never invents peaks or
+pits outside the data range, and the slope term saturates at ±30° anyway.
+
+**Scale.** The contract allows up to 1 000 000 cells (raised from 100 000
+after measurement). Measured on one core, 1M cells, 50 % voids plus a 300²
+hole: native runner ≈ 4 s and ≈ 300 MB; Python reference ≈ 12 s to simulate
+plus ≈ 20 s of Pydantic validation. Memory and output size are dominated by
+the response, which carries the cumulative `burned_cells` list in *every*
+frame: 120 steps × 50k burned cells is already a 21 MB response. For large
+fires over many steps this — not the fill — is the limit (a v3 could emit
+per-frame deltas).
+
+The v2 response reports `metrics.cells_with_elevation` (measured) and
+`metrics.cells_with_filled_elevation` (estimated by the engine); the
+remainder, if any, was evaluated flat. Note that filling does **not** make
+the engine a substitute for a proper DEM: estimated terrain is still a guess.
+
+#### Fire blockers: rivers, rock, roads, fuel breaks
+
+A blocker is a cell with `fuel_load = 0` or a cell absent from the grid.
+Under `v2`:
+
+- Blocker cells never ignite and never appear in `burned_cells`, whatever
+  the wind or slope (v1 lets a dry, "susceptible" zero-fuel cell score 0.5).
+- A one-cell-wide blocker line holds against any wind: there is **no
+  spotting/ember model**, so fire never jumps an unbroken gap. A gap in the
+  line funnels the fire through.
+- **No corner cutting.** A diagonal step is refused when *both* cells at the
+  corner are blockers, so a diagonal river or fire break that is continuous
+  on the ground is continuous in the model. (With plain 8-connectivity, v1
+  leaks through every corner of a diagonal river.) A diagonal step with at
+  least one passable corner is allowed.
+- A *weak* fuel break (low but non-zero fuel) is a normal cell: it holds in
+  calm and against cross or head winds and fails when a tail wind and/or an
+  uphill slope lift its score over the threshold — which is how real breaks
+  fail.
+
+#### Saturation and limits
+
+- Wind saturates at **80 km/h**: 150 km/h and 300 km/h (the contract maximum)
+  behave exactly like 80 km/h. Slope saturates at **±30°**: a 60° cliff or a
+  5 000 m rise per cell behaves like 30°. Both are deliberate and pinned by
+  tests; neither extrapolates.
+- The score is clamped to `[0, 1]`. Perfect fuel (0.85) still spreads into a
+  gale head wind down a cliff (0.675); environment alone never extinguishes
+  maximal fuel. A steep climb (≥ ~45°) outweighs any head wind; a gentle one
+  (≤ ~8°) loses to it.
+- `elevation_meters` must be finite; `inf`/`nan` are rejected by both engines.
+  The engine fills voids (see above) in linear time.
+  The native runner enforces the same wind bounds as the Python contract
+  (0–300 km/h, 0–359.99°) so raw-JSON clients see one contract.
+
+`SpreadRequest.cell_size_meters` (default `30.0`, matching common 30 m DEM
+products) is the horizontal centre-to-centre distance of orthogonal neighbours.
+It only matters when elevations are supplied.
+
+This is a threshold cellular automaton, not a rate-of-spread model: slower
+spread cannot be expressed, only spread / no spread per step, which is why the
+physical rate multipliers are mapped onto bounded additive score terms. Known
+simplifications: wind response is linear in speed (Rothermel's is superlinear)
+and all weights are modelling parameters, not calibrated constants. Constants live in
+`intelligence/app/spread_kernel.py` and `native-compute/include/terraflux/contracts.hpp`
+and must be kept in sync.
 
 ## Project status
 
