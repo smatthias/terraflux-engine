@@ -264,10 +264,21 @@ ShaderLayout reflect_program(const GL& gl, GLuint program, const ShaderLayout& e
                             4, props, 4, nullptr, values);
     const auto name = resource_name(gl, program, GL_SHADER_STORAGE_BLOCK,
                                     static_cast<GLuint>(i), values[0]);
+    std::uint32_t stages = (values[2] ? kVertexStage : 0U) |
+                           (values[3] ? kFragmentStage : 0U);
+    if (stages == 0 && name == "FireState") {
+      // Certain Mesa software drivers report no stage flag on the block
+      // even when it is active. Confirm that the block has active variables;
+      // its known GLSL source is compiled only into the fragment stage.
+      constexpr GLenum active_property[] = {GL_NUM_ACTIVE_VARIABLES};
+      GLint active_variables = 0;
+      gl.GetProgramResourceiv(program, GL_SHADER_STORAGE_BLOCK,
+                              static_cast<GLuint>(i), 1, active_property,
+                              1, nullptr, &active_variables);
+      if (active_variables > 0) stages = kFragmentStage;
+    }
     actual.bindings.push_back({name, ShaderResourceKind::StorageBuffer,
-                              static_cast<std::uint32_t>(values[1]),
-                              (values[2] ? kVertexStage : 0U) |
-                              (values[3] ? kFragmentStage : 0U)});
+                              static_cast<std::uint32_t>(values[1]), stages});
   }
   validate_shader_reflection(expected, actual);
   return actual;
