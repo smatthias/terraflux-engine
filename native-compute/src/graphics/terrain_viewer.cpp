@@ -151,7 +151,7 @@ int main(int argc, char** argv) {
     const auto mesh = terraflux::terrain::build_terrain_mesh(grid, cell_size);
     auto upload = terraflux::graphics::prepare_terrain_upload(mesh);
     if (upload.indices.empty()) throw std::runtime_error("scenario terrain has no drawable triangles");
-    const auto camera_geometry = camera_geometry(mesh);
+    const auto scene_camera = camera_geometry(mesh);
 
     GlfwSession glfw;
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
@@ -175,7 +175,7 @@ int main(int argc, char** argv) {
     const auto camera = device.create_buffer({BufferUsage::Uniform, camera_bytes.size()}, camera_bytes);
     const auto pipeline = device.create_pipeline({terrain_shader_layout(), true});
 
-    double yaw = 0.45, pitch = 0.75, distance = camera_geometry.starting_distance;
+    double yaw = 0.45, pitch = 0.75, distance = scene_camera.starting_distance;
     double previous_time = glfwGetTime(), last_step_time = previous_time;
     std::size_t playback_frame = 0;
     std::size_t uploaded_frame = static_cast<std::size_t>(-1);
@@ -238,12 +238,12 @@ int main(int argc, char** argv) {
       pitch = std::clamp(pitch, 0.1, 1.48);
       if (glfwGetKey(window.get(), GLFW_KEY_EQUAL) == GLFW_PRESS ||
           glfwGetKey(window.get(), GLFW_KEY_KP_ADD) == GLFW_PRESS)
-        distance -= camera_geometry.starting_distance * 0.65 * delta;
+        distance -= scene_camera.starting_distance * 0.65 * delta;
       if (glfwGetKey(window.get(), GLFW_KEY_MINUS) == GLFW_PRESS ||
           glfwGetKey(window.get(), GLFW_KEY_KP_SUBTRACT) == GLFW_PRESS)
-        distance += camera_geometry.starting_distance * 0.65 * delta;
-      distance = std::clamp(distance, camera_geometry.starting_distance * 0.2,
-                           camera_geometry.starting_distance * 4.0);
+        distance += scene_camera.starting_distance * 0.65 * delta;
+      distance = std::clamp(distance, scene_camera.starting_distance * 0.2,
+                           scene_camera.starting_distance * 4.0);
 
       int width = 0, height = 0;
       glfwGetFramebufferSize(window.get(), &width, &height);
@@ -251,7 +251,7 @@ int main(int argc, char** argv) {
         if (options.smoke_test) throw std::runtime_error("no framebuffer in smoke test");
         continue;
       }
-      update_camera(device, camera, width, height, camera_geometry, yaw, pitch, distance);
+      update_camera(device, camera, width, height, scene_camera, yaw, pitch, distance);
       device.clear_frame(width, height);
       device.draw_indexed({pipeline, vb, ib, 0,
           static_cast<std::uint32_t>(upload.indices.size()), {{0, camera}}});
