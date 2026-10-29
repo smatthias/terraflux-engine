@@ -114,3 +114,6 @@ jobs:
           xvfb-run -a -s "-screen 0 1280x800x24" \
             ./build-gl/terraflux-terrain-viewer --smoke-test \
             --obj examples/assets/pyramid.obj --texture examples/assets/checker.ppm
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test \
+            --obj examples/assets/pyramid_materials.obj

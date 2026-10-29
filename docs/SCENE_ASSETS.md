@@ -67,3 +67,20 @@ older `--obj` commands continue to work. P3 decoding handles comments,
 checks pixel counts and limits dimensions; it flips incoming top-first pixels
 to the bottom-first row convention used by OpenGL UVs. PNG, JPEG, normal maps,
 MTL loading, mipmapping and PBR remain future work.
+
+
+## Wavefront material libraries and shared textures
+
+OBJ `mtllib` references and `usemtl` groups are supported. An imported mesh
+preserves indexed draw ranges for each material section; the viewer reads
+`newmtl`, diffuse `Kd`, and plain `map_Kd` texture paths from MTL.
+Textures are cached by normalized source path so all sections and both scene
+instances reuse the same GPU texture. `--texture` explicitly overrides maps.
+
+```bash
+./build-gl/terraflux-terrain-viewer --obj examples/assets/pyramid_materials.obj
+```
+
+MTL and texture references must be relative and cannot traverse `..`.
+This is not yet a complete MTL parser: material options and advanced PBR
+channels aren't supported, and PPM P3 remains the initial image format.

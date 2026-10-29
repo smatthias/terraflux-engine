@@ -137,13 +137,15 @@ Mesh import_obj(std::istream& source) {
       }
     } else if (tag == "mtllib") {
       std::string library;
+      bool found_library=false;
       while (row >> library) {
+        found_library=true;
         if (library.starts_with('#')) break;
         if (mesh.material_libraries.size() >= 16)
           throw std::length_error("too many OBJ material libraries");
         mesh.material_libraries.push_back(library);
       }
-      if (mesh.material_libraries.empty())
+      if (!found_library)
         throw std::invalid_argument("mtllib requires a relative library path");
     } else if (tag == "usemtl") {
       if (!(row >> current_material) || current_material.starts_with('#'))

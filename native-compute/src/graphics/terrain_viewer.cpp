@@ -18,6 +18,9 @@
 #include <cstdint>
 #include <exception>
 #include <fstream>
+#include <filesystem>
+#include <map>
+#include <utility>
 #include <iostream>
 #include <memory>
 #include <optional>
@@ -45,6 +48,15 @@ std::string read_file(const std::string& path) {
   std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
   if (!file.good() && !file.eof()) throw std::runtime_error("error reading " + path);
   return content;
+}
+
+std::filesystem::path asset_path(const std::filesystem::path& directory,
+                                 const std::filesystem::path& reference) {
+  if(reference.empty() || reference.is_absolute() || reference.has_root_path())
+    throw std::invalid_argument("material reference must be a relative path");
+  for(const auto& part:reference)
+    if(part=="..") throw std::invalid_argument("material parent path traversal forbidden");
+  return (directory/reference).lexically_normal();
 }
 
 struct Options {
@@ -201,7 +213,13 @@ int main(int argc, char** argv) {
     // Their own std140 object UBOs are refreshed every frame (not mesh data).
     struct ImportedGpu {
       BufferHandle vb, ib, object_uniform_left, object_uniform_right;
-      TextureHandle albedo;
+      struct Section {
+        std::uint32_t first=0,count=0;
+        TextureHandle albedo{};
+        terraflux::math::Vec3 base_color{1,1,1};
+      };
+      std::map<std::string,TextureHandle> textures;
+      std::vector<Section> sections;
       PipelineHandle pipeline;
       std::uint32_t indices = 0;
       terraflux::scene::Scene scene;
@@ -229,13 +247,21 @@ int main(int argc, char** argv) {
       if (!(extent > 0.0)) throw std::runtime_error("OBJ has no spatial extent");
       const double scale = (scene_camera.starting_distance * 0.095) / extent;
       const auto geometry = prepare_textured_asset_upload(object); // local + UV
-      terraflux::assets::ImageRgba8 image;
-      if (!options.texture_file.empty()) {
-        std::ifstream ppm(options.texture_file);
-        if (!ppm) throw std::runtime_error("cannot open PPM texture " + options.texture_file);
-        image=terraflux::assets::read_ppm_p3(ppm);
-      } else {
-        image=terraflux::assets::checkerboard_image();
+      struct LocatedMaterial {
+        terraflux::assets::Material material;
+        std::filesystem::path folder;
+      };
+      std::map<std::string,LocatedMaterial> material_files;
+      const auto obj_folder=std::filesystem::path(options.obj_file).parent_path();
+      for(const auto& reference:object.material_libraries) {
+        const auto path=asset_path(obj_folder,reference);
+        std::ifstream file(path);
+        if(!file) throw std::runtime_error("cannot open material library: "+path.string());
+        const auto parsed=terraflux::assets::parse_mtl(file);
+        for(const auto& [name,material]:parsed) {
+          if(!material_files.emplace(name,LocatedMaterial{material,path.parent_path()}).second)
+            throw std::invalid_argument("duplicate material in libraries: "+name);
+        }
       }
       const auto vertex_bytes = bytes_of(geometry.vertices);
       const auto index_bytes = bytes_of(geometry.indices);
@@ -255,8 +281,39 @@ int main(int argc, char** argv) {
           obj.local_center * -1.0, {}, {1,1,1}});
       obj.scene.set_transform(obj.right_mesh, {
           obj.local_center * -1.0, {}, {1,1,1}});
-      obj.albedo=device.create_texture2d({image.width,image.height},
-          std::as_bytes(std::span(image.pixels)));
+      const auto cached_texture=[&](const std::filesystem::path& source) {
+        const std::string key=source.empty()?"__checkerboard__":
+                              source.lexically_normal().generic_string();
+        if(const auto it=obj.textures.find(key);it!=obj.textures.end())
+          return it->second;
+        terraflux::assets::ImageRgba8 image;
+        if(source.empty()) image=terraflux::assets::checkerboard_image();
+        else {
+          std::ifstream file(source);
+          if(!file) throw std::runtime_error("cannot open material texture: "+source.string());
+          image=terraflux::assets::read_ppm_p3(file);
+        }
+        const auto bytes=std::as_bytes(std::span(image.pixels));
+        const auto id=device.create_texture2d({image.width,image.height},bytes);
+        obj.textures.emplace(key,id);
+        return id;
+      };
+      for(const auto& section:object.sections) {
+        terraflux::math::Vec3 color{1,1,1};
+        std::filesystem::path texture_file;
+        if(!section.material_name.empty()) {
+          const auto it=material_files.find(section.material_name);
+          if(it==material_files.end())
+            throw std::invalid_argument("unknown OBJ material: "+section.material_name);
+          color=it->second.material.base_color;
+          if(!it->second.material.albedo_map.empty())
+            texture_file=asset_path(it->second.folder,it->second.material.albedo_map);
+        }
+        if(!options.texture_file.empty()) texture_file=options.texture_file;
+        const auto id=cached_texture(texture_file);
+        obj.sections.push_back({section.first_index,section.index_count,id,color});
+      }
+      if(obj.sections.empty()) throw std::runtime_error("OBJ has no material ranges");
       obj.vb = device.create_buffer({BufferUsage::Vertex,vertex_bytes.size()},vertex_bytes);
       obj.ib = device.create_buffer({BufferUsage::Index,index_bytes.size()},index_bytes);
       const auto init_object = make_object_uniform(terraflux::math::Mat4::identity());
@@ -268,7 +325,7 @@ int main(int argc, char** argv) {
       obj.pipeline = device.create_pipeline({textured_object_shader_layout(),true});
       imported = std::move(obj);
       std::cout << "Imported OBJ: " << geometry.indices.size()/3
-                << " triangles, two independent scene objects sharing geometry\n";
+                << " triangles, " << imported->sections.size() << " material ranges, " << imported->textures.size() << " textures, two instances sharing geometry\n";
     }
 
     double yaw = 0.45, pitch = 0.75, distance = scene_camera.starting_distance;
@@ -364,22 +421,25 @@ int main(int argc, char** argv) {
         imported->scene.set_transform(imported->right_pivot,
             Transform{{spread, 0.10*spread*std::sin(now*1.4), 0.0},
                       {0.0, -now*0.43, 0.0}, {1.0,1.0,1.0}});
-        const auto left = make_object_uniform(imported->scene.world_matrix(imported->left_mesh),
-                                              {0.16,0.57,0.95});
-        const auto right = make_object_uniform(imported->scene.world_matrix(imported->right_mesh),
-                                               {0.79,0.43,0.92});
-        device.update_buffer(imported->object_uniform_left, 0,
-                             std::as_bytes(std::span(&left,1)));
-        device.update_buffer(imported->object_uniform_right, 0,
-                             std::as_bytes(std::span(&right,1)));
-        DrawIndexed left_draw{imported->pipeline, imported->vb, imported->ib,
-            0, imported->indices, {{0,camera},{2,imported->object_uniform_left}}, {},
-            {{3,imported->albedo}}};
-        DrawIndexed right_draw{imported->pipeline, imported->vb, imported->ib,
-            0, imported->indices, {{0,camera},{2,imported->object_uniform_right}}, {},
-            {{3,imported->albedo}}};
-        device.draw_indexed(left_draw);
-        device.draw_indexed(right_draw);
+        const auto left_world=imported->scene.world_matrix(imported->left_mesh);
+        const auto right_world=imported->scene.world_matrix(imported->right_mesh);
+        for(const auto& section:imported->sections) {
+          const auto& kd=section.base_color;
+          const auto left=make_object_uniform(left_world,
+              {0.16*kd.x,0.57*kd.y,0.95*kd.z});
+          device.update_buffer(imported->object_uniform_left,0,
+                               std::as_bytes(std::span(&left,1)));
+          device.draw_indexed({imported->pipeline,imported->vb,imported->ib,
+              section.first,section.count,{{0,camera},{2,imported->object_uniform_left}},
+              {},{{3,section.albedo}}});
+          const auto right=make_object_uniform(right_world,
+              {0.79*kd.x,0.43*kd.y,0.92*kd.z});
+          device.update_buffer(imported->object_uniform_right,0,
+                               std::as_bytes(std::span(&right,1)));
+          device.draw_indexed({imported->pipeline,imported->vb,imported->ib,
+              section.first,section.count,{{0,camera},{2,imported->object_uniform_right}},
+              {},{{3,section.albedo}}});
+        }
       }
       if (options.smoke_test && imported) {
         const auto visible_asset = device.count_asset_pixels(width, height);
@@ -400,7 +460,10 @@ int main(int argc, char** argv) {
 
     if (imported) {
       device.destroy_pipeline(imported->pipeline);
-      device.destroy_texture(imported->albedo);
+      for(const auto& [name,handle]:imported->textures) {
+        (void)name;
+        device.destroy_texture(handle);
+      }
       device.destroy_buffer(imported->object_uniform_right);
       device.destroy_buffer(imported->object_uniform_left);
       device.destroy_buffer(imported->ib);
