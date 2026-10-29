@@ -20,6 +20,7 @@ target_link_libraries(terraflux-compute-runner PRIVATE terraflux_compute)
 add_library(terraflux_graphics STATIC
   src/graphics/render_device.cpp
   src/graphics/terrain_upload.cpp
+  src/graphics/mesh_upload.cpp
   src/replay.cpp
 )
 target_include_directories(terraflux_graphics PUBLIC include)
@@ -39,6 +40,10 @@ if(BUILD_TESTING)
   add_executable(terraflux-scene-tests tests/scene_tests.cpp)
   target_link_libraries(terraflux-scene-tests PRIVATE terraflux_compute)
   add_test(NAME terraflux-scene-tests COMMAND terraflux-scene-tests)
+
+  add_executable(terraflux-mesh-upload-tests tests/mesh_upload_tests.cpp)
+  target_link_libraries(terraflux-mesh-upload-tests PRIVATE terraflux_graphics)
+  add_test(NAME terraflux-mesh-upload-tests COMMAND terraflux-mesh-upload-tests)
 
   add_executable(terraflux-terrain-mesh-tests tests/terrain_mesh_tests.cpp)
   target_link_libraries(terraflux-terrain-mesh-tests PRIVATE terraflux_compute)

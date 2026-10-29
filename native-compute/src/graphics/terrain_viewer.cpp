@@ -1,5 +1,8 @@
 #include <terraflux/graphics/opengl_device.hpp>
 #include <terraflux/graphics/terrain_upload.hpp>
+#include <terraflux/graphics/mesh_upload.hpp>
+#include <terraflux/assets/obj.hpp>
+#include <terraflux/scene.hpp>
 #include <terraflux/grid.hpp>
 #include <terraflux/math.hpp>
 #include <terraflux/replay.hpp>
@@ -45,7 +48,7 @@ std::string read_file(const std::string& path) {
 
 struct Options {
   bool smoke_test = false;
-  std::string request_file, response_file;
+  std::string request_file, response_file, obj_file;
 };
 
 Options parse_args(int argc, char** argv) {
@@ -55,8 +58,9 @@ Options parse_args(int argc, char** argv) {
     if (arg == "--smoke-test") options.smoke_test = true;
     else if (arg == "--request" && i + 1 < argc) options.request_file = argv[++i];
     else if (arg == "--response" && i + 1 < argc) options.response_file = argv[++i];
+    else if (arg == "--obj" && i + 1 < argc) options.obj_file = argv[++i];
     else throw std::invalid_argument(
-        "usage: terraflux-terrain-viewer [--request request.json --response response.json] [--smoke-test]");
+        "usage: terraflux-terrain-viewer [--request request.json --response response.json] [--obj model.obj] [--smoke-test]");
   }
   if (options.request_file.empty() != options.response_file.empty())
     throw std::invalid_argument("--request and --response must be provided together");
@@ -189,6 +193,52 @@ int main(int argc, char** argv) {
     const auto pipeline = device.create_pipeline({
         playback ? wildfire_shader_layout() : terrain_shader_layout(), true});
 
+    // A separate scene object is composed with parent/child transforms and
+    // rendered by the same API-neutral mesh format, without a new shader API.
+    struct ImportedGpu {
+      BufferHandle vb;
+      BufferHandle ib;
+      PipelineHandle pipeline;
+      std::uint32_t indices;
+    };
+    std::optional<ImportedGpu> imported;
+    if (!options.obj_file.empty()) {
+      std::ifstream model_file(options.obj_file);
+      if (!model_file) throw std::runtime_error("cannot open OBJ " + options.obj_file);
+      const auto object = terraflux::assets::import_obj(model_file);
+      auto min_pos = object.vertices.front().position;
+      auto max_pos = min_pos;
+      for (const auto& vertex : object.vertices) {
+        const auto& p = vertex.position;
+        min_pos.x=std::min(min_pos.x,p.x); min_pos.y=std::min(min_pos.y,p.y); min_pos.z=std::min(min_pos.z,p.z);
+        max_pos.x=std::max(max_pos.x,p.x); max_pos.y=std::max(max_pos.y,p.y); max_pos.z=std::max(max_pos.z,p.z);
+      }
+      const double longest = std::max({max_pos.x-min_pos.x, max_pos.y-min_pos.y,
+                                       max_pos.z-min_pos.z});
+      if (!(longest > 0.0)) throw std::runtime_error("OBJ has no spatial extent");
+      const double object_scale = (scene_camera.starting_distance * 0.11) / longest;
+      terraflux::scene::Scene scene;
+      const auto anchor = scene.create_node("Terrain center");
+      const auto object_node = scene.create_node("Imported OBJ", anchor);
+      scene.set_transform(anchor, {{
+          scene_camera.target.x, scene_camera.target.y, scene_camera.target.z
+      }, {}, {object_scale, object_scale, object_scale}});
+      scene.set_transform(object_node, {{
+          -(min_pos.x + max_pos.x)*0.5, -min_pos.y,
+          -(min_pos.z + max_pos.z)*0.5
+      }, {}, {1,1,1}});
+      const auto geometry = prepare_asset_upload(object,scene.world_matrix(object_node));
+      const auto asset_vertices=bytes_of(geometry.vertices);
+      const auto asset_indices=bytes_of(geometry.indices);
+      const auto asset_vb=device.create_buffer({BufferUsage::Vertex,asset_vertices.size()},asset_vertices);
+      const auto asset_ib=device.create_buffer({BufferUsage::Index,asset_indices.size()},asset_indices);
+      const auto asset_pipeline=device.create_pipeline({terrain_shader_layout(),true});
+      imported.emplace(ImportedGpu{asset_vb,asset_ib,asset_pipeline,
+                                   static_cast<std::uint32_t>(geometry.indices.size())});
+      std::cout << "Imported OBJ scene object: " << geometry.indices.size()/3
+                << " triangles\\n";
+    }
+
     double yaw = 0.45, pitch = 0.75, distance = scene_camera.starting_distance;
     double previous_time = glfwGetTime(), last_step_time = previous_time;
     std::size_t playback_frame = 0;
@@ -273,6 +323,11 @@ int main(int argc, char** argv) {
           static_cast<std::uint32_t>(upload.indices.size()), {{0, camera}}, {}};
       if (fire_buffer) command.storage_buffers.push_back({1, *fire_buffer});
       device.draw_indexed(command);
+      if (imported) {
+        DrawIndexed object_draw{imported->pipeline, imported->vb, imported->ib,
+            0, imported->indices, {{0,camera}}, {}};
+        device.draw_indexed(object_draw);
+      }
       if (options.smoke_test && playback && !playback->frames[playback_frame].active.empty()) {
         const auto visible_fire = device.count_fire_pixels(width, height);
         if (visible_fire == 0)
@@ -284,6 +339,11 @@ int main(int argc, char** argv) {
       if (options.smoke_test) break;
     }
 
+    if (imported) {
+      device.destroy_pipeline(imported->pipeline);
+      device.destroy_buffer(imported->ib);
+      device.destroy_buffer(imported->vb);
+    }
     device.destroy_pipeline(pipeline);
     device.destroy_buffer(camera);
     if (fire_buffer) device.destroy_buffer(*fire_buffer);
