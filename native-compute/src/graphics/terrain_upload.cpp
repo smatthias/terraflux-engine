@@ -40,6 +40,13 @@ ShaderLayout wildfire_shader_layout() {
   return layout;
 }
 
+ShaderLayout object_shader_layout() {
+  ShaderLayout layout = terrain_shader_layout();
+  layout.attributes.pop_back(); // no FIRE_STATE vertex channel for objects
+  layout.bindings.push_back({"Object", ShaderResourceKind::UniformBuffer, 2, kVertexStage});
+  return layout;
+}
+
 TerrainUpload prepare_terrain_upload(const terrain::TerrainMesh& mesh) {
   TerrainUpload result;
   result.vertices.reserve(mesh.vertices.size());

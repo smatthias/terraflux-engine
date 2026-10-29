@@ -193,13 +193,17 @@ int main(int argc, char** argv) {
     const auto pipeline = device.create_pipeline({
         playback ? wildfire_shader_layout() : terrain_shader_layout(), true});
 
-    // A separate scene object is composed with parent/child transforms and
-    // rendered by the same API-neutral mesh format, without a new shader API.
+    // Two independent world transforms share the original asset VBO/IBO.
+    // Their own std140 object UBOs are refreshed every frame (not mesh data).
     struct ImportedGpu {
-      BufferHandle vb;
-      BufferHandle ib;
+      BufferHandle vb, ib, object_uniform_left, object_uniform_right;
       PipelineHandle pipeline;
-      std::uint32_t indices;
+      std::uint32_t indices = 0;
+      terraflux::scene::Scene scene;
+      terraflux::scene::NodeId left_pivot = 0, right_pivot = 0;
+      terraflux::scene::NodeId left_mesh = 0, right_mesh = 0;
+      double separation = 1.0;
+      terraflux::math::Vec3 local_center{};
     };
     std::optional<ImportedGpu> imported;
     if (!options.obj_file.empty()) {
@@ -210,33 +214,46 @@ int main(int argc, char** argv) {
       auto max_pos = min_pos;
       for (const auto& vertex : object.vertices) {
         const auto& p = vertex.position;
-        min_pos.x=std::min(min_pos.x,p.x); min_pos.y=std::min(min_pos.y,p.y); min_pos.z=std::min(min_pos.z,p.z);
-        max_pos.x=std::max(max_pos.x,p.x); max_pos.y=std::max(max_pos.y,p.y); max_pos.z=std::max(max_pos.z,p.z);
+        min_pos.x = std::min(min_pos.x, p.x); min_pos.y = std::min(min_pos.y, p.y);
+        min_pos.z = std::min(min_pos.z, p.z);
+        max_pos.x = std::max(max_pos.x, p.x); max_pos.y = std::max(max_pos.y, p.y);
+        max_pos.z = std::max(max_pos.z, p.z);
       }
-      const double longest = std::max({max_pos.x-min_pos.x, max_pos.y-min_pos.y,
-                                       max_pos.z-min_pos.z});
-      if (!(longest > 0.0)) throw std::runtime_error("OBJ has no spatial extent");
-      const double object_scale = (scene_camera.starting_distance * 0.11) / longest;
-      terraflux::scene::Scene scene;
-      const auto anchor = scene.create_node("Terrain center");
-      const auto object_node = scene.create_node("Imported OBJ", anchor);
-      scene.set_transform(anchor, {{
-          scene_camera.target.x, scene_camera.target.y, scene_camera.target.z
-      }, {}, {object_scale, object_scale, object_scale}});
-      scene.set_transform(object_node, {{
-          -(min_pos.x + max_pos.x)*0.5, -min_pos.y,
-          -(min_pos.z + max_pos.z)*0.5
-      }, {}, {1,1,1}});
-      const auto geometry = prepare_asset_upload(object,scene.world_matrix(object_node));
-      const auto asset_vertices=bytes_of(geometry.vertices);
-      const auto asset_indices=bytes_of(geometry.indices);
-      const auto asset_vb=device.create_buffer({BufferUsage::Vertex,asset_vertices.size()},asset_vertices);
-      const auto asset_ib=device.create_buffer({BufferUsage::Index,asset_indices.size()},asset_indices);
-      const auto asset_pipeline=device.create_pipeline({terrain_shader_layout(),true});
-      imported.emplace(ImportedGpu{asset_vb,asset_ib,asset_pipeline,
-                                   static_cast<std::uint32_t>(geometry.indices.size())});
-      std::cout << "Imported OBJ scene object: " << geometry.indices.size()/3
-                << " triangles\n";
+      const double extent = std::max({max_pos.x-min_pos.x, max_pos.y-min_pos.y,
+                                      max_pos.z-min_pos.z});
+      if (!(extent > 0.0)) throw std::runtime_error("OBJ has no spatial extent");
+      const double scale = (scene_camera.starting_distance * 0.095) / extent;
+      const auto geometry = prepare_asset_upload(object);  // local-space, uploaded once
+      const auto vertex_bytes = bytes_of(geometry.vertices);
+      const auto index_bytes = bytes_of(geometry.indices);
+      ImportedGpu obj{};
+      obj.indices = static_cast<std::uint32_t>(geometry.indices.size());
+      obj.separation = extent * 0.95;
+      obj.local_center = {(min_pos.x + max_pos.x)*0.5, min_pos.y,
+                          (min_pos.z + max_pos.z)*0.5};
+      const auto anchor = obj.scene.create_node("Terrain anchor");
+      obj.left_pivot = obj.scene.create_node("Rotating left", anchor);
+      obj.right_pivot = obj.scene.create_node("Rotating right", anchor);
+      obj.left_mesh = obj.scene.create_node("Mesh left", obj.left_pivot);
+      obj.right_mesh = obj.scene.create_node("Mesh right", obj.right_pivot);
+      obj.scene.set_transform(anchor, {
+          scene_camera.target, {}, {scale,scale,scale}});
+      obj.scene.set_transform(obj.left_mesh, {
+          obj.local_center * -1.0, {}, {1,1,1}});
+      obj.scene.set_transform(obj.right_mesh, {
+          obj.local_center * -1.0, {}, {1,1,1}});
+      obj.vb = device.create_buffer({BufferUsage::Vertex,vertex_bytes.size()},vertex_bytes);
+      obj.ib = device.create_buffer({BufferUsage::Index,index_bytes.size()},index_bytes);
+      const auto init_object = make_object_uniform(terraflux::math::Mat4::identity());
+      const auto init_bytes = std::as_bytes(std::span(&init_object,1));
+      obj.object_uniform_left = device.create_buffer(
+          {BufferUsage::Uniform,init_bytes.size()},init_bytes);
+      obj.object_uniform_right = device.create_buffer(
+          {BufferUsage::Uniform,init_bytes.size()},init_bytes);
+      obj.pipeline = device.create_pipeline({object_shader_layout(),true});
+      imported = std::move(obj);
+      std::cout << "Imported OBJ: " << geometry.indices.size()/3
+                << " triangles, two independent scene objects sharing geometry\n";
     }
 
     double yaw = 0.45, pitch = 0.75, distance = scene_camera.starting_distance;
@@ -324,9 +341,28 @@ int main(int argc, char** argv) {
       if (fire_buffer) command.storage_buffers.push_back({1, *fire_buffer});
       device.draw_indexed(command);
       if (imported) {
-        DrawIndexed object_draw{imported->pipeline, imported->vb, imported->ib,
-            0, imported->indices, {{0,camera}}, {}};
-        device.draw_indexed(object_draw);
+        using terraflux::scene::Transform;
+        const double spread = imported->separation;
+        // Per-object animation updates only UBO state; geometry remains fixed.
+        imported->scene.set_transform(imported->left_pivot,
+            Transform{{-spread, 0.0, 0.0}, {0.0, now*0.7, 0.0}, {1.0,1.0,1.0}});
+        imported->scene.set_transform(imported->right_pivot,
+            Transform{{spread, 0.10*spread*std::sin(now*1.4), 0.0},
+                      {0.0, -now*0.43, 0.0}, {1.0,1.0,1.0}});
+        const auto left = make_object_uniform(imported->scene.world_matrix(imported->left_mesh),
+                                              {0.16,0.57,0.95});
+        const auto right = make_object_uniform(imported->scene.world_matrix(imported->right_mesh),
+                                               {0.79,0.43,0.92});
+        device.update_buffer(imported->object_uniform_left, 0,
+                             std::as_bytes(std::span(&left,1)));
+        device.update_buffer(imported->object_uniform_right, 0,
+                             std::as_bytes(std::span(&right,1)));
+        DrawIndexed left_draw{imported->pipeline, imported->vb, imported->ib,
+            0, imported->indices, {{0,camera},{2,imported->object_uniform_left}}, {}};
+        DrawIndexed right_draw{imported->pipeline, imported->vb, imported->ib,
+            0, imported->indices, {{0,camera},{2,imported->object_uniform_right}}, {}};
+        device.draw_indexed(left_draw);
+        device.draw_indexed(right_draw);
       }
       if (options.smoke_test && playback && !playback->frames[playback_frame].active.empty()) {
         const auto visible_fire = device.count_fire_pixels(width, height);
@@ -341,6 +377,8 @@ int main(int argc, char** argv) {
 
     if (imported) {
       device.destroy_pipeline(imported->pipeline);
+      device.destroy_buffer(imported->object_uniform_right);
+      device.destroy_buffer(imported->object_uniform_left);
       device.destroy_buffer(imported->ib);
       device.destroy_buffer(imported->vb);
     }

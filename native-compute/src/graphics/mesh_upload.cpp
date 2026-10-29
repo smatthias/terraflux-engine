@@ -70,4 +70,27 @@ TerrainUpload prepare_asset_upload(const assets::Mesh& mesh, const math::Mat4& w
   return output;
 }
 
+TerrainUpload prepare_asset_upload(const assets::Mesh& mesh) {
+  return prepare_asset_upload(mesh, math::Mat4::identity());
+}
+
+ObjectUniform make_object_uniform(const math::Mat4& world, math::Vec3 tint) {
+  const auto normal = normal_matrix(world);
+  ObjectUniform out;
+  for (std::size_t i = 0; i < 16; ++i)
+    out.model[i] = checked_float(world.values[i]);
+  out.normal_matrix = {};
+  for (int i = 0; i < 4; ++i) out.normal_matrix[i*4+i] = 1.0f;
+  for (int column = 0; column < 3; ++column) {
+    for (int row = 0; row < 3; ++row)
+      out.normal_matrix[column*4+row] =
+          checked_float(normal.c[row][column] / normal.determinant);
+  }
+  for (double component : {tint.x, tint.y, tint.z})
+    if (!(component >= 0.0 && component <= 1.0) || !std::isfinite(component))
+      throw std::invalid_argument("material tint must be finite and within [0, 1]");
+  out.tint = {checked_float(tint.x), checked_float(tint.y), checked_float(tint.z), 1.0f};
+  return out;
+}
+
 }  // namespace terraflux::graphics

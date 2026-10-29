@@ -23,6 +23,7 @@ struct TerrainUpload {
 
 ShaderLayout terrain_shader_layout();
 ShaderLayout wildfire_shader_layout();
+ShaderLayout object_shader_layout();
 TerrainUpload prepare_terrain_upload(const terrain::TerrainMesh& mesh);
 
 }  // namespace terraflux::graphics

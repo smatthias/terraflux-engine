@@ -172,6 +172,36 @@ void main() {
 }
 )GLSL";
 
+
+constexpr char kObjectVertexShader[] = R"GLSL(#version 430 core
+layout(location = 0) in vec3 POSITION;
+layout(location = 1) in vec3 NORMAL;
+layout(std140, binding = 0) uniform Camera { mat4 viewProjection; };
+layout(std140, binding = 2) uniform Object {
+  mat4 model;
+  mat4 normalMatrix;
+  vec4 tint;
+};
+out vec3 surfaceNormal;
+out vec3 surfaceTint;
+void main() {
+  surfaceNormal = normalize(mat3(normalMatrix) * NORMAL);
+  surfaceTint = tint.rgb;
+  gl_Position = viewProjection * model * vec4(POSITION, 1.0);
+}
+)GLSL";
+
+constexpr char kObjectFragmentShader[] = R"GLSL(#version 430 core
+in vec3 surfaceNormal;
+in vec3 surfaceTint;
+out vec4 fragColor;
+void main() {
+  vec3 sunlight = normalize(vec3(0.45, 0.85, 0.25));
+  float shade = 0.28 + 0.72 * max(dot(normalize(surfaceNormal), sunlight), 0.0);
+  fragColor = vec4(surfaceTint * shade, 1.0);
+}
+)GLSL";
+
 GLuint compile_shader(const GL& gl, GLenum stage, const char* source) {
   const GLuint shader = gl.CreateShader(stage);
   if (!shader) throw std::runtime_error("glCreateShader failed");
@@ -248,7 +278,9 @@ ShaderLayout reflect_program(const GL& gl, GLuint program, const ShaderLayout& e
                  binding.name == "FireState";
         });
     if (name == "Camera" && values[4] != (is_fire ? 80 : 64))
-      throw std::runtime_error("Camera UBO does not have one std140 mat4");
+      throw std::runtime_error("Camera UBO does not match expected std140 size");
+    if (name == "Object" && values[4] != 144)
+      throw std::runtime_error("Object UBO must contain model, normalMatrix and tint");
     actual.bindings.push_back({name, ShaderResourceKind::UniformBuffer,
                               static_cast<std::uint32_t>(values[1]),
                               (values[2] ? kVertexStage : 0U) |
@@ -376,6 +408,13 @@ PipelineHandle OpenGLRenderDevice::create_pipeline(PipelineDesc desc) {
         return binding.kind == ShaderResourceKind::StorageBuffer &&
                binding.name == "FireState";
       });
+  const bool object = std::any_of(desc.layout.bindings.begin(), desc.layout.bindings.end(),
+      [](const ShaderBinding& binding) {
+        return binding.kind == ShaderResourceKind::UniformBuffer &&
+               binding.name == "Object" && binding.slot == 2;
+      });
+  if (object && wildfire)
+    throw std::invalid_argument("object and fire shaders are separate pipelines");
   for (const auto& binding : desc.layout.bindings)
     if (binding.kind != ShaderResourceKind::UniformBuffer &&
         !(wildfire && binding.kind == ShaderResourceKind::StorageBuffer &&
@@ -385,9 +424,11 @@ PipelineHandle OpenGLRenderDevice::create_pipeline(PipelineDesc desc) {
   GLuint vertex = 0, fragment = 0, program = 0, vao = 0;
   try {
     vertex = compile_shader(impl_->gl, GL_VERTEX_SHADER,
-                            wildfire ? kFireVertexShader : kVertexShader);
+                            wildfire ? kFireVertexShader :
+                            object ? kObjectVertexShader : kVertexShader);
     fragment = compile_shader(impl_->gl, GL_FRAGMENT_SHADER,
-                              wildfire ? kFireFragmentShader : kFragmentShader);
+                              wildfire ? kFireFragmentShader :
+                              object ? kObjectFragmentShader : kFragmentShader);
     program = impl_->gl.CreateProgram();
     if (!program) throw std::runtime_error("glCreateProgram failed");
     impl_->gl.AttachShader(program, vertex);

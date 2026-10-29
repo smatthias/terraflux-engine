@@ -31,7 +31,15 @@ landscape. You can substitute a simple local OBJ model:
 ```
 
 `--obj` can be combined with wildfire replay `--request` and `--response`.
-The importer is the shared engine infrastructure; the viewer currently bakes
-the object's world transform into its upload data once, so it does not yet
-support moving individual objects after GPU upload. That requires a model
-transform in the rendering command and shader in the next stage.
+The importer is shared engine infrastructure. The viewer now uploads the mesh
+in its original local coordinates and draws **two independent, rotating
+instances** from the same vertex and index buffers. Each object has its own
+std140 uniform at binding 2 containing a model matrix, inverse-transpose
+normal matrix and RGB material tint. Per-frame scene transforms refresh
+only those small uniform buffers, never the mesh geometry.
+
+The new object shader retains a verified Camera block at binding 0 and
+validates the Object block's reflected resource name, slot, stage and
+144-byte size. This is an initial per-object material *color*, not a full
+material or texture pipeline. Texture imports, glTF, animation systems and
+render passes remain future stages.

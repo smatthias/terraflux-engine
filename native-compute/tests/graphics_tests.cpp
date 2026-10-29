@@ -2,6 +2,7 @@
 #include <terraflux/graphics/terrain_upload.hpp>
 #include <terraflux/grid.hpp>
 #include <terraflux/terrain_mesh.hpp>
+#include <array>
 
 #include <cmath>
 #include <cstddef>
@@ -194,6 +195,30 @@ void test_storage_buffer_validation() {
              "storage binding must match shader layout");
   device.destroy_buffer(field);
 }
+void test_object_uniform_bindings() {
+  ValidatingRenderDevice device;
+  const auto layout = object_shader_layout();
+  validate_shader_layout(layout);
+  const auto terrain = quad_upload();
+  const auto vertices = std::as_bytes(std::span(terrain.vertices));
+  const auto indices = std::as_bytes(std::span(terrain.indices));
+  const auto vb = device.create_buffer({BufferUsage::Vertex, vertices.size()}, vertices);
+  const auto ib = device.create_buffer({BufferUsage::Index, indices.size()}, indices);
+  const auto pipeline = device.create_pipeline({layout, true});
+  std::array<float, 16> camera{};
+  std::array<float, 36> object_data{};
+  const auto camera_bytes = std::as_bytes(std::span(camera));
+  const auto object_bytes = std::as_bytes(std::span(object_data));
+  const auto cb = device.create_buffer({BufferUsage::Uniform, camera_bytes.size()}, camera_bytes);
+  const auto ob = device.create_buffer({BufferUsage::Uniform, object_bytes.size()}, object_bytes);
+  device.draw_indexed({pipeline,vb,ib,0,6,{{0,cb},{2,ob}},{}});
+  require(device.draw_count()==1, "per-object UBO draw succeeds");
+  must_throw([&]{ device.draw_indexed({pipeline,vb,ib,0,6,{{0,cb},{2,ob},{2,ob}}, {}}); },
+             "duplicate object UBO slot rejected");
+  must_throw([&]{ device.draw_indexed({pipeline,vb,ib,0,6,{{0,cb},{7,ob}}, {}}); },
+             "undeclared object UBO slot rejected");
+}
+
 void test_bad_mesh_upload() {
   auto upload = quad_upload();
   terraflux::terrain::TerrainMesh bad;
@@ -222,7 +247,8 @@ int main() {
     test_bad_mesh_upload();
     test_uniform_buffer_updates();
     test_storage_buffer_validation();
-    std::cout << "TerraFlux graphics contracts: 10 tests passed\n";
+    test_object_uniform_bindings();
+    std::cout << "TerraFlux graphics contracts: 11 tests passed\n";
   } catch (const std::exception& error) {
     std::cerr << "TerraFlux graphics test failed: " << error.what() << '\n';
     return 1;
