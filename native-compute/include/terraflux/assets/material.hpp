@@ -2,6 +2,8 @@
 #include <terraflux/math.hpp>
 #include <cstdint>
 #include <istream>
+#include <map>
+#include <string>
 #include <vector>
 namespace terraflux::assets {
 struct ImageRgba8 {
@@ -10,7 +12,10 @@ struct ImageRgba8 {
 };
 struct Material {
   math::Vec3 base_color{1.0,1.0,1.0};
+  std::string albedo_map;
 };
+using MaterialLibrary = std::map<std::string,Material>;
+MaterialLibrary parse_mtl(std::istream& input);
 ImageRgba8 read_ppm_p3(std::istream& input);
 ImageRgba8 checkerboard_image(std::uint32_t dimension=16);
 } // namespace terraflux::assets

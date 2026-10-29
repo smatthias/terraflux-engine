@@ -28,11 +28,33 @@ void invalid(){
  rejects([&]{(void)load("P3 1 1 255 0 0 300");},"color range");
  rejects([&]{(void)load("P3 0 1 255");},"dimensions");
 }
+void material_library() {
+  std::istringstream input(R"MTL(# Diffuse colors and textures
+newmtl Grass
+Kd 0.2 0.6 0.3
+map_Kd grass.ppm
+newmtl Stone
+Kd 0.8 0.8 0.8
+Ns 80
+)MTL");
+  const auto m=terraflux::assets::parse_mtl(input);
+  require(m.size()==2 && m.at("Grass").albedo_map=="grass.ppm","MTL texture name");
+  require(m.at("Grass").base_color.y==0.6 && m.at("Stone").base_color.x==0.8,
+          "MTL diffuse colors");
+  auto load=[](const char* txt) {
+    std::istringstream in(txt); return terraflux::assets::parse_mtl(in);
+  };
+  rejects([&]{(void)load("Kd 1 1 1\nnewmtl X\n");},"Kd must follow newmtl");
+  rejects([&]{(void)load("newmtl X\nnewmtl X\n");},"duplicate material");
+  rejects([&]{(void)load("newmtl X\nKd 1.5 0 0\n");},"invalid diffuse color");
+  rejects([&]{(void)load("newmtl X\nmap_Kd -s 1 1 1 x.ppm\n");},
+          "unimplemented MTL map flags rejected");
+}
 void checker(){
  auto img=terraflux::assets::checkerboard_image(8);
  require(img.pixels.size()==8*8*4,"checker image size");
  require(img.pixels[0]!=img.pixels[8],"checker tiles differ");
 }
 }
-int main(){try{parse_image();invalid();checker();std::cout<<"Material tests: 3 passed\n";}
+int main(){try{parse_image();invalid();checker();material_library();std::cout<<"Material tests: 4 passed\n";}
 catch(const std::exception&e){std::cerr<<e.what()<<'\n';return 1;}}

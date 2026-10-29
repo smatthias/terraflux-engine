@@ -98,6 +98,30 @@ f -3/-3 -2/-2 -1/-1
   mesh=terraflux::assets::import_obj(negative);
   require(near(mesh.vertices[1].uv.y,1.0),"negative UV indices");
 }
+void obj_material_groups() {
+  std::istringstream input(R"OBJ(mtllib shared.mtl colors.mtl
+v 0 0 0
+v 1 0 0
+v 0 1 0
+v 0 0 1
+usemtl red
+f 1 2 3
+usemtl blue
+f 1 4 2
+usemtl red
+f 1 3 4
+)OBJ");
+  const auto mesh=terraflux::assets::import_obj(input);
+  require(mesh.material_libraries.size()==2 && mesh.material_libraries[1]=="colors.mtl",
+          "MTL library references parsed");
+  require(mesh.indices.size()==9 && mesh.sections.size()==3,"material ranges are contiguous");
+  require(mesh.sections[0].material_name=="red" && mesh.sections[0].first_index==0 &&
+          mesh.sections[0].index_count==3,"first material range");
+  require(mesh.sections[1].material_name=="blue" && mesh.sections[1].first_index==3,
+          "material change creates a new draw range");
+  require(mesh.sections[2].material_name=="red" && mesh.sections[2].first_index==6,
+          "material changes back create another range");
+}
 void obj_rejection() {
   const auto load=[](const std::string& content) {
     std::istringstream input(content);
@@ -116,9 +140,10 @@ int main() {
     scene_rotation_and_validation();
     obj_triangulation();
     obj_uv_coordinates();
+    obj_material_groups();
     obj_explicit_normals_and_negative_indices();
     obj_rejection();
-    std::cout << "TerraFlux scene and OBJ importer: 6 tests passed\n";
+    std::cout << "TerraFlux scene and OBJ importer: 7 tests passed\n";
   } catch(const std::exception& e) {
     std::cerr << "Scene/OBJ test failed: " << e.what() << '\n';
     return 1;

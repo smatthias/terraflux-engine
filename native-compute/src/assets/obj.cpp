@@ -75,6 +75,7 @@ math::Vec3 normalized_normal(math::Vec3 n) {
 Mesh import_obj(std::istream& source) {
   Mesh mesh;
   std::vector<math::Vec3> positions, normals;
+  std::string current_material;
   std::vector<math::Vec2> texcoords;
   std::string line;
   std::size_t line_number = 0;
@@ -113,6 +114,11 @@ Mesh import_obj(std::istream& source) {
         face.push_back(corner(token, positions.size(), texcoords.size(), normals.size()));
       }
       if (face.size() < 3) throw std::invalid_argument("OBJ face needs 3+ corners");
+      if (mesh.sections.empty() || mesh.sections.back().material_name != current_material) {
+        if (mesh.sections.size() >= 100'000)
+          throw std::length_error("too many OBJ material groups");
+        mesh.sections.push_back({static_cast<std::uint32_t>(mesh.indices.size()),0,current_material});
+      }
       for (std::size_t i = 1; i + 1 < face.size(); ++i) {
         if (mesh.vertices.size() > kMaxOutputVertices - 3)
           throw std::length_error("OBJ triangulation vertex limit exceeded");
@@ -127,10 +133,23 @@ Mesh import_obj(std::istream& source) {
           mesh.vertices.push_back({positions[entry.position], normal,
                                    entry.has_texcoord ? texcoords[entry.texcoord] : math::Vec2{}});
         }
+        mesh.sections.back().index_count += 3;
       }
-    } else if (tag == "o" || tag == "g" || tag == "s" ||
-               tag == "usemtl" || tag == "mtllib") {
-      // Accepted metadata. UVs/materials are reserved for the next phase.
+    } else if (tag == "mtllib") {
+      std::string library;
+      while (row >> library) {
+        if (library.starts_with('#')) break;
+        if (mesh.material_libraries.size() >= 16)
+          throw std::length_error("too many OBJ material libraries");
+        mesh.material_libraries.push_back(library);
+      }
+      if (mesh.material_libraries.empty())
+        throw std::invalid_argument("mtllib requires a relative library path");
+    } else if (tag == "usemtl") {
+      if (!(row >> current_material) || current_material.starts_with('#'))
+        throw std::invalid_argument("usemtl requires material name");
+    } else if (tag == "o" || tag == "g" || tag == "s") {
+      // Scene/object metadata accepted, not material groups.
     } else {
       throw std::invalid_argument("unsupported OBJ directive: " + tag);
     }
