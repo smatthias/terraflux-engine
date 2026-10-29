@@ -241,7 +241,7 @@ void import_nodes(const Json::Object& doc,GltfModel& result) {
     // A mesh-only glTF document remains supported by the viewer.
     result.nodes.push_back({"Implicit mesh",math::Mat4::identity(),
                             math::Mat4::identity(),std::nullopt,0,{},true});
-    result.instances.push_back({0,math::Mat4::identity()});
+    result.instances.push_back({0,0,math::Mat4::identity()});
     return;
   }
   const auto& input=array(*nodes_field);
