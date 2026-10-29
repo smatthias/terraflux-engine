@@ -56,7 +56,9 @@ struct Mat4 {
   static Mat4 identity();
   static Mat4 translation(Vec3 offset);
   static Mat4 scaling(Vec3 factors);
+  static Mat4 rotationX(double radians);
   static Mat4 rotationY(double radians);
+  static Mat4 rotationZ(double radians);
   static Mat4 lookAtRH(Vec3 eye, Vec3 target, Vec3 up);
   static Mat4 perspectiveRH_NO(double fov_y_radians, double aspect, double near_plane, double far_plane);
   static Mat4 perspectiveRH_ZO(double fov_y_radians, double aspect, double near_plane, double far_plane);

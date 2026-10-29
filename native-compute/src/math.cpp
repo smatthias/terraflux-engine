@@ -46,11 +46,27 @@ Mat4 Mat4::scaling(Vec3 factors) {
   return result;
 }
 
+Mat4 Mat4::rotationX(double radians) {
+  Mat4 result = identity();
+  const double s = std::sin(radians), c = std::cos(radians);
+  result.at(1, 1) = c; result.at(1, 2) = -s;
+  result.at(2, 1) = s; result.at(2, 2) = c;
+  return result;
+}
+
 Mat4 Mat4::rotationY(double radians) {
   Mat4 result = identity();
   const double s = std::sin(radians), c = std::cos(radians);
   result.at(0, 0) = c;  result.at(0, 2) = s;
   result.at(2, 0) = -s; result.at(2, 2) = c;
+  return result;
+}
+
+Mat4 Mat4::rotationZ(double radians) {
+  Mat4 result = identity();
+  const double s = std::sin(radians), c = std::cos(radians);
+  result.at(0, 0) = c; result.at(0, 1) = -s;
+  result.at(1, 0) = s; result.at(1, 1) = c;
   return result;
 }
 
