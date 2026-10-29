@@ -364,6 +364,12 @@ int main(int argc, char** argv) {
         device.draw_indexed(left_draw);
         device.draw_indexed(right_draw);
       }
+      if (options.smoke_test && imported) {
+        const auto visible_asset = device.count_asset_pixels(width, height);
+        if (visible_asset == 0)
+          throw std::runtime_error("smoke test found no visible imported-object pixels");
+        std::cout << "Visible OBJ pixels: " << visible_asset << '\n';
+      }
       if (options.smoke_test && playback && !playback->frames[playback_frame].active.empty()) {
         const auto visible_fire = device.count_fire_pixels(width, height);
         if (visible_fire == 0)

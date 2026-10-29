@@ -529,4 +529,21 @@ std::size_t OpenGLRenderDevice::count_fire_pixels(int width, int height) {
   return hot_pixels;
 }
 
+// Diagnostic only: recognize the saturated blue/purple colors assigned to
+// imported objects. The threshold excludes green/brown terrain and the sky.
+std::size_t OpenGLRenderDevice::count_asset_pixels(int width, int height) {
+  if (width <= 0 || height <= 0 ||
+      static_cast<std::uint64_t>(width) * static_cast<std::uint64_t>(height) > 4'000'000)
+    throw std::invalid_argument("invalid framebuffer dimensions for asset validation");
+  std::vector<std::uint8_t> pixels(static_cast<std::size_t>(width) * height * 4);
+  impl_->gl.ReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+  std::size_t asset_pixels = 0;
+  for (std::size_t i = 0; i < pixels.size(); i += 4) {
+    const int r = pixels[i], g = pixels[i+1], b = pixels[i+2];
+    if (b >= 45 && b * 100 > g * 128 && b * 100 > r * 111)
+      ++asset_pixels;
+  }
+  return asset_pixels;
+}
+
 }  // namespace terraflux::graphics

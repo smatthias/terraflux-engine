@@ -29,6 +29,7 @@ class OpenGLRenderDevice final : public RenderDevice {
   // Smoke-test diagnostic; inspect the back buffer before swapping it.
   // Counts bright red/orange pixels in the current render target.
   std::size_t count_fire_pixels(int framebuffer_width, int framebuffer_height);
+  std::size_t count_asset_pixels(int framebuffer_width, int framebuffer_height);
 
  private:
   struct Impl;
