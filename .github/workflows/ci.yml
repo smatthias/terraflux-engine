@@ -120,3 +120,6 @@ jobs:
           xvfb-run -a -s "-screen 0 1280x800x24" \
             ./build-gl/terraflux-terrain-viewer --smoke-test \
             --gltf examples/assets/tetra.gltf
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test \
+            --gltf examples/assets/multi_mesh.gltf

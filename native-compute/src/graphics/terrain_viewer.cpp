@@ -219,6 +219,7 @@ int main(int argc, char** argv) {
       BufferHandle vb, ib, object_uniform_left, object_uniform_right;
       struct GltfInstance {
         BufferHandle uniform;
+        std::uint32_t mesh_index=0;
         terraflux::math::Mat4 model;
       };
       std::vector<GltfInstance> gltf_instances;
@@ -230,6 +231,12 @@ int main(int argc, char** argv) {
       };
       std::map<std::string,TextureHandle> textures;
       std::vector<Section> sections;
+      struct AdditionalMesh {
+        BufferHandle vb, ib;
+        std::vector<Section> sections;
+        std::uint32_t indices=0;
+      };
+      std::vector<AdditionalMesh> additional_meshes;
       PipelineHandle pipeline;
       std::uint32_t indices = 0;
       terraflux::scene::Scene scene;
@@ -249,7 +256,8 @@ int main(int argc, char** argv) {
       };
       std::map<std::string,LocatedMaterial> material_files;
       terraflux::assets::Mesh object;
-      std::vector<terraflux::math::Mat4> node_worlds;
+      std::vector<terraflux::assets::Mesh> extra_meshes;
+      std::vector<std::pair<std::uint32_t,terraflux::math::Mat4>> node_worlds;
       if(use_gltf) {
         const auto resolver=[&](const std::string& uri) {
           const auto path=asset_path(source_folder,uri);
@@ -260,9 +268,12 @@ int main(int argc, char** argv) {
           return std::vector<std::uint8_t>(contents.begin(),contents.end());
         };
         auto asset=terraflux::assets::import_gltf(read_file(source_file),resolver);
-        object=std::move(asset.mesh);
+        if(asset.meshes.empty())throw std::invalid_argument("glTF contains no meshes");
+        object=std::move(asset.meshes.front());
+        for(std::size_t i=1;i<asset.meshes.size();++i)
+          extra_meshes.push_back(std::move(asset.meshes[i]));
         for(const auto& instance:asset.instances)
-          node_worlds.push_back(instance.world);
+          node_worlds.emplace_back(instance.mesh_index,instance.world);
         for(const auto& [name,material]:asset.materials)
           material_files.emplace(name,LocatedMaterial{material,source_folder});
       } else {
@@ -280,30 +291,51 @@ int main(int argc, char** argv) {
         }
       }
       if(object.vertices.empty())throw std::invalid_argument("imported mesh has no vertices");
-      auto min_pos = object.vertices.front().position;
-      auto max_pos = min_pos;
-      for (const auto& vertex : object.vertices) {
-        const auto& p = vertex.position;
-        min_pos.x = std::min(min_pos.x, p.x); min_pos.y = std::min(min_pos.y, p.y);
-        min_pos.z = std::min(min_pos.z, p.z);
-        max_pos.x = std::max(max_pos.x, p.x); max_pos.y = std::max(max_pos.y, p.y);
-        max_pos.z = std::max(max_pos.z, p.z);
-      }
+      const auto get_mesh=[&](std::uint32_t id)->const terraflux::assets::Mesh& {
+        return id==0?object:extra_meshes.at(id-1);
+      };
+      auto min_pos=object.vertices.front().position;
+      auto max_pos=min_pos;
       if(use_gltf) {
-        // Fit the *assembled* scene. Each node's model matrix remains
-        // independent, and local geometry stays in one shared GPU VBO.
-        auto lower=max_pos,upper=min_pos;
-        for(const auto& world:node_worlds) {
-          for(int bx=0;bx<2;++bx)for(int by=0;by<2;++by)for(int bz=0;bz<2;++bz) {
-            const auto p=world.transformPoint({
-                bx?max_pos.x:min_pos.x,by?max_pos.y:min_pos.y,bz?max_pos.z:min_pos.z});
-            lower.x=std::min(lower.x,p.x);lower.y=std::min(lower.y,p.y);
-            lower.z=std::min(lower.z,p.z);
-            upper.x=std::max(upper.x,p.x);upper.y=std::max(upper.y,p.y);
-            upper.z=std::max(upper.z,p.z);
+        std::vector<std::pair<terraflux::math::Vec3,terraflux::math::Vec3>> bounds;
+        for(std::size_t mesh_id=0;mesh_id<extra_meshes.size()+1;++mesh_id) {
+          const auto& mesh=get_mesh(static_cast<std::uint32_t>(mesh_id));
+          if(mesh.vertices.empty())throw std::invalid_argument("glTF mesh is empty");
+          auto lo=mesh.vertices.front().position,hi=lo;
+          for(const auto& vertex:mesh.vertices){
+            const auto& p=vertex.position;
+            lo.x=std::min(lo.x,p.x);lo.y=std::min(lo.y,p.y);lo.z=std::min(lo.z,p.z);
+            hi.x=std::max(hi.x,p.x);hi.y=std::max(hi.y,p.y);hi.z=std::max(hi.z,p.z);
+          }
+          bounds.emplace_back(lo,hi);
+        }
+        bool initialized=false;
+        for(const auto& [mesh_index,world]:node_worlds){
+          const auto& [lo,hi]=bounds.at(mesh_index);
+          for(int x=0;x<2;++x)for(int y=0;y<2;++y)for(int z=0;z<2;++z){
+            const auto point=world.transformPoint({x?hi.x:lo.x,y?hi.y:lo.y,z?hi.z:lo.z});
+            if(!initialized){min_pos=max_pos=point;initialized=true;}
+            else {
+              min_pos.x=std::min(min_pos.x,point.x);
+              min_pos.y=std::min(min_pos.y,point.y);
+              min_pos.z=std::min(min_pos.z,point.z);
+              max_pos.x=std::max(max_pos.x,point.x);
+              max_pos.y=std::max(max_pos.y,point.y);
+              max_pos.z=std::max(max_pos.z,point.z);
+            }
           }
         }
-        min_pos=lower;max_pos=upper;
+        if(!initialized)throw std::invalid_argument("glTF scene contains no mesh instances");
+      }else{
+        for(const auto& vertex:object.vertices) {
+          const auto& p=vertex.position;
+          min_pos.x=std::min(min_pos.x,p.x);
+          min_pos.y=std::min(min_pos.y,p.y);
+          min_pos.z=std::min(min_pos.z,p.z);
+          max_pos.x=std::max(max_pos.x,p.x);
+          max_pos.y=std::max(max_pos.y,p.y);
+          max_pos.z=std::max(max_pos.z,p.z);
+        }
       }
       const double extent = std::max({max_pos.x-min_pos.x, max_pos.y-min_pos.y,
                                       max_pos.z-min_pos.z});
@@ -351,24 +383,41 @@ int main(int argc, char** argv) {
         obj.textures.emplace(key,id);
         return id;
       };
-      for(const auto& section:object.sections) {
-        terraflux::math::Vec3 color{1,1,1};
-        std::filesystem::path texture_file;
-        if(!section.material_name.empty()) {
-          const auto it=material_files.find(section.material_name);
-          if(it==material_files.end())
-            throw std::invalid_argument("unknown OBJ material: "+section.material_name);
-          color=it->second.material.base_color;
-          if(!it->second.material.albedo_map.empty())
-            texture_file=asset_path(it->second.folder,it->second.material.albedo_map);
+      const build_sections=[&](const terraflux::assets::Mesh& mesh) {
+        std::vector<ImportedGpu::Section> result;
+        result.reserve(mesh.sections.size());
+        for(const auto& section:mesh.sections) {
+          terraflux::math::Vec3 color{1,1,1};
+          std::filesystem::path texture_file;
+          if(!section.material_name.empty()) {
+            const auto it=material_files.find(section.material_name);
+            if(it==material_files.end())
+              throw std::invalid_argument("undefined imported material: "+section.material_name);
+            color=it->second.material.base_color;
+            if(!it->second.material.albedo_map.empty())
+              texture_file=asset_path(it->second.folder,it->second.material.albedo_map);
+          }
+          if(!options.texture_file.empty())texture_file=options.texture_file;
+          const auto handle=cached_texture(texture_file);
+          result.push_back({section.first_index,section.index_count,handle,color});
         }
-        if(!options.texture_file.empty()) texture_file=options.texture_file;
-        const auto id=cached_texture(texture_file);
-        obj.sections.push_back({section.first_index,section.index_count,id,color});
+        if(result.empty())throw std::invalid_argument("mesh has no drawable material sections");
+        return result;
+      };
+      obj.sections=build_sections(object);
+      obj.vb=device.create_buffer({BufferUsage::Vertex,vertex_bytes.size()},vertex_bytes);
+      obj.ib=device.create_buffer({BufferUsage::Index,index_bytes.size()},index_bytes);
+      for(const auto& mesh:extra_meshes) {
+        const auto upload=prepare_textured_asset_upload(mesh);
+        const auto bytes=bytes_of(upload.vertices);
+        const auto indices_bytes=bytes_of(upload.indices);
+        ImportedGpu::AdditionalMesh extra{};
+        extra.sections=build_sections(mesh);
+        extra.indices=static_cast<std::uint32_t>(upload.indices.size());
+        extra.vb=device.create_buffer({BufferUsage::Vertex,bytes.size()},bytes);
+        extra.ib=device.create_buffer({BufferUsage::Index,indices_bytes.size()},indices_bytes);
+        obj.additional_meshes.push_back(std::move(extra));
       }
-      if(obj.sections.empty()) throw std::runtime_error("OBJ has no material ranges");
-      obj.vb = device.create_buffer({BufferUsage::Vertex,vertex_bytes.size()},vertex_bytes);
-      obj.ib = device.create_buffer({BufferUsage::Index,index_bytes.size()},index_bytes);
       const auto init_object = make_object_uniform(terraflux::math::Mat4::identity());
       const auto init_bytes = std::as_bytes(std::span(&init_object,1));
       if(use_gltf) {
@@ -377,12 +426,12 @@ int main(int argc, char** argv) {
             terraflux::math::Mat4::translation(obj.local_center*-1.0);
         if(node_worlds.size()>1024)
           throw std::length_error("glTF viewer supports at most 1024 mesh instances");
-        for(const auto& world:node_worlds) {
+        for(const auto& [mesh_index,world]:node_worlds) {
           const auto model=anchor*world;
           const auto uniform=make_object_uniform(model,{1,1,1});
           const auto bytes=std::as_bytes(std::span(&uniform,1));
           const auto handle=device.create_buffer({BufferUsage::Uniform,bytes.size()},bytes);
-          obj.gltf_instances.push_back({handle,model});
+          obj.gltf_instances.push_back({handle,mesh_index,model});
         }
       }else{
         obj.object_uniform_left = device.create_buffer(
@@ -392,11 +441,18 @@ int main(int argc, char** argv) {
       }
       obj.pipeline = device.create_pipeline({textured_object_shader_layout(),true});
       imported = std::move(obj);
-      std::cout << (use_gltf?"Imported glTF: ":"Imported OBJ: ") << geometry.indices.size()/3
-                << " triangles, " << imported->sections.size() << " material ranges, "
+      std::size_t triangle_count=imported->indices/3;
+      std::size_t sections_count=imported->sections.size();
+      for(const auto& mesh:imported->additional_meshes){
+        triangle_count+=mesh.indices/3;
+        sections_count+=mesh.sections.size();
+      }
+      std::cout << (use_gltf?"Imported glTF: ":"Imported OBJ: ") << triangle_count
+                << " triangles, " << (imported->additional_meshes.size()+1)
+                << " meshes, " << sections_count << " material ranges, "
                 << imported->textures.size() << " textures, "
                 << (use_gltf?imported->gltf_instances.size():2)
-                << " instances sharing geometry\n";
+                << " instances sharing per-mesh geometry\n";
     }
 
     double yaw = 0.45, pitch = 0.75, distance = scene_camera.starting_distance;
@@ -487,10 +543,19 @@ int main(int argc, char** argv) {
         // Preserve the selected glTF hierarchy: each imported node has an
         // independent world matrix, material ranges share the geometry.
         for(const auto& instance:imported->gltf_instances) {
-          for(const auto& section:imported->sections) {
+          const auto& mesh_index=instance.mesh_index;
+          const auto* sections=&imported->sections;
+          auto vb=imported->vb,ib=imported->ib;
+          if(mesh_index!=0) {
+            const auto& mesh=imported->additional_meshes.at(mesh_index-1);
+            sections=&mesh.sections;
+            vb=mesh.vb;
+            ib=mesh.ib;
+          }
+          for(const auto& section:*sections) {
             const auto uniform=make_object_uniform(instance.model,section.base_color);
             device.update_buffer(instance.uniform,0,std::as_bytes(std::span(&uniform,1)));
-            device.draw_indexed({imported->pipeline,imported->vb,imported->ib,
+            device.draw_indexed({imported->pipeline,vb,ib,
                 section.first,section.count,{{0,camera},{2,instance.uniform}},
                 {},{{3,section.albedo}}});
           }
@@ -553,6 +618,10 @@ int main(int argc, char** argv) {
       }else{
         device.destroy_buffer(imported->object_uniform_right);
         device.destroy_buffer(imported->object_uniform_left);
+      }
+      for(const auto& mesh:imported->additional_meshes){
+        device.destroy_buffer(mesh.ib);
+        device.destroy_buffer(mesh.vb);
       }
       device.destroy_buffer(imported->ib);
       device.destroy_buffer(imported->vb);

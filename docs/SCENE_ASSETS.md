@@ -128,3 +128,23 @@ The fixture now contains a root assembly with two transformed child mesh
 instances and an unused secondary scene. The importer still supports **one
 underlying mesh** and static hierarchies; multiple independent mesh assets,
 animation, skeletons, morph targets, full glTF materials and images are next.
+
+## Multiple glTF meshes per scene
+
+Static glTF assets may now contain up to 128 **distinct mesh definitions** with
+their own primitives, indices, UVs, normals, and material ranges. Scene nodes
+reference a mesh by index; multiple nodes referencing the same mesh share its
+uploaded vertex/index buffers. The viewer allocates one GPU geometry resource
+pair per mesh and one model uniform per active node, while diffuse textures
+remain deduplicated across the whole asset.
+
+```bash
+./build-gl/terraflux-terrain-viewer --gltf examples/assets/multi_mesh.gltf
+```
+
+The example contains two mesh definitions with different triangle counts and
+four scene instances; an unused alternate scene remains excluded. Imported
+mesh definitions are separate (they are not merged into one vertex/index
+buffer), allowing later independent culling, resource lifetime management,
+and material caching. Multi-mesh support is static only; there are still no
+glTF image textures, animations, skinning, GLB or complete PBR materials.
