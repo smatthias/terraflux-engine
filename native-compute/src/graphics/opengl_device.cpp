@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -411,6 +412,14 @@ struct OpenGLRenderDevice::Impl {
   std::unordered_map<std::uint32_t, GpuTexture> textures;
   std::unordered_map<std::uint32_t, GpuPipeline> pipelines;
 
+  // RenderDevice is the sole owner of GL state within this viewer context.
+  // Cached binding state prevents redundant program, VAO/attribute and
+  // material texture operations across sorted opaque draw submissions.
+  GLuint current_program=0,current_vao=0;
+  std::uint32_t attribute_pipeline=0,attribute_vertex=0,attribute_index=0;
+  std::unordered_map<std::uint32_t,GLuint> texture_units;
+  std::optional<bool> depth_test_state;
+
   ~Impl() {
     // Destruction requires the OpenGL context used at creation to be current.
     for (const auto& [id, pipeline] : pipelines) {
@@ -466,6 +475,9 @@ void OpenGLRenderDevice::destroy_buffer(BufferHandle handle) {
   const GLuint name = impl_->buffers.at(handle.id).name;
   impl_->gl.DeleteBuffers(1, &name);
   impl_->buffers.erase(handle.id);
+  if(impl_->attribute_vertex==handle.id || impl_->attribute_index==handle.id) {
+    impl_->attribute_pipeline=impl_->attribute_vertex=impl_->attribute_index=0;
+  }
 }
 
 TextureHandle OpenGLRenderDevice::create_texture2d(
@@ -478,6 +490,7 @@ TextureHandle OpenGLRenderDevice::create_texture2d(
     throw std::runtime_error("glGenTextures failed");
   }
   impl_->gl.BindTexture(GL_TEXTURE_2D,name);
+  impl_->texture_units.clear(); // creation modifies the active texture unit
   impl_->gl.TexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);
   impl_->gl.TexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
   impl_->gl.TexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_REPEAT);
@@ -493,6 +506,7 @@ void OpenGLRenderDevice::destroy_texture(TextureHandle handle) {
   const GLuint name=impl_->textures.at(handle.id).name;
   impl_->gl.DeleteTextures(1,&name);
   impl_->textures.erase(handle.id);
+  impl_->texture_units.clear();
 }
 
 PipelineHandle OpenGLRenderDevice::create_pipeline(PipelineDesc desc) {
@@ -571,6 +585,10 @@ void OpenGLRenderDevice::destroy_pipeline(PipelineHandle handle) {
   impl_->gl.DeleteVertexArrays(1, &gpu.vao);
   impl_->gl.DeleteProgram(gpu.program);
   impl_->pipelines.erase(handle.id);
+  if(impl_->current_program==gpu.program) impl_->current_program=0;
+  if(impl_->current_vao==gpu.vao) impl_->current_vao=0;
+  if(impl_->attribute_pipeline==handle.id)
+    impl_->attribute_pipeline=impl_->attribute_vertex=impl_->attribute_index=0;
 }
 
 void OpenGLRenderDevice::draw_indexed(const DrawIndexed& command) {
@@ -578,19 +596,31 @@ void OpenGLRenderDevice::draw_indexed(const DrawIndexed& command) {
   const auto& pipeline = impl_->pipelines.at(command.pipeline.id);
   const auto vertex = impl_->buffers.at(command.vertex_buffer.id);
   const auto index = impl_->buffers.at(command.index_buffer.id);
-  impl_->gl.UseProgram(pipeline.program);
-  impl_->gl.BindVertexArray(pipeline.vao);
-  impl_->gl.BindBuffer(GL_ARRAY_BUFFER, vertex.name);
-  impl_->gl.BindBuffer(GL_ELEMENT_ARRAY_BUFFER, index.name);
-
-  const auto& layout = pipeline.desc.layout;
-  if (layout.vertex_stride_bytes > static_cast<std::uint32_t>(std::numeric_limits<GLsizei>::max()))
+  if(impl_->current_program!=pipeline.program) {
+    impl_->gl.UseProgram(pipeline.program);
+    impl_->current_program=pipeline.program;
+  }
+  if(impl_->current_vao!=pipeline.vao) {
+    impl_->gl.BindVertexArray(pipeline.vao);
+    impl_->current_vao=pipeline.vao;
+  }
+  const auto& layout=pipeline.desc.layout;
+  if(layout.vertex_stride_bytes>static_cast<std::uint32_t>(std::numeric_limits<GLsizei>::max()))
     throw std::overflow_error("vertex stride exceeds GLsizei");
-  for (const auto& attr : layout.attributes) {
-    impl_->gl.EnableVertexAttribArray(attr.location);
-    impl_->gl.VertexAttribPointer(attr.location, components_for(attr.format),
-        GL_FLOAT, GL_FALSE, static_cast<GLsizei>(layout.vertex_stride_bytes),
-        reinterpret_cast<const void*>(static_cast<std::uintptr_t>(attr.offset_bytes)));
+  if(impl_->attribute_pipeline!=command.pipeline.id ||
+     impl_->attribute_vertex!=command.vertex_buffer.id ||
+     impl_->attribute_index!=command.index_buffer.id) {
+    impl_->gl.BindBuffer(GL_ARRAY_BUFFER,vertex.name);
+    impl_->gl.BindBuffer(GL_ELEMENT_ARRAY_BUFFER,index.name);
+    for(const auto& attr:layout.attributes) {
+      impl_->gl.EnableVertexAttribArray(attr.location);
+      impl_->gl.VertexAttribPointer(attr.location,components_for(attr.format),
+          GL_FLOAT,GL_FALSE,static_cast<GLsizei>(layout.vertex_stride_bytes),
+          reinterpret_cast<const void*>(static_cast<std::uintptr_t>(attr.offset_bytes)));
+    }
+    impl_->attribute_pipeline=command.pipeline.id;
+    impl_->attribute_vertex=command.vertex_buffer.id;
+    impl_->attribute_index=command.index_buffer.id;
   }
 
   for (const auto& required : layout.bindings) {
@@ -605,12 +635,20 @@ void OpenGLRenderDevice::draw_indexed(const DrawIndexed& command) {
     impl_->gl.BindBufferBase(GL_SHADER_STORAGE_BUFFER, bound.slot,
                              impl_->buffers.at(bound.buffer.id).name);
   for (const auto& bound : command.textures) {
-    impl_->gl.ActiveTexture(GL_TEXTURE0+bound.slot);
-    impl_->gl.BindTexture(GL_TEXTURE_2D,impl_->textures.at(bound.texture.id).name);
+    const GLuint texture=impl_->textures.at(bound.texture.id).name;
+    auto it=impl_->texture_units.find(bound.slot);
+    if(it==impl_->texture_units.end() || it->second!=texture) {
+      impl_->gl.ActiveTexture(GL_TEXTURE0+bound.slot);
+      impl_->gl.BindTexture(GL_TEXTURE_2D,texture);
+      impl_->texture_units[bound.slot]=texture;
+    }
   }
 
-  if (pipeline.desc.depth_test) impl_->gl.Enable(GL_DEPTH_TEST);
-  else impl_->gl.Disable(GL_DEPTH_TEST);
+  if(!impl_->depth_test_state || *impl_->depth_test_state!=pipeline.desc.depth_test) {
+    if(pipeline.desc.depth_test) impl_->gl.Enable(GL_DEPTH_TEST);
+    else impl_->gl.Disable(GL_DEPTH_TEST);
+    impl_->depth_test_state=pipeline.desc.depth_test;
+  }
   impl_->gl.DrawElements(GL_TRIANGLES, static_cast<GLsizei>(command.index_count),
       GL_UNSIGNED_INT, reinterpret_cast<const void*>(
           static_cast<std::uintptr_t>(command.first_index) * sizeof(std::uint32_t)));
