@@ -62,21 +62,29 @@ struct PipelineDesc {
   bool depth_test = true;
 };
 
+struct UniformBufferBinding {
+  std::uint32_t slot = 0;
+  BufferHandle buffer;
+};
+
 struct DrawIndexed {
   PipelineHandle pipeline;
   BufferHandle vertex_buffer;
   BufferHandle index_buffer;
   std::uint32_t first_index = 0;
   std::uint32_t index_count = 0;
+  std::vector<UniformBufferBinding> uniform_buffers;
 };
 
 // The engine owns this interface; no OpenGL, GLFW, PSSL, or console types
-// appear here. These buffers are immutable for now (full initial data upload).
+// appear here. Buffers have explicit lifetime and bounded subrange updates.
 class RenderDevice {
  public:
   virtual ~RenderDevice() = default;
   virtual BufferHandle create_buffer(BufferDesc desc, std::span<const std::byte> initial_data) = 0;
   virtual void destroy_buffer(BufferHandle handle) = 0;
+  virtual void update_buffer(BufferHandle handle, std::size_t offset_bytes,
+                             std::span<const std::byte> data) = 0;
   virtual PipelineHandle create_pipeline(PipelineDesc desc) = 0;
   virtual void destroy_pipeline(PipelineHandle handle) = 0;
   virtual void draw_indexed(const DrawIndexed& command) = 0;
@@ -89,6 +97,8 @@ class ValidatingRenderDevice final : public RenderDevice {
  public:
   BufferHandle create_buffer(BufferDesc desc, std::span<const std::byte> initial_data) override;
   void destroy_buffer(BufferHandle handle) override;
+  void update_buffer(BufferHandle handle, std::size_t offset_bytes,
+                     std::span<const std::byte> data) override;
   PipelineHandle create_pipeline(PipelineDesc desc) override;
   void destroy_pipeline(PipelineHandle handle) override;
   void draw_indexed(const DrawIndexed& command) override;

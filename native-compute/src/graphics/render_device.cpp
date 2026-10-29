@@ -91,6 +91,16 @@ BufferHandle ValidatingRenderDevice::create_buffer(
   return {id};
 }
 
+void ValidatingRenderDevice::update_buffer(BufferHandle handle, std::size_t offset_bytes,
+                                          std::span<const std::byte> data) {
+  const auto it = buffers_.find(handle.id);
+  if (it == buffers_.end()) throw std::invalid_argument("unknown buffer handle for update");
+  auto& bytes = it->second.bytes;
+  if (offset_bytes > bytes.size() || data.size() > bytes.size() - offset_bytes)
+    throw std::out_of_range("buffer update exceeds allocated storage");
+  std::copy(data.begin(), data.end(), bytes.begin() + static_cast<std::ptrdiff_t>(offset_bytes));
+}
+
 void ValidatingRenderDevice::destroy_buffer(BufferHandle handle) {
   if (buffers_.erase(handle.id) != 1)
     throw std::invalid_argument("unknown or already destroyed buffer handle");
@@ -133,6 +143,20 @@ void ValidatingRenderDevice::draw_indexed(const DrawIndexed& command) {
                 sizeof(vertex_index));
     if (vertex_index >= vertex_count)
       throw std::out_of_range("draw references nonexistent vertex");
+  }
+  std::unordered_set<std::uint32_t> bound_slots;
+  for (const auto& bound : command.uniform_buffers) {
+    if (!bound_slots.insert(bound.slot).second)
+      throw std::invalid_argument("duplicate uniform buffer binding");
+    const auto buffer = buffers_.find(bound.buffer.id);
+    if (buffer == buffers_.end() || buffer->second.desc.usage != BufferUsage::Uniform)
+      throw std::invalid_argument("invalid uniform buffer resource");
+    const auto& bindings = pipeline->second.layout.bindings;
+    const auto matching = std::find_if(bindings.begin(), bindings.end(), [&](const ShaderBinding& value) {
+      return value.kind == ShaderResourceKind::UniformBuffer && value.slot == bound.slot;
+    });
+    if (matching == bindings.end())
+      throw std::invalid_argument("uniform buffer bound to undeclared slot");
   }
   ++draw_count_;
 }

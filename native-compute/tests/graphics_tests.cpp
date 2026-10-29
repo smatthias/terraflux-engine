@@ -143,6 +143,32 @@ void test_reject_incomplete_buffers() {
              "truncated buffer upload must fail");
 }
 
+void test_uniform_buffer_updates() {
+  ValidatingRenderDevice device;
+  const std::uint32_t values[] = {11, 22, 33, 44};
+  const auto initial = std::as_bytes(std::span(values));
+  const auto uniform = device.create_buffer({BufferUsage::Uniform, initial.size()}, initial);
+  const std::uint32_t replacement = 55;
+  const auto bytes = std::as_bytes(std::span(&replacement, 1));
+  device.update_buffer(uniform, sizeof(std::uint32_t), bytes);
+  must_throw([&] { device.update_buffer(uniform, initial.size() - 2, bytes); },
+             "uniform buffer update must reject overrun");
+  const auto upload = quad_upload();
+  const auto vb_bytes = std::as_bytes(std::span(upload.vertices));
+  const auto ib_bytes = std::as_bytes(std::span(upload.indices));
+  const auto vb = device.create_buffer({BufferUsage::Vertex, vb_bytes.size()}, vb_bytes);
+  const auto ib = device.create_buffer({BufferUsage::Index, ib_bytes.size()}, ib_bytes);
+  const auto pipeline = device.create_pipeline({terrain_shader_layout(), true});
+  device.draw_indexed({pipeline, vb, ib, 0, 6, {{0, uniform}}});
+  require(device.draw_count() == 1, "camera buffer draw must validate");
+  must_throw([&] { device.draw_indexed({pipeline, vb, ib, 0, 6, {{1, uniform}}}); },
+             "undeclared uniform slot must fail");
+  must_throw([&] { device.draw_indexed({pipeline, vb, ib, 0, 6, {{0, vb}}}); },
+             "incorrect uniform buffer usage must fail");
+  device.destroy_buffer(uniform);
+  must_throw([&] { device.update_buffer(uniform, 0, bytes); }, "destroyed uniform buffer must reject update");
+}
+
 void test_bad_mesh_upload() {
   auto upload = quad_upload();
   terraflux::terrain::TerrainMesh bad;
@@ -169,7 +195,8 @@ int main() {
     test_draw_range_checks();
     test_reject_incomplete_buffers();
     test_bad_mesh_upload();
-    std::cout << "TerraFlux graphics contracts: 8 tests passed\n";
+    test_uniform_buffer_updates();
+    std::cout << "TerraFlux graphics contracts: 9 tests passed\n";
   } catch (const std::exception& error) {
     std::cerr << "TerraFlux graphics test failed: " << error.what() << '\n';
     return 1;
