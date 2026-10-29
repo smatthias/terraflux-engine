@@ -308,7 +308,7 @@ int main(int argc, char** argv) {
       const double extent = std::max({max_pos.x-min_pos.x, max_pos.y-min_pos.y,
                                       max_pos.z-min_pos.z});
       if (!(extent > 0.0)) throw std::runtime_error("imported model has no spatial extent");
-      const double scale = (scene_camera.starting_distance * 0.095) / extent;
+      const double scale = (scene_camera.starting_distance * (use_gltf ? 0.22 : 0.095)) / extent;
       const auto geometry = prepare_textured_asset_upload(object); // local + UV
       const auto vertex_bytes = bytes_of(geometry.vertices);
       const auto index_bytes = bytes_of(geometry.indices);
