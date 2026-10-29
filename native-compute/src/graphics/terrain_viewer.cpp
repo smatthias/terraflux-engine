@@ -5,6 +5,8 @@
 #include <terraflux/assets/gltf.hpp>
 #include <terraflux/assets/material.hpp>
 #include <terraflux/scene.hpp>
+#include <terraflux/scene_io.hpp>
+#include <terraflux/runtime.hpp>
 #include <terraflux/grid.hpp>
 #include <terraflux/math.hpp>
 #include <terraflux/replay.hpp>
@@ -62,7 +64,7 @@ std::filesystem::path asset_path(const std::filesystem::path& directory,
 
 struct Options {
   bool smoke_test = false;
-  std::string request_file, response_file, obj_file, gltf_file, texture_file;
+  std::string request_file, response_file, obj_file, gltf_file, texture_file, scene_file;
 };
 
 Options parse_args(int argc, char** argv) {
@@ -75,8 +77,9 @@ Options parse_args(int argc, char** argv) {
     else if (arg == "--obj" && i + 1 < argc) options.obj_file = argv[++i];
     else if (arg == "--gltf" && i + 1 < argc) options.gltf_file = argv[++i];
     else if (arg == "--texture" && i + 1 < argc) options.texture_file = argv[++i];
+    else if (arg == "--scene" && i + 1 < argc) options.scene_file = argv[++i];
     else throw std::invalid_argument(
-        "usage: terraflux-terrain-viewer [--request request.json --response response.json] [--obj model.obj | --gltf model.gltf] [--texture texture.ppm] [--smoke-test]");
+        "usage: terraflux-terrain-viewer [--request request.json --response response.json] [--obj model.obj | --gltf model.gltf] [--texture texture.ppm] [--scene scene.json with --obj] [--smoke-test]");
   }
   if (options.request_file.empty() != options.response_file.empty())
     throw std::invalid_argument("--request and --response must be provided together");
@@ -84,6 +87,8 @@ Options parse_args(int argc, char** argv) {
     throw std::invalid_argument("--obj and --gltf are mutually exclusive");
   if (!options.texture_file.empty() && options.obj_file.empty() && options.gltf_file.empty())
     throw std::invalid_argument("--texture requires --obj or --gltf");
+  if (!options.scene_file.empty() && options.obj_file.empty())
+    throw std::invalid_argument("--scene requires --obj; glTF already has authored scene nodes");
   return options;
 }
 
@@ -223,7 +228,13 @@ int main(int argc, char** argv) {
         terraflux::math::Mat4 model;
       };
       std::vector<GltfInstance> gltf_instances;
-      bool is_gltf=false;
+      struct SceneInstance {
+        BufferHandle uniform;
+        terraflux::scene::NodeId node=0;
+      };
+      std::vector<SceneInstance> scene_instances;
+      terraflux::math::Mat4 scene_anchor=terraflux::math::Mat4::identity();
+      bool is_gltf=false, uses_scene_file=false;
       struct Section {
         std::uint32_t first=0,count=0;
         TextureHandle albedo{};
@@ -350,7 +361,22 @@ int main(int argc, char** argv) {
       obj.separation = extent * 0.95;
       obj.local_center = {(min_pos.x + max_pos.x)*0.5, min_pos.y,
                           (min_pos.z + max_pos.z)*0.5};
-      if(!use_gltf) {
+      if(!use_gltf && !options.scene_file.empty()) {
+        obj.uses_scene_file=true;
+        obj.scene=terraflux::scene::deserialize_scene(read_file(options.scene_file));
+        obj.scene_anchor=terraflux::math::Mat4::translation(scene_camera.target) *
+            terraflux::math::Mat4::scaling({scale,scale,scale}) *
+            terraflux::math::Mat4::translation(obj.local_center*-1.0);
+        for(std::size_t id=1;id<obj.scene.size();++id) {
+          const auto& node=obj.scene.get(static_cast<terraflux::scene::NodeId>(id));
+          if(node.mesh_instance) {
+            // Hold node identifiers until the corresponding UBOs are created.
+            obj.scene_instances.push_back({{},static_cast<terraflux::scene::NodeId>(id)});
+          }
+        }
+        if(obj.scene_instances.empty() || obj.scene_instances.size()>1024)
+          throw std::invalid_argument("scene requires 1..1024 mesh instances");
+      }else if(!use_gltf) {
         const auto anchor = obj.scene.create_node("Terrain anchor");
         obj.left_pivot = obj.scene.create_node("Rotating left", anchor);
         obj.right_pivot = obj.scene.create_node("Rotating right", anchor);
@@ -433,6 +459,13 @@ int main(int argc, char** argv) {
           const auto handle=device.create_buffer({BufferUsage::Uniform,bytes.size()},bytes);
           obj.gltf_instances.push_back({handle,mesh_index,model});
         }
+      }else if(obj.uses_scene_file){
+        for(auto& instance:obj.scene_instances) {
+          const auto model=obj.scene_anchor*obj.scene.world_matrix(instance.node);
+          const auto uniforms=make_object_uniform(model,{0.16,0.57,0.95});
+          const auto bytes=std::as_bytes(std::span(&uniforms,1));
+          instance.uniform=device.create_buffer({BufferUsage::Uniform,bytes.size()},bytes);
+        }
       }else{
         obj.object_uniform_left = device.create_buffer(
             {BufferUsage::Uniform,init_bytes.size()},init_bytes);
@@ -451,12 +484,15 @@ int main(int argc, char** argv) {
                 << " triangles, " << (imported->additional_meshes.size()+1)
                 << " meshes, " << sections_count << " material ranges, "
                 << imported->textures.size() << " textures, "
-                << (use_gltf?imported->gltf_instances.size():2)
+                << (use_gltf?imported->gltf_instances.size():
+                    imported->uses_scene_file?imported->scene_instances.size():2)
                 << " instances sharing per-mesh geometry\n";
     }
 
     double yaw = 0.45, pitch = 0.75, distance = scene_camera.starting_distance;
-    double previous_time = glfwGetTime(), last_step_time = previous_time;
+    double previous_time = glfwGetTime();
+    terraflux::runtime::FixedStepScheduler scheduler(1.0/60.0,0.25,8);
+    double engine_time=0.0, playback_accumulator=0.0;
     std::size_t playback_frame = 0;
     std::size_t uploaded_frame = static_cast<std::size_t>(-1);
     bool playing = playback.has_value();
@@ -470,8 +506,16 @@ int main(int argc, char** argv) {
       glfwPollEvents();
       if (glfwGetKey(window.get(), GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
       const double now = glfwGetTime();
-      const double delta = std::clamp(now - previous_time, 0.0, 0.1);
+      const double elapsed = std::max(0.0, now - previous_time);
+      const double delta = std::clamp(elapsed, 0.0, 0.1);
       previous_time = now;
+      // Clamp large stalls and catch-up work while keeping updates at 60 Hz.
+      // Render/input continues once per frame, independent of fixed updates.
+      const auto fixed_report=scheduler.advance(elapsed,[&](double dt) {
+        engine_time+=dt;
+        if(playback && playing)playback_accumulator+=dt;
+      });
+      (void)fixed_report;
       const bool space = glfwGetKey(window.get(), GLFW_KEY_SPACE) == GLFW_PRESS;
       const bool home = glfwGetKey(window.get(), GLFW_KEY_HOME) == GLFW_PRESS;
       const bool back = glfwGetKey(window.get(), GLFW_KEY_COMMA) == GLFW_PRESS;
@@ -480,19 +524,23 @@ int main(int argc, char** argv) {
         if (space && !previous_space) {
           if (!playing && playback_frame + 1 == playback->frames.size()) playback_frame = 0;
           playing = !playing;
-          last_step_time = now;
+          playback_accumulator = 0.0;
         }
-        if (home && !previous_home) { playback_frame = 0; playing = false; }
+        if (home && !previous_home) {
+          playback_frame = 0; playing = false; playback_accumulator=0;
+        }
         if (back && !previous_back) {
-          playback_frame = playback_frame == 0 ? 0 : playback_frame - 1; playing = false;
+          playback_frame = playback_frame == 0 ? 0 : playback_frame - 1;
+          playing = false; playback_accumulator=0;
         }
         if (forward && !previous_forward) {
-          playback_frame = std::min(playback_frame + 1, playback->frames.size() - 1); playing = false;
+          playback_frame = std::min(playback_frame + 1, playback->frames.size() - 1);
+          playing = false; playback_accumulator=0;
         }
-        if (playing && now - last_step_time >= 0.35) {
+        while (playing && playback_accumulator >= 0.35) {
+          playback_accumulator-=0.35;
           if (playback_frame + 1 < playback->frames.size()) ++playback_frame;
-          else playing = false;
-          last_step_time = now;
+          else { playing=false; playback_accumulator=0; }
         }
         if (playback_frame != uploaded_frame) {
           terraflux::replay::apply_frame(playback->frames[playback_frame], *fire_field);
@@ -533,7 +581,7 @@ int main(int argc, char** argv) {
       }
       update_camera(device, camera, width, height, scene_camera, yaw, pitch, distance,
                     cell_size, fire_field ? fire_field->width : 1,
-                    fire_field ? fire_field->height : 1, now);
+                    fire_field ? fire_field->height : 1, engine_time);
       device.clear_frame(width, height);
       DrawIndexed command{pipeline, vb, ib, 0,
           static_cast<std::uint32_t>(upload.indices.size()), {{0, camera}}, {}};
@@ -560,15 +608,30 @@ int main(int argc, char** argv) {
                 {},{{3,section.albedo}}});
           }
         }
+      }else if(imported && imported->uses_scene_file) {
+        for(const auto& instance:imported->scene_instances) {
+          const auto model=imported->scene_anchor*
+                           imported->scene.world_matrix(instance.node);
+          for(const auto& section:imported->sections) {
+            const auto& kd=section.base_color;
+            const auto uniform=make_object_uniform(model,
+                {0.16*kd.x,0.57*kd.y,0.95*kd.z});
+            device.update_buffer(instance.uniform,0,
+                                 std::as_bytes(std::span(&uniform,1)));
+            device.draw_indexed({imported->pipeline,imported->vb,imported->ib,
+                section.first,section.count,{{0,camera},{2,instance.uniform}},
+                {},{{3,section.albedo}}});
+          }
+        }
       }else if (imported) {
         using terraflux::scene::Transform;
         const double spread = imported->separation;
         // Per-object animation updates only UBO state; geometry remains fixed.
         imported->scene.set_transform(imported->left_pivot,
-            Transform{{-spread, 0.0, 0.0}, {0.0, now*0.7, 0.0}, {1.0,1.0,1.0}});
+            Transform{{-spread, 0.0, 0.0}, {0.0, engine_time*0.7, 0.0}, {1.0,1.0,1.0}});
         imported->scene.set_transform(imported->right_pivot,
-            Transform{{spread, 0.10*spread*std::sin(now*1.4), 0.0},
-                      {0.0, -now*0.43, 0.0}, {1.0,1.0,1.0}});
+            Transform{{spread, 0.10*spread*std::sin(engine_time*1.4), 0.0},
+                      {0.0, -engine_time*0.43, 0.0}, {1.0,1.0,1.0}});
         const auto left_world=imported->scene.world_matrix(imported->left_mesh);
         const auto right_world=imported->scene.world_matrix(imported->right_mesh);
         for(const auto& section:imported->sections) {
@@ -614,6 +677,9 @@ int main(int argc, char** argv) {
       }
       if(imported->is_gltf) {
         for(const auto& instance:imported->gltf_instances)
+          device.destroy_buffer(instance.uniform);
+      }else if(imported->uses_scene_file) {
+        for(const auto& instance:imported->scene_instances)
           device.destroy_buffer(instance.uniform);
       }else{
         device.destroy_buffer(imported->object_uniform_right);

@@ -148,3 +148,28 @@ mesh definitions are separate (they are not merged into one vertex/index
 buffer), allowing later independent culling, resource lifetime management,
 and material caching. Multi-mesh support is static only; there are still no
 glTF image textures, animations, skinning, GLB or complete PBR materials.
+
+
+## Phase 8: Scene JSON and fixed-step runtime
+
+The native engine now serializes/deserializes a versioned, bounded
+`terraflux.scene` JSON format preserving hierarchy, stable node IDs,
+local translation/rotation/scale and explicit `mesh_instance` markers.
+It validates parent references, cycles, node bounds, names, transforms and
+the schema version. It is deliberately a **primary-mesh scene**:
+`--scene` currently requires `--obj` and instantiates that OBJ mesh for
+every marked drawable node. Scene asset paths and arbitrary component types
+are future work. glTF already has its own node hierarchy.
+
+```bash
+./build-gl/terraflux-terrain-viewer \
+  --obj examples/assets/pyramid.obj \
+  --scene examples/scenes/twin_pyramids.json
+```
+
+The update loop now uses `runtime::FixedStepScheduler` with deterministic
+1/60-second update steps, bounded catch-up work and a fractional interpolation
+factor. OBJ example animations and wildfire replay advance by simulated time
+rather than unpredictable wall-clock deltas. Input and rendering still
+occur each displayed frame. A versioned scene-file roundtrip and scheduler
+regression suite runs in native CTest even without OpenGL.
