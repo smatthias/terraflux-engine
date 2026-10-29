@@ -9,6 +9,7 @@ add_library(terraflux_compute STATIC
   src/scene.cpp
   src/assets/obj.cpp
   src/assets/material.cpp
+  src/assets/gltf.cpp
   src/terrain_mesh.cpp
 )
 target_include_directories(terraflux_compute PUBLIC include)
