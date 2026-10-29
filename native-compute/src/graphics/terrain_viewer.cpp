@@ -273,6 +273,12 @@ int main(int argc, char** argv) {
           static_cast<std::uint32_t>(upload.indices.size()), {{0, camera}}, {}};
       if (fire_buffer) command.storage_buffers.push_back({1, *fire_buffer});
       device.draw_indexed(command);
+      if (options.smoke_test && playback && !playback->frames[playback_frame].active.empty()) {
+        const auto visible_fire = device.count_fire_pixels(width, height);
+        if (visible_fire == 0)
+          throw std::runtime_error("smoke test found no visible fire pixels");
+        std::cout << "Visible fire pixels: " << visible_fire << '\n';
+      }
       glfwSwapBuffers(window.get());
       ++rendered_frames;
       if (options.smoke_test) break;

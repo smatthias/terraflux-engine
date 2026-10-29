@@ -60,6 +60,7 @@ struct GL {
   PFNGLCLEARCOLORPROC ClearColor = get_proc<PFNGLCLEARCOLORPROC>("glClearColor");
   PFNGLCLEARPROC Clear = get_proc<PFNGLCLEARPROC>("glClear");
   PFNGLVIEWPORTPROC Viewport = get_proc<PFNGLVIEWPORTPROC>("glViewport");
+  PFNGLREADPIXELSPROC ReadPixels = get_proc<PFNGLREADPIXELSPROC>("glReadPixels");
 };
 
 constexpr char kVertexShader[] = R"GLSL(#version 430 core
@@ -470,6 +471,21 @@ void OpenGLRenderDevice::clear_frame(int framebuffer_width, int framebuffer_heig
   impl_->gl.Viewport(0, 0, framebuffer_width, framebuffer_height);
   impl_->gl.ClearColor(0.065f, 0.095f, 0.13f, 1.0f);
   impl_->gl.Clear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+}
+
+std::size_t OpenGLRenderDevice::count_fire_pixels(int width, int height) {
+  if (width <= 0 || height <= 0 ||
+      static_cast<std::uint64_t>(width) * static_cast<std::uint64_t>(height) > 4'000'000)
+    throw std::invalid_argument("invalid framebuffer dimensions for fire validation");
+  std::vector<std::uint8_t> pixels(static_cast<std::size_t>(width) * height * 4);
+  impl_->gl.ReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+  std::size_t hot_pixels = 0;
+  for (std::size_t i = 0; i < pixels.size(); i += 4) {
+    const int red = pixels[i], green = pixels[i + 1], blue = pixels[i + 2];
+    if (red >= 175 && red > green * 1.7 && red > blue * 2.0)
+      ++hot_pixels;
+  }
+  return hot_pixels;
 }
 
 }  // namespace terraflux::graphics

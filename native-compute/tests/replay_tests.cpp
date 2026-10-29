@@ -58,6 +58,23 @@ void test_grid_boundaries() {
   rejects([&] {terraflux::replay::apply_frame(invalid,copy);},
           "off-grid fire frame must be rejected");
 }
+void test_missing_cell_mask() {
+  terraflux::compute::GridCell a{}, b{};
+  a.x = 0; a.y = 0; a.fuel_load = 1.0;
+  b.x = 2; b.y = 2; b.fuel_load = 1.0;
+  terraflux::compute::Grid sparse({a,b});
+  auto field = terraflux::replay::make_fire_field(sparse);
+  check(field.width==3 && field.height==3, "sparse bounds retained");
+  check(terraflux::replay::state_at(field,1,1)==3, "missing cell excluded from fire grid");
+  terraflux::replay::Frame invalid{1,{{1,1}},{{1,1}}};
+  rejects([&] { terraflux::replay::apply_frame(invalid,field); },
+          "missing cell must reject rendering fire");
+  terraflux::compute::GridCell far{};
+  far.x = 1000000; far.y = 1000000;
+  terraflux::compute::Grid oversized({a,far});
+  rejects([&] { (void)terraflux::replay::make_fire_field(oversized); },
+          "oversized sparse rectangle must not allocate unbounded GPU storage");
+}
 void test_reject_mismatch() {
   auto bad=response;
   const auto where=bad.find("test-replay");
@@ -85,8 +102,8 @@ void test_reject_invalid_counts() {
 } // namespace
 int main(){
   try{
-    test_playback(); test_grid_boundaries(); test_reject_mismatch(); test_reject_nonmonotonic();
+    test_playback(); test_grid_boundaries(); test_missing_cell_mask(); test_reject_mismatch(); test_reject_nonmonotonic();
     test_reject_offgrid(); test_reject_invalid_counts();
-    std::cout<<"TerraFlux replay tests: 6 passed\n";
+    std::cout<<"TerraFlux replay tests: 7 passed\n";
   }catch(const std::exception& e){std::cerr<<e.what()<<'\n'; return 1;}
 }

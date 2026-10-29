@@ -127,7 +127,8 @@ FireField make_fire_field(const compute::Grid& grid) {
   const auto height = static_cast<std::uint64_t>(
       static_cast<std::int64_t>(max_y) - min_y + 1);
   constexpr std::uint64_t kMaxAtlasCells = 4'000'000;
-  if (width * height > kMaxAtlasCells)
+  if (height == 0 || width > kMaxAtlasCells || height > kMaxAtlasCells ||
+      width > kMaxAtlasCells / height)
     throw std::invalid_argument("fire field bounding box exceeds 4M cells; use terrain tiles");
   FireField result{min_x, min_y, static_cast<std::uint32_t>(width),
                    static_cast<std::uint32_t>(height),

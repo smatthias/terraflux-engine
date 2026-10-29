@@ -26,6 +26,9 @@ class OpenGLRenderDevice final : public RenderDevice {
   void draw_indexed(const DrawIndexed& command) override;
 
   void clear_frame(int framebuffer_width, int framebuffer_height);
+  // Smoke-test diagnostic; inspect the back buffer before swapping it.
+  // Counts bright red/orange pixels in the current render target.
+  std::size_t count_fire_pixels(int framebuffer_width, int framebuffer_height);
 
  private:
   struct Impl;
