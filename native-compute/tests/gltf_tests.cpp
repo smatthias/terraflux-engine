@@ -39,6 +39,19 @@ void valid_mesh(const std::string& json) {
           "PBR baseColorFactor imported");
   require(std::abs(model.mesh.vertices[2].position.z-0.65)<1e-5 &&
           std::abs(model.mesh.vertices[2].uv.x-0.5)<1e-6,"position and UV extraction");
+  require(model.nodes.size()==4 && model.instances.size()==2,
+          "scene hierarchy instances share one mesh");
+  require(model.nodes[0].children.size()==2 && !model.nodes[3].in_scene,
+          "scene selects only the root and its descendants");
+  const auto left=model.instances[0].world.transformPoint({0,0,0});
+  const auto right=model.instances[1].world.transformPoint({0,0,0});
+  require(std::abs(left.x+1.15)<1e-5 && std::abs(right.x-1.15)<1e-5,
+          "glTF parent-child translations");
+  const auto rotated=model.instances[0].world.transformDirection({1,0,0});
+  require(std::abs(rotated.z+0.70710678)<1e-5,
+          "glTF quaternion Y rotation");
+  const auto scaled=model.instances[1].world.transformDirection({0,1,0});
+  require(std::abs(scaled.y-1.2)<1e-5, "glTF node nonuniform scale");
   auto gpu=terraflux::graphics::prepare_textured_asset_upload(model.mesh);
   require(gpu.vertices.size()==8 && gpu.indices.size()==12,"GPU upload glTF");
 }
@@ -60,6 +73,25 @@ void rejects_invalid_contracts(const std::string& json) {
   rejects([&]{(void)terraflux::assets::import_gltf(
       replace_first(json,"\"byteOffset\": 128","\"byteOffset\": 149"));},
       "out-of-range buffer view");
+}
+void invalid_scene_hierarchy(const std::string& json) {
+  rejects([&]{(void)terraflux::assets::import_gltf(replace_first(
+      json,"\"children\": [\n        1,\n        2\n      ]",
+      "\"children\": [0,1,2]"));},"self-referential node");
+  rejects([&]{(void)terraflux::assets::import_gltf(replace_first(
+      json,"\"children\": [\n        1,\n        2\n      ]",
+      "\"children\": [1,1,2]"));},"two parents from duplicate child");
+  rejects([&]{(void)terraflux::assets::import_gltf(replace_first(
+      json,"\"translation\": [\n        -1.15,\n        0,\n        0\n      ]",
+      "\"translation\": [1,2]"));},"bad glTF translation");
+  rejects([&]{(void)terraflux::assets::import_gltf(replace_first(
+      json,"\"rotation\": [\n        0,\n        0.382683432365,\n        0,\n        0.923879532511\n      ]",
+      "\"rotation\": [0,0,0,0]"));},"zero quaternion");
+  rejects([&]{(void)terraflux::assets::import_gltf(replace_first(
+      json,"\"scale\": [\n        0.75,\n        1.2,\n        0.75\n      ]",
+      "\"scale\": [0,1,1]"));},"singular glTF instance");
+  rejects([&]{(void)terraflux::assets::import_gltf(replace_first(
+      json,"\"scene\": 0", "\"scene\": 8"));},"invalid selected scene");
 }
 void external_buffer_callback(const std::string& json) {
   const auto original="data:application/octet-stream;base64,";
@@ -122,7 +154,8 @@ int main(int argc,char** argv) {
                             std::istreambuf_iterator<char>());
     valid_mesh(json);
     rejects_invalid_contracts(json);
+    invalid_scene_hierarchy(json);
     external_buffer_callback(json);
-    std::cout<<"glTF 2.0: 3 test groups passed\n";
+    std::cout<<"glTF 2.0: 4 test groups passed\n";
   }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
 }

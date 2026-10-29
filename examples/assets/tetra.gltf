@@ -117,5 +117,72 @@
         }
       ]
     }
-  ]
+  ],
+  "nodes": [
+    {
+      "name": "Assembly",
+      "translation": [
+        0,
+        0,
+        0
+      ],
+      "children": [
+        1,
+        2
+      ]
+    },
+    {
+      "name": "Left tilted tetra",
+      "mesh": 0,
+      "translation": [
+        -1.15,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0.382683432365,
+        0,
+        0.923879532511
+      ]
+    },
+    {
+      "name": "Right tall tetra",
+      "mesh": 0,
+      "translation": [
+        1.15,
+        0,
+        0
+      ],
+      "scale": [
+        0.75,
+        1.2,
+        0.75
+      ]
+    },
+    {
+      "name": "Unused alternate scene",
+      "mesh": 0,
+      "translation": [
+        0,
+        0,
+        10
+      ]
+    }
+  ],
+  "scenes": [
+    {
+      "name": "Main assembly",
+      "nodes": [
+        0
+      ]
+    },
+    {
+      "name": "Other",
+      "nodes": [
+        3
+      ]
+    }
+  ],
+  "scene": 0
 }

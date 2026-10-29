@@ -8,6 +8,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <functional>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -171,6 +173,163 @@ math::Vec3 normalized(math::Vec3 n) {
     throw std::invalid_argument("degenerate glTF triangle or normal");
   return n/std::sqrt(length_sq);
 }
+
+math::Mat4 node_transform(const Json::Object& o) {
+  const auto* matrix=optional(o,"matrix");
+  const auto* t=optional(o,"translation");
+  const auto* r=optional(o,"rotation");
+  const auto* s=optional(o,"scale");
+  if(matrix && (t || r || s))
+    throw std::invalid_argument("glTF node matrix and TRS are mutually exclusive");
+  if(matrix) {
+    const auto& values=array(*matrix);
+    if(values.size()!=16)throw std::invalid_argument("glTF node matrix needs 16 scalars");
+    math::Mat4 m{};
+    for(std::size_t i=0;i<16;++i)m.values[i]=number(values[i]);
+    constexpr double eps=1e-8;
+    if(std::abs(m.at(3,0))>eps || std::abs(m.at(3,1))>eps ||
+       std::abs(m.at(3,2))>eps || std::abs(m.at(3,3)-1.0)>eps)
+      throw std::invalid_argument("glTF node transform must be affine");
+    return m;
+  }
+  math::Vec3 translation{},scale{1,1,1};
+  if(t){
+    const auto& v=array(*t);
+    if(v.size()!=3)throw std::invalid_argument("glTF translation needs 3 numbers");
+    translation={number(v[0]),number(v[1]),number(v[2])};
+  }
+  if(s){
+    const auto& v=array(*s);
+    if(v.size()!=3)throw std::invalid_argument("glTF scale needs 3 numbers");
+    scale={number(v[0]),number(v[1]),number(v[2])};
+    if(scale.x==0 || scale.y==0 || scale.z==0)
+      throw std::invalid_argument("glTF node scale cannot be zero");
+  }
+  math::Mat4 rotation=math::Mat4::identity();
+  if(r){
+    const auto& v=array(*r);
+    if(v.size()!=4)throw std::invalid_argument("glTF quaternion needs [x,y,z,w]");
+    double x=number(v[0]),y=number(v[1]),z=number(v[2]),w=number(v[3]);
+    const double n=x*x+y*y+z*z+w*w;
+    if(!(n>1e-18) || !std::isfinite(n))
+      throw std::invalid_argument("invalid glTF quaternion");
+    const double inv=1.0/std::sqrt(n);
+    x*=inv;y*=inv;z*=inv;w*=inv;
+    rotation.at(0,0)=1-2*(y*y+z*z);
+    rotation.at(0,1)=2*(x*y-z*w);
+    rotation.at(0,2)=2*(x*z+y*w);
+    rotation.at(1,0)=2*(x*y+z*w);
+    rotation.at(1,1)=1-2*(x*x+z*z);
+    rotation.at(1,2)=2*(y*z-x*w);
+    rotation.at(2,0)=2*(x*z-y*w);
+    rotation.at(2,1)=2*(y*z+x*w);
+    rotation.at(2,2)=1-2*(x*x+y*y);
+  }
+  return math::Mat4::translation(translation)*rotation*math::Mat4::scaling(scale);
+}
+void validate_affine(const math::Mat4& m) {
+  const double det =
+      m.at(0,0)*(m.at(1,1)*m.at(2,2)-m.at(1,2)*m.at(2,1)) -
+      m.at(0,1)*(m.at(1,0)*m.at(2,2)-m.at(1,2)*m.at(2,0)) +
+      m.at(0,2)*(m.at(1,0)*m.at(2,1)-m.at(1,1)*m.at(2,0));
+  if(!std::isfinite(det) || std::abs(det)<1e-14)
+    throw std::invalid_argument("singular glTF node world transform");
+}
+void import_nodes(const Json::Object& doc,GltfModel& result) {
+  const auto* nodes_field=optional(doc,"nodes");
+  if(!nodes_field){
+    // A mesh-only glTF document remains supported by the viewer.
+    result.nodes.push_back({"Implicit mesh",math::Mat4::identity(),
+                            math::Mat4::identity(),std::nullopt,0,{},true});
+    result.instances.push_back({0,math::Mat4::identity()});
+    return;
+  }
+  const auto& input=array(*nodes_field);
+  if(input.empty() || input.size()>4096)
+    throw std::invalid_argument("glTF scene needs 1..4096 nodes");
+  result.nodes.reserve(input.size());
+  for(std::size_t i=0;i<input.size();++i){
+    const auto& o=object(input[i]);
+    GltfNode node;
+    if(const auto* label=optional(o,"name"))node.name=string(*label);
+    if(node.name.empty())node.name="Node "+std::to_string(i);
+    if(optional(o,"skin") || optional(o,"weights") || optional(o,"extensions"))
+      throw std::invalid_argument("glTF skinned, morphed or extended nodes unsupported");
+    node.local=node_transform(o);
+    if(const auto* mesh=optional(o,"mesh")){
+      const auto idx=uint(*mesh,"mesh");
+      if(idx!=0)throw std::invalid_argument("glTF scene references unsupported mesh index");
+      node.mesh_index=idx;
+    }
+    if(const auto* children=optional(o,"children")){
+      const auto& values=array(*children);
+      if(values.size()>4096)throw std::length_error("glTF node has too many children");
+      for(const auto& child:values)
+        node.children.push_back(uint(child,"child"));
+    }
+    result.nodes.push_back(std::move(node));
+  }
+  for(std::size_t i=0;i<result.nodes.size();++i){
+    for(const auto child:result.nodes[i].children){
+      if(child>=result.nodes.size() || child==i)
+        throw std::invalid_argument("glTF node refers to itself or invalid child");
+      auto& parent=result.nodes[child].parent;
+      if(parent.has_value())
+        throw std::invalid_argument("glTF node has multiple parents");
+      parent=static_cast<std::uint32_t>(i);
+    }
+  }
+  // Validate the entire graph, not only the selected scene. Iterative parent
+  // walk prevents untrusted JSON from causing an unbounded recursive call.
+  for(std::size_t i=0;i<result.nodes.size();++i){
+    std::size_t steps=0;
+    auto cursor=std::optional<std::uint32_t>(static_cast<std::uint32_t>(i));
+    while(cursor){
+      if(++steps>result.nodes.size())
+        throw std::invalid_argument("cycle in glTF hierarchy");
+      cursor=result.nodes[*cursor].parent;
+    }
+  }
+  std::vector<std::uint32_t> roots;
+  if(const auto* scenes=optional(doc,"scenes")){
+    const auto& options=array(*scenes);
+    if(options.empty())throw std::invalid_argument("glTF scenes cannot be empty");
+    const auto scene=integer(doc,"scene");
+    if(scene>=options.size())throw std::out_of_range("selected glTF scene missing");
+    const auto& selected=object(options[scene]);
+    if(const auto* scene_roots=optional(selected,"nodes"))
+      for(const auto& value:array(*scene_roots))
+        roots.push_back(uint(value,"scene root"));
+  }else{
+    if(optional(doc,"scene"))
+      throw std::invalid_argument("glTF scene index without scenes");
+    for(std::size_t i=0;i<result.nodes.size();++i)
+      if(!result.nodes[i].parent)
+        roots.push_back(static_cast<std::uint32_t>(i));
+  }
+  if(roots.empty())throw std::invalid_argument("glTF scene has no roots");
+  std::vector<bool> active(result.nodes.size(),false);
+  std::function<void(std::uint32_t,const math::Mat4&,std::size_t)> visit =
+      [&](std::uint32_t id,const math::Mat4& parent,std::size_t depth){
+    if(id>=result.nodes.size() || active[id] || depth>result.nodes.size())
+      throw std::invalid_argument("duplicate or invalid glTF scene node");
+    auto& node=result.nodes[id];
+    // A scene root must actually be a root of the hierarchy.
+    active[id]=true;
+    node.world=parent*node.local;
+    validate_affine(node.world);
+    node.in_scene=true;
+    if(node.mesh_index)
+      result.instances.push_back({id,node.world});
+    for(auto child:node.children)visit(child,node.world,depth+1);
+  };
+  for(const auto id:roots){
+    if(id>=result.nodes.size() || result.nodes[id].parent)
+      throw std::invalid_argument("glTF scene root has parent or invalid index");
+    visit(id,math::Mat4::identity(),0);
+  }
+  if(result.instances.empty())throw std::invalid_argument("selected glTF scene contains no mesh");
+}
 } // namespace
 
 GltfModel import_gltf(const std::string& json_text,
@@ -325,6 +484,7 @@ GltfModel import_gltf(const std::string& json_text,
     result.mesh.sections.push_back({static_cast<std::uint32_t>(
        result.mesh.indices.size()-index_count),static_cast<std::uint32_t>(index_count),material_name});
   }
+  import_nodes(doc,result);
   return result;
 }
 
