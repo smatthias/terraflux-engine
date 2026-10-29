@@ -130,7 +130,7 @@ void test_draw_range_checks() {
   upload.indices[0] = 99;
   auto invalid_bytes = std::as_bytes(std::span(upload.indices));
   const auto bad_ib = device.create_buffer({BufferUsage::Index, invalid_bytes.size()}, invalid_bytes);
-  must_throw([&] { device.draw_indexed({pipeline, vb, bad_ib, 0, 6}); },
+  must_throw([&] { device.draw_indexed({pipeline, vb, bad_ib, 0, 6, {}}); },
              "index referencing missing vertex must be rejected");
 }
 
