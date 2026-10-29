@@ -63,6 +63,17 @@ void Scene::set_mesh_instance(NodeId node, bool enabled) {
   nodes_[node].mesh_instance = enabled;
 }
 
+void Scene::set_angular_velocity(NodeId node, std::optional<math::Vec3> velocity) {
+  check_node(node);
+  if (node == root() && velocity)
+    throw std::invalid_argument("scene root cannot have a Spin component");
+  if (velocity && (!finite(*velocity) ||
+                   std::abs(velocity->x)>1000 || std::abs(velocity->y)>1000 ||
+                   std::abs(velocity->z)>1000))
+    throw std::invalid_argument("Spin angular velocity must be finite and bounded");
+  nodes_[node].angular_velocity=velocity;
+}
+
 const Node& Scene::get(NodeId node) const {
   check_node(node);
   return nodes_[node];

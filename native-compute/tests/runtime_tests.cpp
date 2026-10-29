@@ -106,6 +106,50 @@ void reject_invalid_scene() {
   rejects([&]{(void)deserialize_scene(replace("\"name\":\"Root\"","\"name\":\"Other\""));},
           "noncanonical root rejected");
 }
+void runtime_components_and_profiler(){
+  using terraflux::runtime::update_scene_components;
+  terraflux::scene::Scene graph;
+  const auto pivot=graph.create_node("Pivot");
+  const auto mesh=graph.create_node("Mesh",pivot);
+  graph.set_angular_velocity(pivot,terraflux::math::Vec3{0,2,0});
+  check(update_scene_components(graph,.1)==1,"one active Spin component");
+  check(near(graph.get(pivot).local.rotation_radians.y,.2),
+        "Spin component integrates fixed dt");
+  check(near(graph.get(mesh).local.rotation_radians.y,0),
+        "unregistered component nodes remain static");
+  auto original=terraflux::scene::serialize_scene(graph);
+  auto restored=terraflux::scene::deserialize_scene(original);
+  check(restored.get(pivot).angular_velocity.has_value() &&
+        near(restored.get(pivot).angular_velocity->y,2),
+        "Spin component JSON roundtrip");
+  check(update_scene_components(restored,.1)==1 &&
+        near(restored.get(pivot).local.rotation_radians.y,.4),
+        "serialized behavior updates after loading");
+  restored.set_angular_velocity(pivot,std::nullopt);
+  check(update_scene_components(restored,.1)==0,
+        "removed component stops simulation");
+  rejects([&]{graph.set_angular_velocity(0,terraflux::math::Vec3{0,1,0});},
+          "root cannot spin");
+  rejects([&]{graph.set_angular_velocity(pivot,terraflux::math::Vec3{1001,0,0});},
+          "excessive angular velocity rejected");
+  rejects([&]{(void)update_scene_components(graph,-.1);},"negative timestep");
+  terraflux::runtime::FrameProfiler profiler(2);
+  auto empty=profiler.summary();
+  check(empty.samples==0 && near(empty.mean_render_ms,0),"empty profiler summary");
+  profiler.record({.001,.004,2});
+  profiler.record({.003,.002,4});
+  auto summary=profiler.summary();
+  check(summary.samples==2 && near(summary.mean_update_ms,2) &&
+        near(summary.mean_render_ms,3) && near(summary.mean_draw_calls,3),
+        "CPU frame profiler summaries");
+  profiler.record({.002,.003,6});
+  summary=profiler.summary();
+  check(summary.samples==2 && near(summary.mean_draw_calls,5),
+        "rolling profiler evicts old frames");
+  rejects([&]{profiler.record({-1,0,0});},"bad profiler sample");
+  profiler.clear();
+  check(profiler.summary().samples==0,"profiler clear");
+}
 void example_scene(const std::string& path){
   std::ifstream file(path);
   if(!file)throw std::runtime_error("scene example not found");
@@ -116,6 +160,8 @@ void example_scene(const std::string& path){
         "sample scene contains two drawables");
   check(scene.get(2).parent==1 && scene.get(3).parent==1,
         "sample scene pivot hierarchy");
+  check(scene.get(2).angular_velocity.has_value(),
+        "sample scene Spin component parsed");
   auto serialized=terraflux::scene::serialize_scene(scene);
   auto again=terraflux::scene::deserialize_scene(serialized);
   check(again.size()==scene.size(),"sample scene roundtrip");
@@ -127,8 +173,9 @@ int main(int argc,char** argv) {
     fixed_scheduler();
     save_and_load();
     reject_invalid_scene();
+    runtime_components_and_profiler();
     example_scene(argv[1]);
-    std::cout<<"TerraFlux runtime: 4 test groups passed\n";
+    std::cout<<"TerraFlux runtime: 5 test groups passed\n";
   }catch(const std::exception& e){
     std::cerr<<"Runtime test failed: "<<e.what()<<'\n';
     return 1;

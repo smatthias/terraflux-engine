@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <iomanip>
 #include <limits>
+#include <optional>
 #include <locale>
 #include <sstream>
 #include <stdexcept>
@@ -85,6 +86,10 @@ std::string serialize_scene(const Scene& scene) {
     vec3_out(out,node.local.rotation_radians);
     out<<",\"scale\":";
     vec3_out(out,node.local.scale);
+    if(node.angular_velocity) {
+      out<<",\"spin\":";
+      vec3_out(out,*node.angular_velocity);
+    }
     out<<'}'<<(id+1<scene.size()?",":"")<<'\n';
   }
   out<<"  ]\n}\n";
@@ -109,6 +114,7 @@ Scene deserialize_scene(const std::string& json_text) {
   std::vector<NodeId> parents(nodes.size());
   std::vector<Transform> transforms(nodes.size());
   std::vector<bool> mesh_flags(nodes.size());
+  std::vector<std::optional<math::Vec3>> spin_components(nodes.size());
   for(std::size_t id=0;id<nodes.size();++id) {
     const auto& obj=terraflux::json::object(nodes[id]);
     const auto name=terraflux::json::string(terraflux::json::field(obj,"name"));
@@ -123,8 +129,16 @@ Scene deserialize_scene(const std::string& json_text) {
     (void)transforms[id].matrix();
     const auto it=obj.find("mesh_instance");
     mesh_flags[id]=it!=obj.end() && bool_value(it->second);
+    if(obj.contains("spin")) {
+      auto v=vec3(obj,"spin");
+      // Validate before modifying the scene.
+      if(!std::isfinite(v.x) || !std::isfinite(v.y) || !std::isfinite(v.z) ||
+         std::abs(v.x)>1000 || std::abs(v.y)>1000 || std::abs(v.z)>1000)
+        throw std::invalid_argument("invalid Spin component");
+      spin_components[id]=v;
+    }
     if(id==0){
-      if(name!="Root" || parents[id]!=0 || mesh_flags[id])
+      if(name!="Root" || parents[id]!=0 || mesh_flags[id] || spin_components[id])
         throw std::invalid_argument("scene root must have name Root, parent 0 and no mesh");
     }else{
       scene.create_node(name);
@@ -139,6 +153,8 @@ Scene deserialize_scene(const std::string& json_text) {
   for(std::size_t id=0;id<nodes.size();++id){
     scene.set_transform(static_cast<NodeId>(id),transforms[id]);
     if(mesh_flags[id])scene.set_mesh_instance(static_cast<NodeId>(id),true);
+    if(spin_components[id])
+      scene.set_angular_velocity(static_cast<NodeId>(id),spin_components[id]);
   }
   return scene;
 }

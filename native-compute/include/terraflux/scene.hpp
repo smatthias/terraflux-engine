@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -27,6 +28,7 @@ struct Node {
   std::string name;
   Transform local{};
   bool mesh_instance = false; // Draw the scene's primary asset at this node.
+  std::optional<math::Vec3> angular_velocity; // rad/s, runtime Spin component
 };
 
 class Scene {
@@ -37,6 +39,7 @@ class Scene {
   void set_parent(NodeId node, NodeId parent);
   void set_transform(NodeId node, const Transform& value);
   void set_mesh_instance(NodeId node, bool enabled);
+  void set_angular_velocity(NodeId node, std::optional<math::Vec3> radians_per_second);
   const Node& get(NodeId node) const;
   std::size_t size() const { return nodes_.size(); }
   math::Mat4 world_matrix(NodeId node) const;

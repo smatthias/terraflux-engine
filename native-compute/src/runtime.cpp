@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
+#include <numbers>
 
 namespace terraflux::runtime {
 
@@ -49,5 +50,58 @@ void FixedStepScheduler::reset() {
   accumulator_=0;
   simulated_seconds_=0;
 }
+
+std::size_t update_scene_components(scene::Scene& graph,double dt) {
+  if(!std::isfinite(dt) || !(dt>0) || dt>0.25)
+    throw std::invalid_argument("scene component timestep must be (0, 0.25]");
+  std::size_t updated=0;
+  for(std::size_t i=1;i<graph.size();++i) {
+    const auto id=static_cast<scene::NodeId>(i);
+    const auto& node=graph.get(id);
+    if(!node.angular_velocity)continue;
+    const auto velocity=*node.angular_velocity;
+    auto pose=node.local;
+    constexpr double period=2.0*std::numbers::pi;
+    pose.rotation_radians.x=std::remainder(pose.rotation_radians.x+velocity.x*dt,period);
+    pose.rotation_radians.y=std::remainder(pose.rotation_radians.y+velocity.y*dt,period);
+    pose.rotation_radians.z=std::remainder(pose.rotation_radians.z+velocity.z*dt,period);
+    graph.set_transform(id,pose);
+    ++updated;
+  }
+  return updated;
+}
+
+FrameProfiler::FrameProfiler(std::size_t history):history_(history) {
+  if(history==0 || history>10000)
+    throw std::invalid_argument("profiler history capacity must be 1..10000");
+}
+void FrameProfiler::record(ProfileSample sample){
+  if(!std::isfinite(sample.update_seconds) ||
+     !std::isfinite(sample.render_seconds) ||
+     sample.update_seconds<0 || sample.render_seconds<0)
+    throw std::invalid_argument("invalid CPU frame profiling sample");
+  history_[next_]=sample;
+  next_=(next_+1)%history_.size();
+  count_=std::min(count_+1,history_.size());
+}
+ProfileSummary FrameProfiler::summary() const{
+  ProfileSummary result;
+  result.samples=count_;
+  if(!count_)return result;
+  double update=0,render=0,draws=0;
+  for(std::size_t i=0;i<count_;++i){
+    const auto& p=history_[i];
+    update+=p.update_seconds;
+    render+=p.render_seconds;
+    draws+=p.draw_calls;
+    result.max_frame_ms=std::max(result.max_frame_ms,
+                                 (p.update_seconds+p.render_seconds)*1000);
+  }
+  result.mean_update_ms=1000*update/count_;
+  result.mean_render_ms=1000*render/count_;
+  result.mean_draw_calls=draws/count_;
+  return result;
+}
+void FrameProfiler::clear(){count_=next_=0;}
 
 } // namespace terraflux::runtime
