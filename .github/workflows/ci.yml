@@ -40,3 +40,38 @@ jobs:
           python intelligence/scripts/verify_native_parity.py \
             --runner build/terraflux-compute-runner \
             --fixtures intelligence/tests/fixtures/grid_spread_cases.json
+
+  clang-debug-native:
+    name: Clang Debug and parity
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install Python dependencies
+        run: pip install -r intelligence/requirements.txt
+
+      - name: Build with Clang (Debug)
+        run: |
+          cmake -S native-compute -B build-clang \
+            -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_FLAGS="-Wall -Wextra -Wpedantic"
+          cmake --build build-clang --parallel 2
+
+      - name: Run native grid tests
+        run: ctest --test-dir build-clang --output-on-failure
+
+      - name: Verify native parity with Clang
+        env:
+          PYTHONPATH: intelligence
+        run: |
+          python intelligence/scripts/verify_native_parity.py \
+            --runner build-clang/terraflux-compute-runner \
+            --fixtures intelligence/tests/fixtures/grid_spread_cases.json
