@@ -43,6 +43,11 @@ if(BUILD_TESTING)
   target_link_libraries(terraflux-scene-tests PRIVATE terraflux_compute)
   add_test(NAME terraflux-scene-tests COMMAND terraflux-scene-tests)
 
+  add_executable(terraflux-gltf-tests tests/gltf_tests.cpp)
+  target_link_libraries(terraflux-gltf-tests PRIVATE terraflux_graphics)
+  add_test(NAME terraflux-gltf-tests COMMAND terraflux-gltf-tests
+      "${CMAKE_SOURCE_DIR}/../examples/assets/tetra.gltf")
+
   add_executable(terraflux-material-tests tests/material_tests.cpp)
   target_link_libraries(terraflux-material-tests PRIVATE terraflux_compute)
   add_test(NAME terraflux-material-tests COMMAND terraflux-material-tests)
