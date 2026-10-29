@@ -24,7 +24,7 @@ math::Mat4 Transform::matrix() const {
          math::Mat4::scaling(scale);
 }
 
-Scene::Scene() { nodes_.push_back({root(), "Root", {}}); }
+Scene::Scene() { nodes_.push_back({root(), "Root", {}, false, std::nullopt}); }
 
 void Scene::check_node(NodeId id) const {
   if (id >= nodes_.size()) throw std::out_of_range("unknown scene node");
@@ -36,7 +36,7 @@ NodeId Scene::create_node(std::string name, NodeId parent) {
   if (nodes_.size() >= std::numeric_limits<NodeId>::max())
     throw std::overflow_error("scene node ID space exhausted");
   const auto id = static_cast<NodeId>(nodes_.size());
-  nodes_.push_back({parent, std::move(name), {}});
+  nodes_.push_back({parent, std::move(name), {}, false, std::nullopt});
   return id;
 }
 
