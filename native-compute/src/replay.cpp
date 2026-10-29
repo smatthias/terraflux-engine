@@ -99,18 +99,61 @@ Playback load(const std::string& request_json, const std::string& response_json)
   return playback;
 }
 
-void apply_frame(const terrain::TerrainMesh& mesh, const Frame& frame,
-                 graphics::TerrainUpload& upload) {
-  if (mesh.vertices.size() != upload.vertices.size())
-    throw std::invalid_argument("mesh/upload vertex count mismatch");
-  // Updating every vertex is deliberately simple for the first viewer.
-  // Later stages can add sparse GPU updates using frame deltas.
-  std::set<Point> active(frame.active.begin(), frame.active.end());
-  std::set<Point> burned(frame.burned.begin(), frame.burned.end());
-  for (std::size_t i = 0; i < mesh.vertices.size(); ++i) {
-    const Point point{mesh.vertices[i].grid_x, mesh.vertices[i].grid_y};
-    upload.vertices[i].fire_state = active.contains(point) ? 1.0f :
-        burned.contains(point) ? 0.5f : 0.0f;
+
+namespace {
+std::size_t index_at(const FireField& field, std::int32_t x, std::int32_t y) {
+  const auto offset_x = static_cast<std::int64_t>(x) - field.min_x;
+  const auto offset_y = static_cast<std::int64_t>(y) - field.min_y;
+  if (offset_x < 0 || offset_y < 0 ||
+      offset_x >= field.width || offset_y >= field.height)
+    throw std::out_of_range("fire state coordinate outside scenario grid");
+  return static_cast<std::size_t>(offset_y) * field.width +
+      static_cast<std::size_t>(offset_x);
+}
+}
+
+FireField make_fire_field(const compute::Grid& grid) {
+  if (grid.cells.empty()) throw std::invalid_argument("cannot visualize empty grid");
+  std::int32_t min_x = grid.cells.front().x, min_y = grid.cells.front().y;
+  std::int32_t max_x = min_x, max_y = min_y;
+  for (const auto& cell : grid.cells) {
+    min_x = std::min(min_x, cell.x);
+    min_y = std::min(min_y, cell.y);
+    max_x = std::max(max_x, cell.x);
+    max_y = std::max(max_y, cell.y);
   }
+  const auto width = static_cast<std::uint64_t>(
+      static_cast<std::int64_t>(max_x) - min_x + 1);
+  const auto height = static_cast<std::uint64_t>(
+      static_cast<std::int64_t>(max_y) - min_y + 1);
+  constexpr std::uint64_t kMaxAtlasCells = 4'000'000;
+  if (width * height > kMaxAtlasCells)
+    throw std::invalid_argument("fire field bounding box exceeds 4M cells; use terrain tiles");
+  FireField result{min_x, min_y, static_cast<std::uint32_t>(width),
+                   static_cast<std::uint32_t>(height),
+                   std::vector<std::uint32_t>(static_cast<std::size_t>(width*height), 3)};
+  for (const auto& cell : grid.cells)
+    result.states[index_at(result,cell.x,cell.y)] = 0;
+  return result;
+}
+
+std::uint32_t state_at(const FireField& field, std::int32_t x, std::int32_t y) {
+  return field.states.at(index_at(field,x,y));
+}
+
+void apply_frame(const Frame& frame, FireField& field) {
+  // Reset only valid cells, retaining holes as 3. Never modify the grid or
+  // create an active pixel where the simulation has no cell.
+  for (auto& state : field.states)
+    if (state != 3) state = 0;
+  const auto paint = [&](const std::vector<Point>& points, std::uint32_t value) {
+    for (const auto& [x,y] : points) {
+      auto& state = field.states.at(index_at(field,x,y));
+      if (state == 3) throw std::invalid_argument("fire outside populated grid");
+      state = value;
+    }
+  };
+  paint(frame.burned, 1);
+  paint(frame.active, 2);
 }
 }  // namespace terraflux::replay

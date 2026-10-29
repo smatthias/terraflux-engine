@@ -34,14 +34,29 @@ const std::string response = R"JSON({
 void test_playback() {
   auto playback=terraflux::replay::load(request,response);
   check(playback.frames.size()==3 && playback.grid.cells.size()==4, "parsed request and frames");
-  auto mesh=terraflux::terrain::build_terrain_mesh(playback.grid,playback.cell_size_meters);
-  auto upload=terraflux::graphics::prepare_terrain_upload(mesh);
-  terraflux::replay::apply_frame(mesh,playback.frames[0],upload);
-  check(upload.vertices[0].fire_state==1 && upload.vertices[1].fire_state==0, "initial ignition");
-  terraflux::replay::apply_frame(mesh,playback.frames[1],upload);
-  check(upload.vertices[0].fire_state==0.5f && upload.vertices[1].fire_state==1, "new fire is active");
-  terraflux::replay::apply_frame(mesh,playback.frames[2],upload);
-  check(upload.vertices[0].fire_state==0.5f && upload.vertices[1].fire_state==0.5f, "burned history persists");
+  auto field=terraflux::replay::make_fire_field(playback.grid);
+  check(field.width==2 && field.height==2, "field matches grid size");
+  terraflux::replay::apply_frame(playback.frames[0],field);
+  check(terraflux::replay::state_at(field,0,0)==2 &&
+        terraflux::replay::state_at(field,1,0)==0, "initial ignition");
+  terraflux::replay::apply_frame(playback.frames[1],field);
+  check(terraflux::replay::state_at(field,0,0)==1 &&
+        terraflux::replay::state_at(field,1,0)==2, "new fire active");
+  terraflux::replay::apply_frame(playback.frames[2],field);
+  check(terraflux::replay::state_at(field,0,0)==1 &&
+        terraflux::replay::state_at(field,1,0)==1, "burned history persists");
+}
+void test_grid_boundaries() {
+  auto playback=terraflux::replay::load(request,response);
+  const auto field=terraflux::replay::make_fire_field(playback.grid);
+  rejects([&] { (void)terraflux::replay::state_at(field,-1,0); },
+          "fire coordinates must not leave left boundary");
+  rejects([&] { (void)terraflux::replay::state_at(field,2,0); },
+          "fire coordinates must not leave right boundary");
+  auto copy=field;
+  terraflux::replay::Frame invalid{3,{{3,3}},{{3,3}}};
+  rejects([&] {terraflux::replay::apply_frame(invalid,copy);},
+          "off-grid fire frame must be rejected");
 }
 void test_reject_mismatch() {
   auto bad=response;
@@ -70,8 +85,8 @@ void test_reject_invalid_counts() {
 } // namespace
 int main(){
   try{
-    test_playback(); test_reject_mismatch(); test_reject_nonmonotonic();
+    test_playback(); test_grid_boundaries(); test_reject_mismatch(); test_reject_nonmonotonic();
     test_reject_offgrid(); test_reject_invalid_counts();
-    std::cout<<"TerraFlux replay tests: 5 passed\n";
+    std::cout<<"TerraFlux replay tests: 6 passed\n";
   }catch(const std::exception& e){std::cerr<<e.what()<<'\n'; return 1;}
 }

@@ -159,6 +159,25 @@ void ValidatingRenderDevice::draw_indexed(const DrawIndexed& command) {
     if (matching == bindings.end())
       throw std::invalid_argument("uniform buffer bound to undeclared slot");
   }
+
+  std::unordered_set<std::uint32_t> storage_slots;
+  for (const auto& bound : command.storage_buffers) {
+    if (!storage_slots.insert(bound.slot).second)
+      throw std::invalid_argument("duplicate shader storage binding");
+    const auto it = buffers_.find(bound.buffer.id);
+    if (it == buffers_.end() || it->second.desc.usage != BufferUsage::Storage)
+      throw std::invalid_argument("invalid shader storage buffer");
+    const auto& declared = pipeline->second.layout.bindings;
+    const auto match = std::find_if(declared.begin(), declared.end(),
+        [&](const ShaderBinding& binding) {
+          return binding.kind == ShaderResourceKind::StorageBuffer && binding.slot == bound.slot;
+        });
+    if (match == declared.end()) throw std::invalid_argument("undeclared shader storage slot");
+  }
+  for (const auto& required : pipeline->second.layout.bindings)
+    if (required.kind == ShaderResourceKind::StorageBuffer &&
+        !storage_slots.contains(required.slot))
+      throw std::invalid_argument("required shader storage buffer not bound");
   ++draw_count_;
 }
 

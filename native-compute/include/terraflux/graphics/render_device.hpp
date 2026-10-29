@@ -40,7 +40,7 @@ std::uint32_t vertex_format_bytes(VertexFormat format);
 void validate_shader_layout(const ShaderLayout& layout);
 void validate_shader_reflection(const ShaderLayout& expected, const ShaderLayout& reflected);
 
-enum class BufferUsage : std::uint8_t { Vertex, Index, Uniform };
+enum class BufferUsage : std::uint8_t { Vertex, Index, Uniform, Storage };
 struct BufferDesc {
   BufferUsage usage = BufferUsage::Vertex;
   std::size_t size_bytes = 0;
@@ -67,6 +67,11 @@ struct UniformBufferBinding {
   BufferHandle buffer;
 };
 
+struct StorageBufferBinding {
+  std::uint32_t slot = 0;
+  BufferHandle buffer;
+};
+
 struct DrawIndexed {
   PipelineHandle pipeline;
   BufferHandle vertex_buffer;
@@ -74,6 +79,7 @@ struct DrawIndexed {
   std::uint32_t first_index = 0;
   std::uint32_t index_count = 0;
   std::vector<UniformBufferBinding> uniform_buffers;
+  std::vector<StorageBufferBinding> storage_buffers;
 };
 
 // The engine owns this interface; no OpenGL, GLFW, PSSL, or console types

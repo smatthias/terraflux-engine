@@ -30,6 +30,15 @@ ShaderLayout terrain_shader_layout() {
   };
 }
 
+ShaderLayout wildfire_shader_layout() {
+  ShaderLayout layout = terrain_shader_layout();
+  // The wildfire shader uses the same interleaved vertex format but reads
+  // fire data independently from a sparse-aware, clamped grid cell buffer.
+  layout.attributes.pop_back(); // FIRE_STATE is no longer a vertex input.
+  layout.bindings.push_back({"FireState", ShaderResourceKind::StorageBuffer, 1, kFragmentStage});
+  return layout;
+}
+
 TerrainUpload prepare_terrain_upload(const terrain::TerrainMesh& mesh) {
   TerrainUpload result;
   result.vertices.reserve(mesh.vertices.size());

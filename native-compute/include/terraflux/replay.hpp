@@ -27,8 +27,18 @@ struct Playback {
 // response; verifies matching contract/grid and the cumulative frame shape.
 Playback load(const std::string& request_json, const std::string& response_json);
 
-// 0 = unburned, 0.5 = burned, 1 = actively burning. Only affects GPU data;
-// never mutates the simulation, grid or stored frame history.
-void apply_frame(const terrain::TerrainMesh& mesh, const Frame& frame,
-                 graphics::TerrainUpload& upload);
+// Dense GPU-visible cell field, distinct from terrain vertices. A 3x3 shader
+// neighborhood of rounded fire footprints avoids square vertex interpolation.
+// 0 = valid and unburned, 1 = burned, 2 = active, 3 = absent cell.
+// Coordinates are always checked against the *actual* simulation grid.
+struct FireField {
+  std::int32_t min_x = 0, min_y = 0;
+  std::uint32_t width = 0, height = 0;
+  std::vector<std::uint32_t> states;
+};
+
+FireField make_fire_field(const compute::Grid& grid);
+void apply_frame(const Frame& frame, FireField& field);
+std::uint32_t state_at(const FireField& field, std::int32_t x, std::int32_t y);
+
 }  // namespace terraflux::replay
