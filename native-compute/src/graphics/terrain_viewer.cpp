@@ -383,7 +383,7 @@ int main(int argc, char** argv) {
         obj.textures.emplace(key,id);
         return id;
       };
-      const build_sections=[&](const terraflux::assets::Mesh& mesh) {
+      const auto build_sections=[&](const terraflux::assets::Mesh& mesh) {
         std::vector<ImportedGpu::Section> result;
         result.reserve(mesh.sections.size());
         for(const auto& section:mesh.sections) {
