@@ -6,6 +6,7 @@ add_library(terraflux_compute STATIC
   src/grid.cpp
   src/elevation_fill.cpp
   src/math.cpp
+  src/terrain_mesh.cpp
 )
 target_include_directories(terraflux_compute PUBLIC include)
 target_compile_features(terraflux_compute PUBLIC cxx_std_20)
@@ -22,4 +23,8 @@ if(BUILD_TESTING)
   add_executable(terraflux-math-tests tests/math_tests.cpp)
   target_link_libraries(terraflux-math-tests PRIVATE terraflux_compute)
   add_test(NAME terraflux-math-tests COMMAND terraflux-math-tests)
+
+  add_executable(terraflux-terrain-mesh-tests tests/terrain_mesh_tests.cpp)
+  target_link_libraries(terraflux-terrain-mesh-tests PRIVATE terraflux_compute)
+  add_test(NAME terraflux-terrain-mesh-tests COMMAND terraflux-terrain-mesh-tests)
 endif()
