@@ -217,3 +217,40 @@ changes**; it is not hardware instancing or multiple draws merged into one.
 Run any asset viewer with `--profile` to see periodic lines reporting
 visible and culled instances, opaque draw calls, and state groups. The
 `--smoke-test` option prints the same diagnostics for one frame.
+
+
+## Phase 9: GPU elapsed queries and repeatable culling A/B benchmark
+
+The OpenGL renderer can sample `GL_TIME_ELAPSED` with an eight-slot
+asynchronous query ring. The timed section covers **GPU framebuffer clearing
+and draw submissions**, not CPU scene updates, buffer loading or the display
+swap. Live `--profile` prints GPU mean timing and sample counts alongside CPU
+timings; unavailable query slots are skipped rather than blocking frames.
+
+```bash
+python3 examples/benchmark_culling.py --frames 120
+```
+
+The script uses a static 100-object JSON scene with **20 near-camera nodes
+and 80 deliberately off-screen nodes**, then runs culling disabled and
+enabled, with fixed 60 Hz simulation deltas, a fixed camera, no VSync,
+eight warmup frames and identical resolution. It reports CPU render
+submission, GPU elapsed time, draw calls, and their differences. A machine
+with a real hardware OpenGL driver/display is recommended. Mesa software
+timings are useful for CI functionality checks, **not representative GPU
+performance claims**. Repeat runs to quantify noise.
+
+Individual runs:
+```bash
+./build-gl/terraflux-terrain-viewer \
+  --obj examples/assets/pyramid.obj \
+  --scene examples/scenes/benchmark_culling.json --benchmark-frames 120
+
+./build-gl/terraflux-terrain-viewer \
+  --obj examples/assets/pyramid.obj \
+  --scene examples/scenes/benchmark_culling.json \
+  --benchmark-frames 120 --no-culling
+```
+Each run emits one machine-readable `BENCHMARK_JSON=` line, including GPU
+query sample count. This is an A/B benchmark foundation, not hardware
+instancing or a demonstration of universal frame-rate improvement.

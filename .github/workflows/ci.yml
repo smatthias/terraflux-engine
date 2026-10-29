@@ -127,6 +127,32 @@ jobs:
             --scene examples/scenes/culling_demo.json | tee /tmp/terraflux-culling.log
           grep -q "Visibility: 2 visible, 1 culled" /tmp/terraflux-culling.log
           xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer \
+            --obj examples/assets/pyramid.obj \
+            --scene examples/scenes/benchmark_culling.json \
+            --benchmark-frames 8 > /tmp/terraflux-benchmark-on.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer \
+            --obj examples/assets/pyramid.obj \
+            --scene examples/scenes/benchmark_culling.json \
+            --benchmark-frames 8 --no-culling > /tmp/terraflux-benchmark-off.log
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          def record(path):
+              line=next(s.partition("=")[2] for s in Path(path).read_text().splitlines()
+                        if s.startswith("BENCHMARK_JSON="))
+              return json.loads(line)
+          on=record("/tmp/terraflux-benchmark-on.log")
+          off=record("/tmp/terraflux-benchmark-off.log")
+          assert on["culling"] is True and off["culling"] is False
+          assert on["frames"]==8 and off["frames"]==8
+          assert on["gpu_samples"]>0 and off["gpu_samples"]>0
+          assert on["culled_per_frame"]>=75 and off["culled_per_frame"]==0
+          assert on["draws_per_frame"]<off["draws_per_frame"]
+          print("GPU timer and on/off comparison verified:",on,off)
+          PY
+          xvfb-run -a -s "-screen 0 1280x800x24" \
             ./build-gl/terraflux-terrain-viewer --smoke-test \
             --gltf examples/assets/tetra.gltf
           xvfb-run -a -s "-screen 0 1280x800x24" \

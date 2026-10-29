@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cmath>
 #include <cstdint>
 #include <exception>
@@ -65,7 +66,8 @@ std::filesystem::path asset_path(const std::filesystem::path& directory,
 }
 
 struct Options {
-  bool smoke_test = false, profile = false;
+  bool smoke_test=false, profile=false, no_culling=false;
+  std::uint32_t benchmark_frames=0;
   std::string request_file, response_file, obj_file, gltf_file, texture_file, scene_file;
 };
 
@@ -75,6 +77,16 @@ Options parse_args(int argc, char** argv) {
     const std::string arg = argv[i];
     if (arg == "--smoke-test") options.smoke_test = true;
     else if (arg == "--profile") options.profile = true;
+    else if (arg == "--no-culling") options.no_culling = true;
+    else if (arg == "--benchmark-frames" && i+1 < argc) {
+      const std::string text=argv[++i];
+      std::uint32_t n=0;
+      const auto parsed=std::from_chars(text.data(),text.data()+text.size(),n);
+      if(parsed.ec!=std::errc{} || parsed.ptr!=text.data()+text.size() ||
+         n<8 || n>2000)
+        throw std::invalid_argument("--benchmark-frames must be 8..2000");
+      options.benchmark_frames=n;
+    }
     else if (arg == "--request" && i + 1 < argc) options.request_file = argv[++i];
     else if (arg == "--response" && i + 1 < argc) options.response_file = argv[++i];
     else if (arg == "--obj" && i + 1 < argc) options.obj_file = argv[++i];
@@ -82,7 +94,7 @@ Options parse_args(int argc, char** argv) {
     else if (arg == "--texture" && i + 1 < argc) options.texture_file = argv[++i];
     else if (arg == "--scene" && i + 1 < argc) options.scene_file = argv[++i];
     else throw std::invalid_argument(
-        "usage: terraflux-terrain-viewer [--request request.json --response response.json] [--obj model.obj | --gltf model.gltf] [--texture texture.ppm] [--scene scene.json with --obj] [--profile] [--smoke-test]");
+        "usage: terraflux-terrain-viewer [--request request.json --response response.json] [--obj model.obj | --gltf model.gltf] [--texture texture.ppm] [--scene scene.json with --obj] [--profile] [--no-culling] [--benchmark-frames 60] [--smoke-test]");
   }
   if (options.request_file.empty() != options.response_file.empty())
     throw std::invalid_argument("--request and --response must be provided together");
@@ -92,6 +104,10 @@ Options parse_args(int argc, char** argv) {
     throw std::invalid_argument("--texture requires --obj or --gltf");
   if (!options.scene_file.empty() && options.obj_file.empty())
     throw std::invalid_argument("--scene requires --obj; glTF already has authored scene nodes");
+  if(options.benchmark_frames && options.smoke_test)
+    throw std::invalid_argument("benchmark and smoke-test cannot run together");
+  if(options.no_culling && !options.benchmark_frames && !options.profile)
+    throw std::invalid_argument("--no-culling requires --profile or --benchmark-frames");
   return options;
 }
 
@@ -199,11 +215,12 @@ int main(int argc, char** argv) {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
-    glfwWindowHint(GLFW_VISIBLE, options.smoke_test ? GLFW_FALSE : GLFW_TRUE);
+    glfwWindowHint(GLFW_VISIBLE, (options.smoke_test || options.benchmark_frames) ?
+                     GLFW_FALSE : GLFW_TRUE);
     Window window(glfwCreateWindow(1280, 800, "TerraFlux 3D Wildfire Viewer", nullptr, nullptr));
     if (!window) throw std::runtime_error("OpenGL 4.3 context could not be created");
     glfwMakeContextCurrent(window.get());
-    glfwSwapInterval(options.smoke_test ? 0 : 1);
+    glfwSwapInterval((options.smoke_test || options.benchmark_frames) ? 0 : 1);
 
     using namespace terraflux::graphics;
     OpenGLRenderDevice device;
@@ -510,6 +527,10 @@ int main(int argc, char** argv) {
     unsigned rendered_frames = 0;
     std::uint64_t profile_frames = 0;
     terraflux::runtime::FrameProfiler cpu_profiler(120);
+    constexpr unsigned kBenchmarkWarmup=8;
+    double benchmark_cpu_update=0,benchmark_cpu_render=0;
+    std::uint64_t benchmark_draws=0,benchmark_visible=0,benchmark_culled=0;
+    if(options.profile && !options.benchmark_frames)device.enable_gpu_timing();
 
     if (playback && options.smoke_test && playback->frames.size() > 1)
       playback_frame = 1; // exercise non-initial fire state in GPU smoke test
@@ -519,7 +540,8 @@ int main(int argc, char** argv) {
       if (glfwGetKey(window.get(), GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
       const double now = glfwGetTime();
       const double profile_update_start = glfwGetTime();
-      const double elapsed = std::max(0.0, now - previous_time);
+      const double elapsed = options.benchmark_frames?
+                             (1.0/60.0):std::max(0.0,now-previous_time);
       const double delta = std::clamp(elapsed, 0.0, 0.1);
       previous_time = now;
       // Clamp large stalls and catch-up work while keeping updates at 60 Hz.
@@ -594,12 +616,17 @@ int main(int argc, char** argv) {
         if (options.smoke_test) throw std::runtime_error("no framebuffer in smoke test");
         continue;
       }
+      if(options.benchmark_frames && rendered_frames==kBenchmarkWarmup)
+        device.enable_gpu_timing();
+      const bool record_gpu=options.profile || (options.benchmark_frames &&
+                                rendered_frames>=kBenchmarkWarmup);
       const double profile_render_start=glfwGetTime();
       std::uint32_t frame_draws=0;
       const auto camera_vp=update_camera(device, camera, width, height, scene_camera,
                     yaw, pitch, distance,
                     cell_size, fire_field ? fire_field->width : 1,
                     fire_field ? fire_field->height : 1, engine_time);
+      if(record_gpu)device.begin_gpu_timing();
       device.clear_frame(width, height);
       DrawIndexed command{pipeline, vb, ib, 0,
           static_cast<std::uint32_t>(upload.indices.size()), {{0, camera}}, {}};
@@ -615,7 +642,8 @@ int main(int argc, char** argv) {
                                const std::vector<ImportedGpu::Section>& sections,
                                BufferHandle object_uniform,const terraflux::math::Mat4& model,
                                BoundingSphere bounds,terraflux::math::Vec3 tint) {
-          if(!frustum.intersects(world_bounds(bounds,model))) {
+          if(!options.no_culling &&
+             !frustum.intersects(world_bounds(bounds,model))) {
             ++culled_instances;
             return;
           }
@@ -677,6 +705,7 @@ int main(int argc, char** argv) {
                   << queue_stats.submitted << " opaque draws, "
                   << queue_stats.state_groups << " state groups\n";
       }
+      if(record_gpu)device.end_gpu_timing();
       if (options.smoke_test && imported) {
         const auto visible_asset = device.count_asset_pixels(width, height);
         if (visible_asset == 0)
@@ -692,20 +721,60 @@ int main(int argc, char** argv) {
       const double profile_render_end=glfwGetTime();
       cpu_profiler.record({profile_render_start-profile_update_start,
                            profile_render_end-profile_render_start,frame_draws});
+      if(options.benchmark_frames && rendered_frames>=kBenchmarkWarmup) {
+        benchmark_cpu_update+=profile_render_start-profile_update_start;
+        benchmark_cpu_render+=profile_render_end-profile_render_start;
+        benchmark_draws+=frame_draws;
+        benchmark_visible+=visible_instances;
+        benchmark_culled+=culled_instances;
+      }
       ++profile_frames;
       if(options.profile && profile_frames%120==0) {
         const auto measured=cpu_profiler.summary();
+        const auto gpu=device.gpu_timing_summary();
         std::cout << "CPU profile (last " << measured.samples << " frames): update "
                   << measured.mean_update_ms << " ms, render "
                   << measured.mean_render_ms << " ms, worst "
                   << measured.max_frame_ms << " ms, draw calls/frame "
-                  << measured.mean_draw_calls << '\n';
+                  << measured.mean_draw_calls << " | GPU clear+draw mean "
+                  << gpu.mean_ms << " ms (" << gpu.samples
+                  << " samples, " << gpu.skipped << " skipped)\n";
       }
       glfwSwapBuffers(window.get());
       ++rendered_frames;
       if (options.smoke_test) break;
+      if(options.benchmark_frames &&
+         rendered_frames>=options.benchmark_frames+kBenchmarkWarmup)break;
     }
 
+    if(options.benchmark_frames) {
+      const auto gpu=device.gpu_timing_summary(true);
+      if(!gpu.samples)
+        throw std::runtime_error("GPU timer returned no usable samples");
+      const double n=static_cast<double>(options.benchmark_frames);
+      // A stable single-line JSON record makes comparisons reproducible on
+      // one machine; numbers are observations, not universal speedup claims.
+      std::cout << "BENCHMARK_JSON={\"frames\":"<<options.benchmark_frames
+                <<",\"warmup\":"<<kBenchmarkWarmup
+                <<",\"culling\":"<<(options.no_culling?"false":"true")
+                <<",\"resolution\":["<<1280<<","<<800<<"]"
+                <<",\"cpu_update_mean_ms\":"<<benchmark_cpu_update*1000/n
+                <<",\"cpu_render_mean_ms\":"<<benchmark_cpu_render*1000/n
+                <<",\"gpu_draw_mean_ms\":"<<gpu.mean_ms
+                <<",\"gpu_min_ms\":"<<gpu.min_ms
+                <<",\"gpu_max_ms\":"<<gpu.max_ms
+                <<",\"gpu_samples\":"<<gpu.samples
+                <<",\"gpu_skipped\":"<<gpu.skipped
+                <<",\"draws_per_frame\":"<<static_cast<double>(benchmark_draws)/n
+                <<",\"visible_per_frame\":"<<static_cast<double>(benchmark_visible)/n
+                <<",\"culled_per_frame\":"<<static_cast<double>(benchmark_culled)/n
+                <<"}\n";
+    } else if(options.profile){
+      const auto gpu=device.gpu_timing_summary(true);
+      std::cout << "GPU profile: "<<gpu.mean_ms<<" ms mean, "
+                <<gpu.min_ms<<" ms min, "<<gpu.max_ms<<" ms max ("
+                <<gpu.samples<<" samples, "<<gpu.skipped<<" skipped)\n";
+    }
     // Owned GPU resources release before OpenGL context teardown.
     owned.reset();
     if(options.smoke_test) {
