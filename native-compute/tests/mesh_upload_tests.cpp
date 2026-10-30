@@ -63,7 +63,7 @@ f 1/1 2/2 3/1
           "OBJ UV survives 32-byte upload");
   const auto layout=terraflux::graphics::textured_object_shader_layout();
   terraflux::graphics::validate_shader_layout(layout);
-  require(layout.vertex_stride_bytes==32 && layout.attributes.size()==3 &&
+  require(layout.vertex_stride_bytes==48 && layout.attributes.size()==3 &&
           layout.bindings.size()==3,"texture shader contract");
 }
 void reject_singular_world_matrix(){

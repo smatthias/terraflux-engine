@@ -48,7 +48,7 @@ void frustum_and_scaled_bounds(){
 void batch_order_and_draw_validation(){
   graphics::ValidatingRenderDevice device;
   graphics::RenderResourceOwner owner(device);
-  std::array<std::byte,32*3> vertices{};
+  std::array<std::byte,48*3> vertices{};
   std::array<std::byte,6*4> indices{};
   std::array<std::byte,144> uniform{};
   std::array<std::byte,64> camera{};
@@ -84,7 +84,7 @@ void batch_order_and_draw_validation(){
 void hardware_instance_batching() {
   graphics::ValidatingRenderDevice device;
   graphics::RenderResourceOwner owner(device);
-  std::array<std::byte,32*3> vertices{};
+  std::array<std::byte,48*3> vertices{};
   std::array<std::byte,6*4> indices{};
   std::array<std::byte,64> camera{};
   std::array<std::byte,144> uniform{};
@@ -131,7 +131,7 @@ void hardware_instance_batching() {
 void streaming_instance_ring() {
   graphics::ValidatingRenderDevice device;
   graphics::RenderResourceOwner owner(device);
-  std::array<std::byte,32*3> vertices{};
+  std::array<std::byte,48*3> vertices{};
   std::array<std::byte,6*4> indices{};
   std::array<std::byte,64> camera{};
   std::array<std::byte,144> uniform{};

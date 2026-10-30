@@ -351,7 +351,7 @@ void external_buffer_callback(const std::string& json) {
 }
 int main(int argc,char** argv) {
   try {
-    if(argc!=4)throw std::invalid_argument("gltf-tests expects base, multi-mesh and textured fixture paths");
+    if(argc!=5)throw std::invalid_argument("gltf-tests expects base, multi-mesh, textured and tangent fixture paths");
     std::ifstream file(argv[1],std::ios::binary);
     if(!file)throw std::runtime_error("cannot open glTF test fixture");
     const std::string json((std::istreambuf_iterator<char>(file)),
@@ -372,6 +372,28 @@ int main(int argc,char** argv) {
     const std::string texjson((std::istreambuf_iterator<char>(texfile)),
                                std::istreambuf_iterator<char>());
     textured_materials(texjson);
-    std::cout<<"glTF 2.0: 8 test groups passed\n";
+    std::ifstream blendfile(argv[4],std::ios::binary);
+    if(!blendfile)throw std::runtime_error("missing tangent/blend glTF fixture");
+    const std::string blendjson((std::istreambuf_iterator<char>(blendfile)),
+                                std::istreambuf_iterator<char>());
+    const auto blend=terraflux::assets::import_gltf(blendjson);
+    require(blend.materials.at("gltf-material-0").alpha_mode==
+            terraflux::assets::Material::AlphaMode::Blend &&
+            std::abs(blend.materials.at("gltf-material-0").alpha_factor-.45)<1e-8,
+            "glTF alpha BLEND mode and factor imported");
+    require(blend.meshes.at(0).vertices.size()==8 &&
+            std::abs(blend.meshes.at(0).vertices[0].tangent[3]-1)<1e-6 &&
+            std::abs(blend.meshes.at(0).vertices[1].tangent[3]+1)<1e-6 &&
+            blend.meshes.at(0).vertices[4].tangent[3]==0,
+            "first primitive uses explicit signed tangents, second retains derivative fallback");
+    const auto tangent_gpu=terraflux::graphics::prepare_textured_asset_upload(blend.meshes[0]);
+    require(std::abs(tangent_gpu.vertices[0].tangent[3]-1)<1e-6 &&
+            std::abs(tangent_gpu.vertices[1].tangent[3]+1)<1e-6,
+            "GPU upload preserves signed tangent basis");
+    rejects([&]{(void)terraflux::assets::import_gltf(
+      replace_first(blendjson,"\"componentType\": 5126,\n      \"count\": 4,\n      \"type\": \"VEC4\"",
+                                  "\"componentType\": 5126,\n      \"count\": 4,\n      \"type\": \"VEC3\""));},
+      "TANGENT requires a VEC4 accessor");
+    std::cout<<"glTF 2.0: 9 test groups passed\n";
   }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
 }

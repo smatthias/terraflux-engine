@@ -393,3 +393,10 @@ The glTF loader accepts occlusionTexture (red channel and strength), emissiveTex
 ### Close-up material preview
 
 Use `--asset-preview --gltf examples/assets/textured_multi_mesh.gltf` to choose a closer, higher-scale material-inspection camera and lift the model slightly above the terrain. It is deliberately opt-in: terrain placement and benchmark camera behavior remain unchanged. This helps assess normal, AO, emissive and alpha-cutout effects, but does not replace a GPU screenshot comparison.
+
+
+## Phase 7 — alpha BLEND and explicit tangents
+
+Blended glTF materials are rendered in a separate back-to-front primitive/instance pass after opaque geometry, with depth testing on, depth writes off and SRC_ALPHA/ONE_MINUS_SRC_ALPHA blending. They are intentionally not hardware-instanced or included in the opaque material sort. This is object/primitive sorting, not per-triangle sorting or order-independent transparency: intersecting transparent surfaces can still have artifacts.
+
+The glTF loader preserves optional FLOAT VEC4 TANGENT attributes, with the signed w component determining the bitangent handedness. The PBR shader transforms supplied tangents for the object and accounts for mirrored transforms; meshes without tangents continue using UV derivatives. Run `./build-gl/terraflux-terrain-viewer --gltf examples/assets/tangent_blend.gltf --asset-preview` for the blended/tangent sample.

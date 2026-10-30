@@ -196,6 +196,11 @@ jobs:
           xvfb-run -a -s "-screen 0 1280x800x24" \
             ./build-gl/terraflux-terrain-viewer --smoke-test --asset-preview \
             --gltf examples/assets/textured_multi_mesh.gltf
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --asset-preview \
+            --gltf examples/assets/tangent_blend.gltf | tee /tmp/terraflux-blend.log
+          grep -Eq '[1-9][0-9]* transparent draws' /tmp/terraflux-blend.log
+          grep -q 'Visible glTF changed pixels' /tmp/terraflux-blend.log
           python3 examples/pack_gltf_fixture.py \
             examples/assets/textured_multi_mesh.gltf /tmp/terraflux-textured.glb
           xvfb-run -a -s "-screen 0 1280x800x24" \
