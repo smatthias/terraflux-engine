@@ -777,8 +777,10 @@ pause/resume, bounded stepping and endpoint restart. A seven-frame Mesa check
 verifies displayed fire data, backward/reset pixel restoration and independent
 engine timing. Native replay tests now cover nine groups.
 Baseline checkpoint and remaining-work list refreshed against successful CI.
-Next: prepare the physical-GPU validation checklist; terrain LOD design is the
-next independent implementation workstream.
+The [physical-GPU validation checklist](docs/GPU_VALIDATION.md) is ready, with
+logged smoke checks, interactive review and repeated benchmark commands.
+Hardware execution is pending; terrain LOD design is the next independent
+implementation workstream.
 See the [prioritized gaps and acceptance criteria](docs/ENGINE_BASELINE.md#remaining-renderer-work-in-priority-order). GPU meshes are created on demand; CPU model data
 and decoded image recipes remain eager and retained for reattachment. Asynchronous streaming, skeletal animation
 and full glTF/IBL support remain future work.
