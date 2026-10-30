@@ -141,6 +141,17 @@ jobs:
                         "--scene examples/mixed_asset_scene.json" \
                         "--obj examples/assets/pyramid.obj --scene examples/scenes/twin_pyramids.json"; do
             xvfb-run -a -s "-screen 0 1280x800x24" \
+              ./build-gl/terraflux-terrain-viewer --smoke-test --scene-residency-test \
+              $source | tee /tmp/terraflux-residency.log
+            grep -q "Scene residency passed" /tmp/terraflux-residency.log
+          done
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --scene-residency-test \
+            --no-instancing --scene examples/mixed_asset_scene.json
+          for source in "--scene examples/asset_scene.json" \
+                        "--scene examples/mixed_asset_scene.json" \
+                        "--obj examples/assets/pyramid.obj --scene examples/scenes/twin_pyramids.json"; do
+            xvfb-run -a -s "-screen 0 1280x800x24" \
               ./build-gl/terraflux-terrain-viewer --smoke-test --scene-detach-test \
               $source | tee /tmp/terraflux-detach.log
             grep -q "Scene detach passed" /tmp/terraflux-detach.log

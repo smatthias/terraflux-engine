@@ -72,7 +72,7 @@ std::filesystem::path asset_path(const std::filesystem::path& directory,
 
 struct Options {
   bool smoke_test=false, profile=false, no_culling=false, no_instancing=false,asset_preview=false;
-  bool asset_lifecycle_test=false,scene_controls_test=false,scene_detach_test=false;
+  bool asset_lifecycle_test=false,scene_controls_test=false,scene_detach_test=false,scene_residency_test=false;
   std::uint32_t benchmark_frames=0;
   std::string request_file, response_file, obj_file, gltf_file, texture_file, scene_file;
 };
@@ -82,6 +82,7 @@ Options parse_args(int argc, char** argv) {
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
     if (arg == "--smoke-test") options.smoke_test = true;
+    else if (arg == "--scene-residency-test") options.scene_residency_test=true;
     else if (arg == "--scene-detach-test") options.scene_detach_test=true;
     else if (arg == "--scene-controls-test") options.scene_controls_test=true;
     else if (arg == "--asset-lifecycle-test") options.asset_lifecycle_test=true;
@@ -133,6 +134,9 @@ Options parse_args(int argc, char** argv) {
   if(options.scene_detach_test && (!options.smoke_test || options.scene_file.empty() ||
       options.scene_controls_test || options.asset_lifecycle_test))
     throw std::invalid_argument("--scene-detach-test requires --smoke-test and --scene, exclusively");
+  if(options.scene_residency_test && (!options.smoke_test || options.scene_file.empty() ||
+      options.scene_detach_test || options.scene_controls_test || options.asset_lifecycle_test))
+    throw std::invalid_argument("--scene-residency-test requires --smoke-test and --scene, exclusively");
   return options;
 }
 
@@ -284,6 +288,7 @@ int main(int argc, char** argv) {
         terraflux::scene::NodeId node=0;
         std::uint32_t mesh_index=0;
         terraflux::math::Mat4 asset_local=terraflux::math::Mat4::identity();
+        std::shared_ptr<RenderResourceOwner> uniform_owner;
       };
       std::vector<SceneInstance> scene_instances;
       terraflux::math::Mat4 scene_anchor=terraflux::math::Mat4::identity();
@@ -304,12 +309,21 @@ int main(int argc, char** argv) {
       SharedTextureCache textures;
       explicit ImportedGpu(RenderDevice& device):textures(device){}
       std::vector<Section> sections;
+      std::unique_ptr<RenderResourceOwner> primary_resources;
       struct AdditionalMesh {
+        std::unique_ptr<RenderResourceOwner> resources;
         BufferHandle vb, ib;
         std::vector<Section> sections;
         std::uint32_t indices=0;
       };
       std::vector<AdditionalMesh> additional_meshes;
+      std::vector<terraflux::assets::Mesh> cpu_meshes;
+      std::function<void(ImportedGpu&,std::uint32_t)> ensure_mesh;
+      struct DetachedNode {
+        std::optional<std::string> asset;
+        std::vector<SceneInstance> instances;
+      };
+      std::map<terraflux::scene::NodeId,DetachedNode> detached_nodes;
       PipelineHandle pipeline,instanced_pipeline,transparent_pipeline;
       std::unique_ptr<OpaqueRenderQueue::InstanceBufferRing> instance_ring;
       std::uint32_t indices = 0;
@@ -459,8 +473,6 @@ int main(int argc, char** argv) {
         const double gltf_scale=options.asset_preview?0.43:0.22;
         const double scale=(scene_camera.starting_distance*(use_pbr?gltf_scale:0.095))/extent;
         const auto geometry = prepare_textured_asset_upload(object); // local + UV
-        const auto vertex_bytes = bytes_of(geometry.vertices);
-        const auto index_bytes = bytes_of(geometry.indices);
         auto candidate=std::make_unique<ImportedGpu>(device);
         auto& obj=*candidate;
         obj.resources=std::make_unique<RenderResourceOwner>(device);
@@ -507,15 +519,18 @@ int main(int argc, char** argv) {
           obj.scene.set_transform(obj.right_mesh, {
               obj.local_center * -1.0, {}, {1,1,1}});
         }
-        const auto cached_texture=[&](const std::filesystem::path& source,
+        const auto build_sections=[material_files=std::move(material_files),
+            gltf_images=std::move(gltf_images),use_pbr,use_gltf,
+            texture_override=options.texture_file](ImportedGpu& target,RenderResourceOwner& mesh_owner,
+                                                 const terraflux::assets::Mesh& mesh) {
+          const auto cached_texture=[&](const std::filesystem::path& source,
                                        terraflux::TextureSampling sampling) {
           const auto key=terraflux::assets::texture_cache_key(source,sampling,use_pbr);
-          if(auto existing=obj.textures.find(key))return existing;
+          if(auto existing=target.textures.find(key))return existing;
           const auto image=terraflux::assets::resolve_texture_image(source,use_pbr,gltf_images);
           const auto bytes=std::as_bytes(std::span(image.pixels));
-          return obj.textures.acquire(key,{image.width,image.height,sampling},bytes);
+          return target.textures.acquire(key,{image.width,image.height,sampling},bytes);
         };
-        const auto build_sections=[&](const terraflux::assets::Mesh& mesh) {
           std::vector<ImportedGpu::Section> result;
           result.reserve(mesh.sections.size());
           for(const auto& section:mesh.sections) {
@@ -561,7 +576,7 @@ int main(int argc, char** argv) {
                     std::filesystem::path(it->second.material.albedo_map):
                     terraflux::assets::resolve_asset_path(it->second.folder,it->second.material.albedo_map,32'000'000);
             }
-            if(!options.texture_file.empty())texture_file=options.texture_file;
+            if(!texture_override.empty())texture_file=texture_override;
             std::vector<TextureLease> leases;
             const auto retain_texture=[&](const std::filesystem::path& source,terraflux::TextureSampling state) {
               auto lease=cached_texture(source,state);
@@ -597,7 +612,7 @@ int main(int argc, char** argv) {
               pbr.options={static_cast<float>(alpha_factor),
                            alpha_blend?2.0f:(alpha_mask?1.0f:0.0f),0,0};
               const auto bytes=std::as_bytes(std::span(&pbr,1));
-              pbr_uniform=asset_owned.create_buffer({BufferUsage::Uniform,bytes.size()},bytes);
+              pbr_uniform=mesh_owner.create_buffer({BufferUsage::Uniform,bytes.size()},bytes);
             }
             result.push_back({section.first_index,section.index_count,
                               handle,mr_handle,normal_handle,occlusion_handle,emissive_handle,color,
@@ -610,20 +625,30 @@ int main(int argc, char** argv) {
           if(result.empty())throw std::invalid_argument("mesh has no drawable material sections");
           return result;
         };
-        obj.sections=build_sections(object);
-        obj.vb=asset_owned.create_buffer({BufferUsage::Vertex,vertex_bytes.size()},vertex_bytes);
-        obj.ib=asset_owned.create_buffer({BufferUsage::Index,index_bytes.size()},index_bytes);
-        for(const auto& mesh:extra_meshes) {
+        obj.cpu_meshes.push_back(std::move(object));
+        for(auto& mesh:extra_meshes)obj.cpu_meshes.push_back(std::move(mesh));
+        obj.additional_meshes.resize(obj.cpu_meshes.size()-1);
+        obj.ensure_mesh=[build_sections,device_ptr=&device](ImportedGpu& target,std::uint32_t index) {
+          if((index==0?target.vb:target.additional_meshes.at(index-1).vb).id)return;
+          ImportedGpu::AdditionalMesh ready{};
+          ready.resources=std::make_unique<RenderResourceOwner>(*device_ptr);
+          const auto& mesh=target.cpu_meshes.at(index);
           const auto upload=prepare_textured_asset_upload(mesh);
-          const auto bytes=bytes_of(upload.vertices);
-          const auto indices_bytes=bytes_of(upload.indices);
-          ImportedGpu::AdditionalMesh extra{};
-          extra.sections=build_sections(mesh);
-          extra.indices=static_cast<std::uint32_t>(upload.indices.size());
-          extra.vb=asset_owned.create_buffer({BufferUsage::Vertex,bytes.size()},bytes);
-          extra.ib=asset_owned.create_buffer({BufferUsage::Index,indices_bytes.size()},indices_bytes);
-          obj.additional_meshes.push_back(std::move(extra));
-        }
+          const auto vertices=bytes_of(upload.vertices),indices=bytes_of(upload.indices);
+          ready.sections=build_sections(target,*ready.resources,mesh);
+          ready.vb=ready.resources->create_buffer({BufferUsage::Vertex,vertices.size()},vertices);
+          ready.ib=ready.resources->create_buffer({BufferUsage::Index,indices.size()},indices);
+          ready.indices=static_cast<std::uint32_t>(upload.indices.size());
+          if(index==0) {
+            target.vb=ready.vb;target.ib=ready.ib;
+            target.sections=std::move(ready.sections);
+            target.primary_resources=std::move(ready.resources);
+          }else target.additional_meshes.at(index-1)=std::move(ready);
+        };
+        if(obj.uses_scene_file) {
+          for(const auto& instance:obj.scene_instances)obj.ensure_mesh(obj,instance.mesh_index);
+        }else for(std::uint32_t index=0;index<obj.cpu_meshes.size();++index)obj.ensure_mesh(obj,index);
+
         const auto init_object = make_object_uniform(terraflux::math::Mat4::identity());
         const auto init_bytes = std::as_bytes(std::span(&init_object,1));
         if(use_gltf) {
@@ -647,7 +672,8 @@ int main(int argc, char** argv) {
             const auto model=obj.scene_anchor*obj.scene.world_matrix(instance.node)*instance.asset_local;
             const auto uniforms=make_object_uniform(model,{0.16,0.57,0.95});
             const auto bytes=std::as_bytes(std::span(&uniforms,1));
-            instance.uniform=asset_owned.create_buffer({BufferUsage::Uniform,bytes.size()},bytes);
+            instance.uniform_owner=std::make_shared<RenderResourceOwner>(device);
+            instance.uniform=instance.uniform_owner->create_buffer({BufferUsage::Uniform,bytes.size()},bytes);
           }
         }else{
           obj.object_uniform_left = asset_owned.create_buffer(
@@ -669,9 +695,9 @@ int main(int argc, char** argv) {
         }
         std::size_t triangle_count=obj.indices/3;
         std::size_t sections_count=obj.sections.size();
-        for(const auto& mesh:obj.additional_meshes){
-          triangle_count+=mesh.indices/3;
-          sections_count+=mesh.sections.size();
+        for(std::size_t index=1;index<obj.cpu_meshes.size();++index){
+          triangle_count+=obj.cpu_meshes[index].indices.size()/3;
+          sections_count+=obj.cpu_meshes[index].sections.size();
         }
         std::cout << (asset_scene?"Imported scene: ":use_gltf?"Imported glTF: ":"Imported OBJ: ") << triangle_count
                   << " triangles, " << (obj.additional_meshes.size()+1)
@@ -695,19 +721,9 @@ int main(int argc, char** argv) {
       std::cout<<"Asset unloaded; terrain resources preserved\n";
     };
     if(has_asset && !options.smoke_test && !options.benchmark_frames)
-      std::cout<<"Asset controls: U unload | R reload | D detach first scene node | P pause scene | N single tick (failed reload preserves current asset)\n";
+      std::cout<<"Asset controls: U unload | R reload | D detach | A reattach | P pause scene | N single tick (failed reload preserves current asset)\n";
 
-    const auto detach_node=[&](terraflux::scene::NodeId node) {
-      if(!imported || !imported->uses_scene_file)return;
-      auto& asset=*imported.operator->();
-      asset.scene.set_mesh_instance(node,false);
-      // Retire prior streamed instance records before releasing their inputs.
-      asset.instance_ring.reset();
-      std::erase_if(asset.scene_instances,[&](const auto& instance) {
-        if(instance.node!=node)return false;
-        asset.resources->release_buffer(instance.uniform);
-        return true;
-      });
+    const auto evict_unused=[&](ImportedGpu& asset) {
       std::vector<std::size_t> references(asset.additional_meshes.size()+1);
       for(const auto& instance:asset.scene_instances)++references.at(instance.mesh_index);
       for(std::size_t mesh=0;mesh<references.size();++mesh) {
@@ -715,17 +731,61 @@ int main(int argc, char** argv) {
         auto& index=mesh==0?asset.ib:asset.additional_meshes[mesh-1].ib;
         auto& sections=mesh==0?asset.sections:asset.additional_meshes[mesh-1].sections;
         if(references[mesh] || vertex.id==0)continue;
-        asset.resources->release_buffer(vertex);
-        asset.resources->release_buffer(index);
-        for(const auto& section:sections)
-          if(section.pbr_uniform.id)asset.resources->release_buffer(section.pbr_uniform);
-        sections.clear(); // releases texture leases only when their last user leaves
+        sections.clear();
+        if(mesh==0)asset.primary_resources.reset();
+        else asset.additional_meshes[mesh-1].resources.reset(); // releases texture leases only when their last user leaves
         vertex={};index={};
       }
       asset.textures.prune();
+    };
+    const auto detach_node=[&](terraflux::scene::NodeId node) {
+      if(!imported || !imported->uses_scene_file)return;
+      auto& asset=*imported.operator->();
+      ImportedGpu::DetachedNode saved;
+      saved.asset=asset.scene.get(node).mesh_asset;
+      for(auto instance:asset.scene_instances)if(instance.node==node) {
+        instance.uniform={};instance.uniform_owner.reset();
+        saved.instances.push_back(std::move(instance));
+      }
+      if(saved.instances.empty())return;
+      asset.detached_nodes.insert_or_assign(node,std::move(saved));
+      asset.scene.set_mesh_instance(node,false);
+      // Retire prior streamed instance records before releasing their inputs.
+      asset.instance_ring.reset();
+      std::erase_if(asset.scene_instances,[&](const auto& instance) {
+        if(instance.node!=node)return false;
+        // Erasing the instance releases its own uniform scope.
+        return true;
+      });
+      evict_unused(asset);
       if(!options.no_instancing)
         asset.instance_ring=std::make_unique<OpaqueRenderQueue::InstanceBufferRing>(device);
       std::cout<<"Detached scene node "<<node<<"; "<<asset.scene_instances.size()<<" mesh instances remain\n";
+    };
+
+    const auto reattach_node=[&](terraflux::scene::NodeId node) {
+      if(!imported || !imported->uses_scene_file)return;
+      auto& asset=*imported.operator->();
+      const auto found=asset.detached_nodes.find(node);
+      if(found==asset.detached_nodes.end())return;
+      auto instances=found->second.instances;
+      try{
+        asset.scene_instances.reserve(asset.scene_instances.size()+instances.size());
+        for(auto& instance:instances) {
+          asset.ensure_mesh(asset,instance.mesh_index);
+          const auto model=asset.scene_anchor*asset.scene.world_matrix(node)*instance.asset_local;
+          const auto uniforms=make_object_uniform(model,{1,1,1});
+          const auto bytes=std::as_bytes(std::span(&uniforms,1));
+          instance.uniform_owner=std::make_shared<RenderResourceOwner>(device);
+          instance.uniform=instance.uniform_owner->create_buffer({BufferUsage::Uniform,bytes.size()},bytes);
+        }
+        if(found->second.asset)asset.scene.set_mesh_asset(node,*found->second.asset);
+        else asset.scene.set_mesh_instance(node,true);
+        asset.scene_instances.insert(asset.scene_instances.end(),
+            std::make_move_iterator(instances.begin()),std::make_move_iterator(instances.end()));
+        asset.detached_nodes.erase(found);
+      }catch(...){evict_unused(asset);throw;}
+      std::cout<<"Reattached scene node "<<node<<"; "<<asset.scene_instances.size()<<" mesh instances resident\n";
     };
 
     double yaw = 0.45, pitch = options.asset_preview?0.42:0.75;
@@ -744,10 +804,12 @@ int main(int argc, char** argv) {
     std::size_t playback_frame = 0;
     std::size_t uploaded_frame = static_cast<std::size_t>(-1);
     bool playing = playback.has_value();
-    bool previous_unload=false,previous_reload=false,previous_detach=false;
+    bool previous_unload=false,previous_reload=false,previous_detach=false,previous_attach=false;
     bool previous_space = false, previous_home = false, previous_back = false, previous_forward = false;
     unsigned rendered_frames = 0;
     std::vector<std::uint8_t> lifecycle_terrain;
+    terraflux::scene::NodeId residency_node=0;
+    std::vector<BufferHandle> residency_handles;
     std::uint64_t profile_frames = 0;
     terraflux::runtime::FrameProfiler cpu_profiler(120);
     constexpr unsigned kBenchmarkWarmup=8;
@@ -781,6 +843,14 @@ int main(int argc, char** argv) {
       if(detach && !previous_detach && !options.smoke_test && !options.benchmark_frames &&
          imported && imported->uses_scene_file && !imported->scene_instances.empty())
         detach_node(imported->scene_instances.front().node);
+      const bool attach=glfwGetKey(window.get(),GLFW_KEY_A)==GLFW_PRESS;
+      if(attach && !previous_attach && !options.smoke_test && !options.benchmark_frames &&
+         imported && !imported->detached_nodes.empty()) {
+        try{reattach_node(imported->detached_nodes.begin()->first);}
+        catch(const std::exception& error){std::cerr<<"Node reattachment failed: "<<error.what()<<'\n';}
+        previous_time=glfwGetTime();
+      }
+      previous_attach=attach;
       previous_detach=detach;
       previous_unload=unload;previous_reload=reload;
       const double now = glfwGetTime();
@@ -877,7 +947,7 @@ int main(int argc, char** argv) {
 
       if(imported && !imported->is_gltf && !options.smoke_test && !options.benchmark_frames) {
         std::string title=std::string("TerraFlux | Scene ")+
-            (scene_playback.paused()?"paused":"playing")+" | P pause/resume | N tick | D detach | U unload | R reload";
+            (scene_playback.paused()?"paused":"playing")+" | P pause/resume | N tick | D detach | A reattach | U unload | R reload";
         if(playback)title+=" | Fire "+std::to_string(playback_frame+1)+"/"+
             std::to_string(playback->frames.size())+" | Space pause fire";
         if(title!=last_scene_title) {
@@ -1122,7 +1192,38 @@ int main(int argc, char** argv) {
       }
       glfwSwapBuffers(window.get());
       ++rendered_frames;
-      if(options.scene_detach_test) {
+      if(options.scene_residency_test) {
+        if(rendered_frames==1) {
+          residency_node=imported->scene_instances.front().node;
+          // Prefer a node sharing a mesh with another node, if available.
+          for(const auto& first:imported->scene_instances)
+            for(const auto& second:imported->scene_instances)
+              if(first.node!=second.node && first.mesh_index==second.mesh_index)
+                residency_node=first.node;
+          detach_node(residency_node);
+          residency_handles.push_back(imported->vb);
+          for(const auto& mesh:imported->additional_meshes)residency_handles.push_back(mesh.vb);
+        }else if(rendered_frames==2) {
+          reattach_node(residency_node);
+          for(std::size_t index=0;index<residency_handles.size();++index) {
+            const auto current=index==0?imported->vb:imported->additional_meshes[index-1].vb;
+            if(residency_handles[index].id && current!=residency_handles[index])
+              throw std::runtime_error("reattachment replaced still-resident geometry");
+          }
+        }else if(rendered_frames==3) {
+          while(!imported->scene_instances.empty())detach_node(imported->scene_instances.front().node);
+          const auto counts=device.live_resource_counts();
+          if(counts.buffers!=terrain_resources.buffers || counts.textures!=terrain_resources.textures)
+            throw std::runtime_error("cold residency retained drawable resources");
+        }else if(rendered_frames==4) {
+          reattach_node(residency_node);
+          if(imported->scene_instances.empty())throw std::runtime_error("cold reattachment produced no instances");
+        }else if(rendered_frames==5) {
+          unload_imported();
+          std::cout<<"Scene residency passed: shared reuse, full eviction, cold reattachment, rendered recovery\n";
+          break;
+        }
+      }else if(options.scene_detach_test) {
         if(!imported->scene_instances.empty()) {
           const auto node=imported->scene_instances.front().node;
           std::vector<BufferHandle> previous_vertices{imported->vb};

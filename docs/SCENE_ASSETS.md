@@ -623,3 +623,27 @@ after the last drawable leaves. CI also covers pure OBJ, legacy scenes and
 non-instanced rendering. R reload restores the original authored references;
 selective reattachment and on-demand residency remain future work. CPU mesh
 loading is still eager; this milestone evicts GPU geometry/material resources.
+
+
+## Selective reattachment and on-demand GPU residency
+
+Press **A** to reattach the detached scene node with the lowest ID. Its saved
+model binding and expanded glTF instances are restored at the node's current
+transform. Nodes/children and Spin/Motion continue existing while detached;
+reattachment does not reset the scene clock or reread the scene file.
+
+Each GPU mesh now has an independent resource owner and a retained CPU recipe.
+Reattachment reuses still-resident geometry unchanged and uploads only missing
+meshes/material uniforms; texture leases reuse surviving allocations. New
+per-node uniform scopes are prepared before publishing draw instances. Failed
+preparation cleans up unused mesh resources and leaves the node detached.
+Initial scene-file loading uploads only meshes referenced by drawable nodes.
+CPU model parsing and decoded image recipes remain eager and retained; this
+is synchronous GPU residency, not asynchronous disk streaming or CPU eviction.
+
+`--smoke-test --scene-residency-test --scene examples/mixed_asset_scene.json`
+renders five frames covering shared-mesh reuse, complete drawable eviction,
+a terrain-only frame, cold reattachment and rendered recovery. It verifies
+unchanged handles for surviving geometry and a terrain-only buffer/texture
+baseline after full eviction. CI covers mixed, pure OBJ and legacy scenes,
+including non-instanced rendering. Physical GPU validation is outstanding.

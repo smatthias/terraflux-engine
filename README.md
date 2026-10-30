@@ -82,6 +82,7 @@ approximated as nonmetallic. Pure OBJ scenes retain the original diffuse path. L
 | P | Pause/resume OBJ demo or scene Spin/Motion; camera and fire replay continue |
 | N | Advance one 1/60-second scene tick and remain paused |
 | D | Detach the first remaining drawable scene node and evict its unused mesh resources |
+| A | Reattach the detached node with the lowest ID, restoring evicted GPU meshes on demand |
 | U | Unload the imported asset/scene; retain terrain and wildfire playback |
 | R | Reload the original asset/scene; failed loads preserve the current asset |
 | Space | Pause/resume wildfire replay |
@@ -361,7 +362,7 @@ hours or release-readiness guarantees. The PS4 backend is unimplemented.
 
 | Desktop engine — Phases 1–9 | Full roadmap including PS4 |
 | --- | --- |
-| **~76%** (previously ~75%) | **~50%** (previously ~49%) |
+| **~77%** (previously ~76%) | **~50%** |
 
 | Phase | Component | Estimated completion |
 | --- | --- | ---: |
@@ -372,11 +373,12 @@ hours or release-readiness guarantees. The PS4 backend is unimplemented.
 | 5 | Simulation visualization | 65% |
 | 6 | Shader system | 76% |
 | 7 | Scene and asset system | ~90% (previously 86%) |
-| 8 | Engine runtime | ~70% (previously ~65%) |
+| 8 | Engine runtime | ~75% (previously ~70%) |
 | 9 | Performance | 55% |
 | 10 | PS4 backend | 0% |
 
-Latest milestones: selective scene-node detachment and geometry eviction,
+Latest milestones: selective node reattachment and on-demand GPU mesh residency,
+scene-node detachment and geometry eviction,
 shared GPU texture leases, reusable CPU material/texture
 resolution, serializable Motion,
 shared mixed-format scene assets, isolated
@@ -386,8 +388,9 @@ OBJ, glTF, GLB, transparent materials and repeated model references. Native test
 CTest suites and 71 simulation parity fixtures; CI also exercises the viewer
 under Mesa/Xvfb. See the branch's CI results for validation of each commit.
 
-Next planned work: selective node reattachment and on-demand model residency.
-Detached nodes retain their transform hierarchy; R reload restores authored scene references. Asynchronous streaming, skeletal animation
+Next planned work: extract scene residency operations from the desktop viewer
+into a reusable runtime API. GPU meshes are created on demand; CPU model data
+and decoded image recipes remain eager and retained for reattachment. Asynchronous streaming, skeletal animation
 and full glTF/IBL support remain future work.
 This desktop-engine breakdown is separate from the earlier simulation-focused
 [220-hour planning backlog](docs/ROADMAP.md).
