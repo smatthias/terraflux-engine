@@ -496,3 +496,31 @@ when wildfire playback is absent. Counts describe live OpenGL API resources,
 not physical VRAM reclamation or hardware performance. CI covers shared OBJ
 scenes, the standalone OBJ path, glTF transparency/tangents and legacy draws
 under Mesa/Xvfb. Physical GPU validation remains outstanding.
+
+
+## Phase 8: Scene pause/resume and deterministic single stepping
+
+Press **P** to pause/resume OBJ demonstration animation or scene-file Spin
+and Motion. Press **N** to advance exactly one 1/60-second scene tick and
+remain paused; holding a key does not repeat the action. N while running
+also pauses. A manual step discards any fractional pending tick. Paused
+wall time never builds catch-up work, and camera movement continues normally.
+
+Scene animation now has a separate `runtime::ScenePlayback` clock. Wildfire
+replay retains Space/Home/comma/period controls and its own timing; pausing
+the scene does not pause fire playback. Static glTF hierarchies do not gain
+animation from these controls. Successful asset reload resets the scene
+clock and resumes animation from authored transforms; failed reload leaves
+both current asset and clock unchanged. Unload keeps the current pause state.
+
+```bash
+./build-gl/terraflux-terrain-viewer --scene examples/asset_scene.json
+# P pause/resume; N single tick; U unload; R reload.
+```
+
+`--smoke-test --scene-controls-test --scene examples/asset_scene.json`
+executes four rendered frames: paused, one manual tick, paused hold, resumed
+one tick. Each frame compares serialized scene transforms with expected
+fixed-step results and verifies that the engine clock advanced independently.
+CI covers both legacy and named-asset scenes, plus scene controls combined
+with wildfire replay, under Mesa/Xvfb. Physical GPU validation is still pending.

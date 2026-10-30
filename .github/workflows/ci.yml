@@ -133,6 +133,19 @@ jobs:
           grep -q "2 meshes" /tmp/terraflux-scene-assets.log
           grep -q "3 instances" /tmp/terraflux-scene-assets.log
           for source in "--scene examples/asset_scene.json" \
+                        "--obj examples/assets/pyramid.obj --scene examples/scenes/twin_pyramids.json"; do
+            xvfb-run -a -s "-screen 0 1280x800x24" \
+              ./build-gl/terraflux-terrain-viewer --smoke-test --scene-controls-test \
+              $source | tee /tmp/terraflux-scene-controls.log
+            grep -q "Scene controls passed" /tmp/terraflux-scene-controls.log
+          done
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --scene-controls-test \
+            --scene examples/asset_scene.json \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json \
+            | tee /tmp/terraflux-scene-controls-replay.log
+          grep -q "Scene controls passed" /tmp/terraflux-scene-controls-replay.log
+          for source in "--scene examples/asset_scene.json" \
                         "--obj examples/assets/pyramid.obj" \
                         "--gltf examples/assets/tangent_blend.gltf --asset-preview"; do
             xvfb-run -a -s "-screen 0 1280x800x24" \

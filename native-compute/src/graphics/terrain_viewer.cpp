@@ -70,7 +70,7 @@ std::filesystem::path asset_path(const std::filesystem::path& directory,
 
 struct Options {
   bool smoke_test=false, profile=false, no_culling=false, no_instancing=false,asset_preview=false;
-  bool asset_lifecycle_test=false;
+  bool asset_lifecycle_test=false,scene_controls_test=false;
   std::uint32_t benchmark_frames=0;
   std::string request_file, response_file, obj_file, gltf_file, texture_file, scene_file;
 };
@@ -80,6 +80,7 @@ Options parse_args(int argc, char** argv) {
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
     if (arg == "--smoke-test") options.smoke_test = true;
+    else if (arg == "--scene-controls-test") options.scene_controls_test=true;
     else if (arg == "--asset-lifecycle-test") options.asset_lifecycle_test=true;
     else if (arg == "--profile") options.profile = true;
     else if (arg == "--no-culling") options.no_culling = true;
@@ -123,6 +124,9 @@ Options parse_args(int argc, char** argv) {
   if(options.asset_lifecycle_test && (!options.smoke_test ||
       (options.obj_file.empty() && options.gltf_file.empty() && options.scene_file.empty())))
     throw std::invalid_argument("--asset-lifecycle-test requires --smoke-test and an asset");
+  if(options.scene_controls_test && (!options.smoke_test || options.scene_file.empty() ||
+                                      options.asset_lifecycle_test))
+    throw std::invalid_argument("--scene-controls-test requires --smoke-test and --scene; cannot test lifecycle together");
   return options;
 }
 
@@ -718,12 +722,20 @@ int main(int argc, char** argv) {
       std::cout<<"Asset unloaded; terrain resources preserved\n";
     };
     if(has_asset && !options.smoke_test && !options.benchmark_frames)
-      std::cout<<"Asset controls: U unload | R reload (failed reload preserves current asset)\n";
+      std::cout<<"Asset controls: U unload | R reload | P pause scene | N single tick (failed reload preserves current asset)\n";
 
     double yaw = 0.45, pitch = options.asset_preview?0.42:0.75;
     double distance=scene_camera.starting_distance*(options.asset_preview?0.75:1.0);
     double previous_time = glfwGetTime();
     terraflux::runtime::FixedStepScheduler scheduler(1.0/60.0,0.25,8);
+    terraflux::runtime::ScenePlayback scene_playback;
+    bool previous_pause=false,previous_step=false;
+    std::string last_scene_title;
+    std::optional<terraflux::scene::Scene> expected_controls_scene;
+    if(options.scene_controls_test) {
+      expected_controls_scene=imported->scene;
+      scene_playback.set_paused(true);
+    }
     double engine_time=0.0, playback_accumulator=0.0;
     std::size_t playback_frame = 0;
     std::size_t uploaded_frame = static_cast<std::size_t>(-1);
@@ -750,7 +762,11 @@ int main(int argc, char** argv) {
       if(has_asset && !options.smoke_test && !options.benchmark_frames) {
         if(unload && !previous_unload)unload_imported();
         if(reload && !previous_reload) {
-          try{imported.reload(load_imported);std::cout<<"Asset reloaded\n";}
+          try{
+            imported.reload(load_imported);
+            scene_playback.reset();
+            std::cout<<"Asset reloaded\n";
+          }
           catch(const std::exception& error){
             std::cerr<<"Asset reload failed; current asset preserved: "<<error.what()<<'\n';
           }
@@ -760,7 +776,7 @@ int main(int argc, char** argv) {
       previous_unload=unload;previous_reload=reload;
       const double now = glfwGetTime();
       const double profile_update_start = glfwGetTime();
-      const double elapsed = options.benchmark_frames?
+      const double elapsed = (options.benchmark_frames || options.scene_controls_test)?
                              (1.0/60.0):std::max(0.0,now-previous_time);
       const double delta = std::clamp(elapsed, 0.0, 0.1);
       previous_time = now;
@@ -769,10 +785,44 @@ int main(int argc, char** argv) {
       const auto fixed_report=scheduler.advance(elapsed,[&](double dt) {
         engine_time+=dt;
         if(playback && playing)playback_accumulator+=dt;
-        if(imported && imported->uses_scene_file)
-          terraflux::runtime::update_scene_components(imported->scene,dt);
       });
       (void)fixed_report;
+      const bool pause_key=options.scene_controls_test?rendered_frames==3:
+          glfwGetKey(window.get(),GLFW_KEY_P)==GLFW_PRESS;
+      const bool step_key=options.scene_controls_test?rendered_frames==1:
+          glfwGetKey(window.get(),GLFW_KEY_N)==GLFW_PRESS;
+      if(imported && !imported->is_gltf) {
+        const auto update_scene=[&](double dt) {
+          if(imported->uses_scene_file)
+            terraflux::runtime::update_scene_components(imported->scene,dt);
+        };
+        const bool controls_enabled=!options.benchmark_frames &&
+                                    (!options.smoke_test || options.scene_controls_test);
+        if(controls_enabled && step_key && !previous_step) {
+          scene_playback.step(update_scene);
+          std::cout<<"Scene paused; advanced one 1/60-second tick\n";
+        }else{
+          if(controls_enabled && pause_key && !previous_pause) {
+            scene_playback.set_paused(!scene_playback.paused());
+            std::cout<<(scene_playback.paused()?"Scene paused\n":"Scene resumed\n");
+          }
+          scene_playback.advance(elapsed,update_scene);
+        }
+      }
+      previous_pause=pause_key;previous_step=step_key;
+      if(options.scene_controls_test) {
+        if(rendered_frames==1 || rendered_frames==3)
+          terraflux::runtime::update_scene_components(*expected_controls_scene,1.0/60.0);
+        if(terraflux::scene::serialize_scene(imported->scene)!=
+           terraflux::scene::serialize_scene(*expected_controls_scene))
+          throw std::runtime_error("scene controls changed an unexpected animation tick");
+        const double expected_time=(rendered_frames==0?0:rendered_frames==3?2:1)/60.0;
+        if(std::abs(scene_playback.simulated_seconds()-expected_time)>1e-9 ||
+           scene_playback.paused()!=(rendered_frames!=3) ||
+           std::abs(engine_time-(rendered_frames+1)/60.0)>1e-9)
+          throw std::runtime_error("scene clock pause/step affected independent engine time");
+      }
+
       const bool space = glfwGetKey(window.get(), GLFW_KEY_SPACE) == GLFW_PRESS;
       const bool home = glfwGetKey(window.get(), GLFW_KEY_HOME) == GLFW_PRESS;
       const bool back = glfwGetKey(window.get(), GLFW_KEY_COMMA) == GLFW_PRESS;
@@ -815,6 +865,17 @@ int main(int argc, char** argv) {
       }
       previous_space = space; previous_home = home;
       previous_back = back; previous_forward = forward;
+
+      if(imported && !imported->is_gltf && !options.smoke_test && !options.benchmark_frames) {
+        std::string title=std::string("TerraFlux | Scene ")+
+            (scene_playback.paused()?"paused":"playing")+" | P pause/resume | N tick | U unload | R reload";
+        if(playback)title+=" | Fire "+std::to_string(playback_frame+1)+"/"+
+            std::to_string(playback->frames.size())+" | Space pause fire";
+        if(title!=last_scene_title) {
+          glfwSetWindowTitle(window.get(),title.c_str());
+          last_scene_title=std::move(title);
+        }
+      }
 
       if (glfwGetKey(window.get(), GLFW_KEY_LEFT) == GLFW_PRESS) yaw -= delta;
       if (glfwGetKey(window.get(), GLFW_KEY_RIGHT) == GLFW_PRESS) yaw += delta;
@@ -965,10 +1026,10 @@ int main(int argc, char** argv) {
           using terraflux::scene::Transform;
           const double spread=imported->separation;
           imported->scene.set_transform(imported->left_pivot,
-              Transform{{-spread,0,0},{0,engine_time*0.7,0},{1,1,1}});
+              Transform{{-spread,0,0},{0,scene_playback.simulated_seconds()*0.7,0},{1,1,1}});
           imported->scene.set_transform(imported->right_pivot,
-              Transform{{spread,0.10*spread*std::sin(engine_time*1.4),0},
-                        {0,-engine_time*0.43,0},{1,1,1}});
+              Transform{{spread,0.10*spread*std::sin(scene_playback.simulated_seconds()*1.4),0},
+                        {0,-scene_playback.simulated_seconds()*0.43,0},{1,1,1}});
           enqueue(imported->vb,imported->ib,imported->sections,
                   imported->object_uniform_left,
                   imported->scene.world_matrix(imported->left_mesh),
@@ -1076,6 +1137,11 @@ int main(int argc, char** argv) {
           imported.reload(load_imported);
           unload_imported();
           std::cout<<"Asset lifecycle passed: render, failed reload, render, unload, terrain, reload, render, replace, unload\n";
+          break;
+        }
+      }else if(options.scene_controls_test) {
+        if(rendered_frames==4) {
+          std::cout<<"Scene controls passed: pause, step, hold, resume; engine clock independent\n";
           break;
         }
       }else if(options.smoke_test)break;

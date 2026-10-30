@@ -212,6 +212,45 @@ void motion_components() {
   root_motion.insert(root_motion.find("\"parent\":0"),"\"motion\":[0,0,0],");
   rejects([&]{(void)terraflux::scene::deserialize_scene(root_motion);},"serialized root Motion rejected");
 }
+void scene_playback_controls() {
+  terraflux::runtime::ScenePlayback playback;
+  terraflux::scene::Scene graph;
+  const auto node=graph.create_node("Animated");
+  graph.set_linear_velocity(node,terraflux::math::Vec3{1,0,0});
+  graph.set_angular_velocity(node,terraflux::math::Vec3{0,2,0});
+  const auto update=[&](double dt){terraflux::runtime::update_scene_components(graph,dt);};
+  constexpr double tick=1.0/60.0;
+  playback.advance(tick/2,update);
+  playback.set_paused(true);
+  const auto frozen=terraflux::scene::serialize_scene(graph);
+  const auto paused=playback.advance(3600,update);
+  check(paused.updates==0 && terraflux::scene::serialize_scene(graph)==frozen,
+        "paused wall time cannot move scene or build catch-up backlog");
+  const auto step=playback.step(update);
+  check(playback.paused() && step.updates==1 && near(step.interpolation_alpha,0) &&
+        near(step.discarded_seconds,tick/2) && near(graph.get(node).local.translation.x,tick),
+        "single step pauses and advances exactly one tick, discarding fraction");
+  playback.advance(3600,update);
+  check(near(graph.get(node).local.rotation_radians.y,2*tick),"step leaves scene paused");
+  playback.set_paused(false);
+  const auto resumed=playback.advance(tick,update);
+  check(resumed.updates==1 && near(graph.get(node).local.translation.x,2*tick),
+        "resume does not catch up paused wall time");
+  // Stepping while playing must not consume any extra wall-clock ticks.
+  playback.step(update);
+  check(playback.paused() && near(playback.simulated_seconds(),3*tick),
+        "manual step while running automatically pauses");
+  for(double bad:{-1.0,std::numeric_limits<double>::infinity(),
+                  std::numeric_limits<double>::quiet_NaN()})
+    rejects([&]{(void)playback.advance(bad,update);},"invalid paused delta rejected");
+  rejects([&]{(void)playback.step({});},"empty manual callback rejected");
+  const auto time=playback.simulated_seconds();
+  rejects([&]{(void)playback.step([](double){throw std::runtime_error("failed update");});},
+          "step callback exception propagated");
+  check(near(playback.simulated_seconds(),time),"failed callback does not advance clock");
+  playback.reset();
+  check(!playback.paused() && near(playback.simulated_seconds(),0),"scene clock reset");
+}
 void example_scene(const std::string& path){
   std::ifstream file(path);
   if(!file)throw std::runtime_error("scene example not found");
@@ -237,8 +276,9 @@ int main(int argc,char** argv) {
     reject_invalid_scene();
     runtime_components_and_profiler();
     motion_components();
+    scene_playback_controls();
     example_scene(argv[1]);
-    std::cout<<"TerraFlux runtime: 6 test groups passed\n";
+    std::cout<<"TerraFlux runtime: 7 test groups passed\n";
   }catch(const std::exception& e){
     std::cerr<<"Runtime test failed: "<<e.what()<<'\n';
     return 1;

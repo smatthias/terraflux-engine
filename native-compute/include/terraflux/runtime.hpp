@@ -16,7 +16,7 @@ struct FrameReport {
 
 // Deterministic update scheduler. Consume elapsed wall-clock time, invoke
 // fixed-duration updates, leave fractional remainder for render interpolation.
-// Explicit pause/reset can be implemented by callers not calling advance().
+// ScenePlayback below adds pause and manual stepping independently of replay.
 class FixedStepScheduler {
  public:
   explicit FixedStepScheduler(double fixed_step_seconds=1.0/60.0,
@@ -24,6 +24,7 @@ class FixedStepScheduler {
                               std::uint32_t max_updates_per_frame=8);
   FrameReport advance(double elapsed_seconds,
                       const std::function<void(double)>& update);
+  FrameReport step(const std::function<void(double)>& update);
   double simulated_seconds() const { return simulated_seconds_; }
   void reset();
 
@@ -33,6 +34,22 @@ class FixedStepScheduler {
   std::uint32_t max_updates_per_frame_=0;
   double accumulator_=0.0;
   double simulated_seconds_=0.0;
+};
+
+// Independent clock for scene animation. Paused wall time never accumulates;
+// manual stepping pauses playback and discards any fractional pending tick.
+class ScenePlayback {
+ public:
+  void set_paused(bool paused) {paused_=paused;}
+  bool paused() const {return paused_;}
+  double simulated_seconds() const {return clock_.simulated_seconds();}
+  FrameReport advance(double elapsed_seconds,const std::function<void(double)>& update);
+  FrameReport step(const std::function<void(double)>& update);
+  void reset() {clock_.reset();paused_=false;interpolation_alpha_=0;}
+ private:
+  FixedStepScheduler clock_;
+  bool paused_=false;
+  double interpolation_alpha_=0;
 };
 
 // Fixed-step component system: integrate Spin and Motion in scene-local space.

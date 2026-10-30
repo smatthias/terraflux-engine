@@ -46,6 +46,39 @@ FrameReport FixedStepScheduler::advance(double elapsed,
   return report;
 }
 
+FrameReport FixedStepScheduler::step(const std::function<void(double)>& update) {
+  if(!update)throw std::invalid_argument("fixed update callback is missing");
+  update(fixed_step_seconds_);
+  FrameReport report;
+  report.updates=1;
+  report.discarded_seconds=accumulator_;
+  accumulator_=0;
+  simulated_seconds_+=fixed_step_seconds_;
+  report.simulated_seconds=simulated_seconds_;
+  return report;
+}
+
+FrameReport ScenePlayback::advance(double elapsed,const std::function<void(double)>& update) {
+  if(!std::isfinite(elapsed) || elapsed<0)
+    throw std::invalid_argument("scene delta must be finite and nonnegative");
+  if(!update)throw std::invalid_argument("scene update callback is missing");
+  if(paused_) {
+    FrameReport report;
+    report.interpolation_alpha=interpolation_alpha_;
+    report.simulated_seconds=clock_.simulated_seconds();
+    return report;
+  }
+  const auto report=clock_.advance(elapsed,update);
+  interpolation_alpha_=report.interpolation_alpha;
+  return report;
+}
+FrameReport ScenePlayback::step(const std::function<void(double)>& update) {
+  const auto report=clock_.step(update);
+  interpolation_alpha_=0;
+  paused_=true;
+  return report;
+}
+
 void FixedStepScheduler::reset() {
   accumulator_=0;
   simulated_seconds_=0;
