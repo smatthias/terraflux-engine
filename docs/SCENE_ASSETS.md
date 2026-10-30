@@ -583,3 +583,23 @@ can still select a local file directly. Tests cover material scoping, duplicate
 libraries, failure preservation, sampler keys, fallback/embedded images,
 material-relative decoding and file bounds. Existing mixed-scene rendering,
 controls and reload/unload checks cover the shared helpers under Mesa.
+
+
+## Reference-aware GPU texture ownership
+
+`graphics::SharedTextureCache` indexes weak references by the existing image
+and sampler key. Each material section retains immutable `TextureLease`
+references. Models using the same key share a GPU allocation; releasing one
+material does not invalidate others. The last lease release destroys the GPU
+texture immediately at the API level, even if an expired weak cache entry
+remains. Expired entries can be pruned; clearing the cache does not invalidate
+outstanding leases. The RenderDevice/context must outlive all leases.
+
+The viewer now uses this ownership for OBJ, glTF/GLB and mixed-scene material
+textures. Failed loading and full imported-scope unload still clean up safely.
+Tests cover shared leases, last-reference eviction, reacquisition, cache-clear
+safety, creation failures and repeated release cycles; Mesa lifecycle checks
+exercise real OpenGL allocations. This is the texture-ownership prerequisite
+for selective model eviction: interactive node/model detachment and per-model
+geometry ownership remain pending. API destruction is not a physical VRAM
+reclamation or performance measurement.

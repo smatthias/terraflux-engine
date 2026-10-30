@@ -1,5 +1,6 @@
 #include <terraflux/graphics/resource_owner.hpp>
 #include <terraflux/graphics/asset_slot.hpp>
+#include <terraflux/graphics/shared_texture_cache.hpp>
 #include <terraflux/graphics/visibility.hpp>
 #include <terraflux/graphics/terrain_upload.hpp>
 #include <terraflux/graphics/mesh_upload.hpp>
@@ -120,13 +121,45 @@ void dynamic_asset_lifetime() {
         !backend.live_pipeline_count(),"scope unwinding retires dynamically loaded assets");
 }
 
+void shared_texture_lifetime(){
+  using namespace terraflux::graphics;
+  ValidatingRenderDevice backend;
+  std::array<std::byte,16> pixels{};
+  SharedTextureCache cache(backend);
+  auto first=cache.acquire("shared",{2,2},pixels);
+  const auto original=first->handle();
+  auto second=cache.acquire("shared",{2,2},pixels);
+  check(first==second && backend.live_texture_count()==1,"models share one texture allocation");
+  first.reset();
+  check(backend.live_texture_count()==1 && second->handle()==original,"one model release preserves another lease");
+  second.reset();
+  check(!backend.live_texture_count() && cache.size()==0 && !cache.find("shared"),
+        "last material release evicts GPU texture despite weak cache entry");
+  auto renewed=cache.acquire("shared",{2,2},pixels);
+  check(renewed->handle()!=original,"expired entry creates a fresh valid GPU resource");
+  cache.clear();
+  check(backend.live_texture_count()==1,"clearing cache cannot invalidate active material leases");
+  renewed.reset();
+  check(!backend.live_texture_count(),"lease survives cache clear and releases cleanly");
+  bool rejected=false;
+  try{(void)cache.acquire("bad",{2,2},std::span(pixels).first(4));}
+  catch(const std::invalid_argument&){rejected=true;}
+  check(rejected && !cache.find("bad") && !backend.live_texture_count(),"failed creation leaves no cached GPU resource");
+  for(int cycle=0;cycle<4;++cycle){
+    auto lease=cache.acquire("repeated",{2,2},pixels);
+    lease.reset();cache.prune();
+    check(cache.size()==0 && !backend.live_texture_count(),"repeated eviction returns to baseline");
+  }
+}
+
 }
 int main(){
   try{
     creates_and_cleans();
     exception_cleanup();
     dynamic_asset_lifetime();
-    std::cout<<"GPU resource ownership: 3 test groups passed\n";
+    shared_texture_lifetime();
+    std::cout<<"GPU resource ownership: 4 test groups passed\n";
   }catch(const std::exception& e){
     std::cerr<<"GPU ownership test failed: "<<e.what()<<'\n';return 1;
   }

@@ -19,6 +19,7 @@ twin applications.
 - Scene hierarchies, shared OBJ/glTF/GLB asset references and deterministic Spin/Motion
 - Scene pause/resume, single stepping and transactional asset unload/reload
 - Reusable CPU material/path/image resolution and sampler-aware texture keys
+- Reference-counted GPU texture leases; final material release evicts the allocation
 - Frustum culling, opaque hardware instancing, CPU/GPU timing and benchmarks
 
 ## Requirements
@@ -374,7 +375,8 @@ hours or release-readiness guarantees. The PS4 backend is unimplemented.
 | 9 | Performance | 55% |
 | 10 | PS4 backend | 0% |
 
-Latest milestones: reusable CPU material/texture resolution, serializable Motion,
+Latest milestones: shared GPU texture leases, reusable CPU material/texture
+resolution, serializable Motion,
 shared mixed-format scene assets, isolated
 GPU asset lifetimes, unload/reload with failure recovery, and independent
 scene pause/resume and single-step controls. The mixed-format example includes
@@ -382,7 +384,8 @@ OBJ, glTF, GLB, transparent materials and repeated model references. Native test
 CTest suites and 71 simulation parity fixtures; CI also exercises the viewer
 under Mesa/Xvfb. See the branch's CI results for validation of each commit.
 
-Next planned work: per-model resource eviction and reference-aware resource ownership. Asynchronous streaming, skeletal animation
+Next planned work: node/model detachment and per-model geometry eviction.
+Texture lifetime is now reference-aware; geometry still belongs to the full imported scope. Asynchronous streaming, skeletal animation
 and full glTF/IBL support remain future work.
 This desktop-engine breakdown is separate from the earlier simulation-focused
 [220-hour planning backlog](docs/ROADMAP.md).

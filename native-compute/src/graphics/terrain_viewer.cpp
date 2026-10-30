@@ -3,6 +3,7 @@
 #include <terraflux/graphics/mesh_upload.hpp>
 #include <terraflux/graphics/resource_owner.hpp>
 #include <terraflux/graphics/asset_slot.hpp>
+#include <terraflux/graphics/shared_texture_cache.hpp>
 #include <terraflux/graphics/visibility.hpp>
 #include <terraflux/assets/obj.hpp>
 #include <terraflux/assets/scene_assets.hpp>
@@ -294,8 +295,10 @@ int main(int argc, char** argv) {
         float alpha_factor=1,alpha_cutoff=.5f;
         bool alpha_mask=false,alpha_blend=false;
         terraflux::math::Vec3 emissive_factor{};
+        std::vector<TextureLease> texture_leases;
       };
-      std::map<std::string,TextureHandle> textures;
+      SharedTextureCache textures;
+      explicit ImportedGpu(RenderDevice& device):textures(device){}
       std::vector<Section> sections;
       struct AdditionalMesh {
         BufferHandle vb, ib;
@@ -454,7 +457,7 @@ int main(int argc, char** argv) {
         const auto geometry = prepare_textured_asset_upload(object); // local + UV
         const auto vertex_bytes = bytes_of(geometry.vertices);
         const auto index_bytes = bytes_of(geometry.indices);
-        auto candidate=std::make_unique<ImportedGpu>();
+        auto candidate=std::make_unique<ImportedGpu>(device);
         auto& obj=*candidate;
         obj.resources=std::make_unique<RenderResourceOwner>(device);
         auto& asset_owned=*obj.resources;
@@ -503,12 +506,10 @@ int main(int argc, char** argv) {
         const auto cached_texture=[&](const std::filesystem::path& source,
                                        terraflux::TextureSampling sampling) {
           const auto key=terraflux::assets::texture_cache_key(source,sampling,use_pbr);
-          if(const auto it=obj.textures.find(key);it!=obj.textures.end())return it->second;
+          if(auto existing=obj.textures.find(key))return existing;
           const auto image=terraflux::assets::resolve_texture_image(source,use_pbr,gltf_images);
           const auto bytes=std::as_bytes(std::span(image.pixels));
-          const auto id=asset_owned.create_texture2d({image.width,image.height,sampling},bytes);
-          obj.textures.emplace(key,id);
-          return id;
+          return obj.textures.acquire(key,{image.width,image.height,sampling},bytes);
         };
         const auto build_sections=[&](const terraflux::assets::Mesh& mesh) {
           std::vector<ImportedGpu::Section> result;
@@ -557,19 +558,26 @@ int main(int argc, char** argv) {
                     terraflux::assets::resolve_asset_path(it->second.folder,it->second.material.albedo_map,32'000'000);
             }
             if(!options.texture_file.empty())texture_file=options.texture_file;
-            const auto handle=cached_texture(texture_file,sampling);
+            std::vector<TextureLease> leases;
+            const auto retain_texture=[&](const std::filesystem::path& source,terraflux::TextureSampling state) {
+              auto lease=cached_texture(source,state);
+              const auto handle=lease->handle();
+              leases.push_back(std::move(lease));
+              return handle;
+            };
+            const auto handle=retain_texture(texture_file,sampling);
             TextureHandle mr_handle{},normal_handle{},occlusion_handle{},emissive_handle{};
             if(use_pbr) {
-              mr_handle=cached_texture(metallic_file.empty()?
+              mr_handle=retain_texture(metallic_file.empty()?
                       std::filesystem::path("__default_mr__"):metallic_file,
                       metallic_sampling);
-              normal_handle=cached_texture(normal_file.empty()?
+              normal_handle=retain_texture(normal_file.empty()?
                       std::filesystem::path("__default_normal__"):normal_file,
                       normal_sampling);
-              occlusion_handle=cached_texture(occlusion_file.empty()?
+              occlusion_handle=retain_texture(occlusion_file.empty()?
                       std::filesystem::path("__default_occlusion__"):occlusion_file,
                       occlusion_sampling);
-              emissive_handle=cached_texture(emissive_file.empty()?
+              emissive_handle=retain_texture(emissive_file.empty()?
                       std::filesystem::path("__default_emissive__"):emissive_file,
                       emissive_sampling);
             }
@@ -593,7 +601,7 @@ int main(int argc, char** argv) {
                               static_cast<float>(roughness),static_cast<float>(normal_scale),
                               static_cast<float>(occlusion_strength),
                               static_cast<float>(alpha_factor),static_cast<float>(alpha_cutoff),
-                              alpha_mask,alpha_blend,emissive_factor});
+                              alpha_mask,alpha_blend,emissive_factor,std::move(leases)});
           }
           if(result.empty())throw std::invalid_argument("mesh has no drawable material sections");
           return result;
