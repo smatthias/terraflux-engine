@@ -25,9 +25,9 @@ struct ObjectUniform {
 static_assert(sizeof(ObjectUniform) == 144);
 
 struct TexturedGpuVertex {
-  float position[3]{},normal[3]{},uv[2]{};
+  float position[3]{},normal[3]{},uv[2]{},tangent[4]{};
 };
-static_assert(sizeof(TexturedGpuVertex)==8*sizeof(float));
+static_assert(sizeof(TexturedGpuVertex)==12*sizeof(float));
 struct TexturedMeshUpload {
   std::vector<TexturedGpuVertex> vertices;
   std::vector<std::uint32_t> indices;

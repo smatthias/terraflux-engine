@@ -90,6 +90,9 @@ TexturedMeshUpload prepare_textured_asset_upload(const assets::Mesh& mesh) {
         checked_float(v.normal.x),checked_float(v.normal.y),checked_float(v.normal.z)
       },{
         checked_float(v.uv.x),checked_float(v.uv.y)
+      },{
+        checked_float(v.tangent[0]),checked_float(v.tangent[1]),
+        checked_float(v.tangent[2]),checked_float(v.tangent[3])
       }});
   }
   for (const auto id : out.indices)
@@ -123,6 +126,8 @@ ShaderLayout instanced_textured_object_shader_layout() {
 ShaderLayout pbr_textured_object_shader_layout(bool instanced) {
   auto layout=instanced?instanced_textured_object_shader_layout():
                        textured_object_shader_layout();
+  layout.attributes.push_back({"TANGENT",4,VertexFormat::Float4,
+                      static_cast<std::uint32_t>(offsetof(TexturedGpuVertex,tangent))});
   layout.bindings.push_back({"PbrMaterial",ShaderResourceKind::UniformBuffer,5,kFragmentStage});
   layout.bindings.push_back({"MetallicRoughnessTexture",ShaderResourceKind::SampledTexture,6,kFragmentStage});
   layout.bindings.push_back({"NormalTexture",ShaderResourceKind::SampledTexture,7,kFragmentStage});

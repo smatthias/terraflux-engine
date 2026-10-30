@@ -120,6 +120,7 @@ std::size_t components(const std::string& type){
   if(type=="SCALAR")return 1;
   if(type=="VEC2")return 2;
   if(type=="VEC3")return 3;
+  if(type=="VEC4")return 4;
   throw std::invalid_argument("unsupported glTF accessor shape");
 }
 Accessor accessor(const Json::Array& accessors,const std::vector<View>& views,
@@ -155,6 +156,12 @@ std::array<double,3> vector3(const Accessor& a,std::size_t row) {
     throw std::invalid_argument("glTF attribute requires FLOAT VEC3");
   const auto* p=a.bytes->data()+a.start+row*a.stride;
   return {float32(p),float32(p+4),float32(p+8)};
+}
+std::array<double,4> vector4(const Accessor& a,std::size_t row) {
+  if(a.component!=5126 || a.type!="VEC4")
+    throw std::invalid_argument("glTF tangent requires FLOAT VEC4");
+  const auto* p=a.bytes->data()+a.start+row*a.stride;
+  return {float32(p),float32(p+4),float32(p+8),float32(p+12)};
 }
 std::array<double,2> vector2(const Accessor& a,std::size_t row) {
   if(a.component!=5126 || a.type!="VEC2")
@@ -612,13 +619,18 @@ GltfModel import_gltf(const std::string& json_text,
       throw std::invalid_argument("POSITION must be FLOAT VEC3");
     const auto has_normals=optional(attributes,"NORMAL")!=nullptr;
     const auto has_uv=optional(attributes,"TEXCOORD_0")!=nullptr;
-    Accessor normal{},uv{};
+    const auto has_tangent=optional(attributes,"TANGENT")!=nullptr;
+    Accessor normal{},uv{},tangent{};
     if(has_normals)normal=accessor(accessors,views,buffers,
                                     uint(field(attributes,"NORMAL"),"NORMAL"));
     if(has_uv)uv=accessor(accessors,views,buffers,
                           uint(field(attributes,"TEXCOORD_0"),"TEXCOORD_0"));
+    if(has_tangent)tangent=accessor(accessors,views,buffers,
+                          uint(field(attributes,"TANGENT"),"TANGENT"));
     if((has_normals && (normal.count!=positions.count || normal.component!=5126 || normal.type!="VEC3")) ||
-       (has_uv && (uv.count!=positions.count || uv.component!=5126 || uv.type!="VEC2")))
+       (has_uv && (uv.count!=positions.count || uv.component!=5126 || uv.type!="VEC2")) ||
+       (has_tangent && (!has_normals || !has_uv || tangent.count!=positions.count ||
+                        tangent.component!=5126 || tangent.type!="VEC4")))
       throw std::invalid_argument("mismatched glTF attribute count/type");
     std::size_t index_count=positions.count;
     Accessor indices{};
@@ -644,7 +656,18 @@ GltfModel import_gltf(const std::string& json_text,
         n=normalized({value[0],value[1],value[2]});}
       math::Vec2 texture{};
       if(has_uv){const auto value=vector2(uv,i);texture={value[0],value[1]};}
-      mesh.vertices.push_back({{p[0],p[1],p[2]},n,texture});
+      std::array<double,4> tw{};
+      if(has_tangent) {
+        tw=vector4(tangent,i);
+        const math::Vec3 direction{tw[0],tw[1],tw[2]};
+        const double dot=direction.dot(n);
+        const double length_sq=direction.dot(direction);
+        if(!(length_sq>1e-16) || std::abs(dot)>0.05 ||
+           std::abs(length_sq-1.0)>0.05 ||
+           (tw[3]!=1.0 && tw[3]!=-1.0))
+          throw std::invalid_argument("glTF TANGENT must be unit, orthogonal to normal and handedness +/-1");
+      }
+      mesh.vertices.push_back({{p[0],p[1],p[2]},n,texture,tw});
     }
     for(std::size_t i=0;i<index_count;++i){
       const auto local=indexed?index_value(indices,i):static_cast<std::uint32_t>(i);

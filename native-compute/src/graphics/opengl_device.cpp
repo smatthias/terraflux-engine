@@ -270,6 +270,62 @@ void main() {
 }
 )GLSL";
 
+constexpr char kPbrTexturedVertexShader[] = R"GLSL(#version 430 core
+layout(location=0) in vec3 POSITION;
+layout(location=1) in vec3 NORMAL;
+layout(location=3) in vec2 TEXCOORD;
+layout(location=4) in vec4 TANGENT;
+layout(std140,binding=0) uniform Camera { mat4 viewProjection; };
+layout(std140,binding=2) uniform Object {
+  mat4 model;
+  mat4 normalMatrix;
+  vec4 tint;
+};
+out vec3 surfaceNormal;
+out vec3 surfaceTint;
+out vec2 textureUv;
+out vec3 worldPosition;
+out vec4 worldTangent;
+void main(){
+  worldPosition=(model*vec4(POSITION,1.0)).xyz;
+  surfaceNormal=normalize(mat3(normalMatrix)*NORMAL);
+  surfaceTint=tint.rgb;
+  textureUv=TEXCOORD;
+  vec3 T=mat3(model)*TANGENT.xyz;
+  float orientation=determinant(mat3(model))<0.0?-1.0:1.0;
+  worldTangent=vec4(T,TANGENT.w*orientation);
+  gl_Position=viewProjection*model*vec4(POSITION,1.0);
+}
+)GLSL";
+
+constexpr char kPbrInstancedVertexShader[] = R"GLSL(#version 430 core
+layout(location=0) in vec3 POSITION;
+layout(location=1) in vec3 NORMAL;
+layout(location=3) in vec2 TEXCOORD;
+layout(location=4) in vec4 TANGENT;
+layout(std140,binding=0) uniform Camera { mat4 viewProjection; };
+struct InstanceRecord { mat4 model; mat4 normalMatrix; vec4 tint; };
+layout(std430,binding=4) readonly buffer InstanceData {
+  InstanceRecord instances[];
+};
+out vec3 surfaceNormal;
+out vec3 surfaceTint;
+out vec2 textureUv;
+out vec3 worldPosition;
+out vec4 worldTangent;
+void main(){
+  InstanceRecord item=instances[gl_InstanceID];
+  worldPosition=(item.model*vec4(POSITION,1.0)).xyz;
+  surfaceNormal=normalize(mat3(item.normalMatrix)*NORMAL);
+  surfaceTint=item.tint.rgb;
+  textureUv=TEXCOORD;
+  vec3 T=mat3(item.model)*TANGENT.xyz;
+  float orientation=determinant(mat3(item.model))<0.0?-1.0:1.0;
+  worldTangent=vec4(T,TANGENT.w*orientation);
+  gl_Position=viewProjection*item.model*vec4(POSITION,1.0);
+}
+)GLSL";
+
 constexpr char kTexturedFragmentShader[] = R"GLSL(#version 430 core
 in vec3 surfaceNormal;
 in vec3 surfaceTint;
@@ -289,6 +345,7 @@ in vec3 surfaceNormal;
 in vec3 surfaceTint;
 in vec2 textureUv;
 in vec3 worldPosition;
+in vec4 worldTangent;
 layout(binding=3) uniform sampler2D AlbedoTexture;
 layout(binding=6) uniform sampler2D MetallicRoughnessTexture;
 layout(binding=7) uniform sampler2D NormalTexture;
@@ -325,10 +382,18 @@ void main(){
   float det=dudx.x*dudy.y-dudx.y*dudy.x;
   vec3 sampled=texture(NormalTexture,textureUv).xyz*2.0-1.0;
   sampled.xy*=factors.z;
-  if(abs(det)>1e-8){
-    vec3 T=(dpdx*dudy.y-dpdy*dudx.y)/det;
+  vec3 T=vec3(0.0);
+  float handedness=1.0;
+  if(abs(worldTangent.w)>0.5 && length(worldTangent.xyz)>1e-8){
+    T=worldTangent.xyz;
+    handedness=sign(worldTangent.w);
+  }else if(abs(det)>1e-8){
+    T=(dpdx*dudy.y-dpdy*dudx.y)/det;
+    handedness=sign(det);
+  }
+  if(dot(T,T)>1e-12){
     T=normalize(T-N*dot(N,T));
-    vec3 B=normalize(cross(N,T))*sign(det);
+    vec3 B=normalize(cross(N,T))*handedness;
     N=normalize(mat3(T,B,N)*sampled);
   }
   vec3 V=normalize(eye.xyz-worldPosition);
@@ -802,6 +867,8 @@ PipelineHandle OpenGLRenderDevice::create_pipeline(PipelineDesc desc) {
   try {
     vertex = compile_shader(impl_->gl, GL_VERTEX_SHADER,
                             wildfire ? kFireVertexShader :
+                            pbr && instanced ? kPbrInstancedVertexShader :
+                            pbr ? kPbrTexturedVertexShader :
                             instanced ? kInstancedTexturedVertexShader :
                             textured ? kTexturedVertexShader :
                             object ? kObjectVertexShader : kVertexShader);

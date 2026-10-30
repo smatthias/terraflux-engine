@@ -2,6 +2,7 @@
 
 #include <terraflux/math.hpp>
 
+#include <array>
 #include <cstdint>
 #include <istream>
 #include <string>
@@ -13,6 +14,7 @@ struct MeshVertex {
   math::Vec3 position;
   math::Vec3 normal;
   math::Vec2 uv{};
+  std::array<double,4> tangent{0,0,0,0}; // optional glTF TANGENT.xyz and handedness
 };
 
 struct MeshSection {
