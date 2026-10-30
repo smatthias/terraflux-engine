@@ -193,6 +193,31 @@ jobs:
             ./build-gl/terraflux-terrain-viewer --smoke-test --hide-fire \
             --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json
 
+      - name: Verify deterministic replay controls and speed
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --replay-controls-test --smoke-test \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json \
+            | tee /tmp/terraflux-replay-controls.log
+          grep -q "Replay controls passed" /tmp/terraflux-replay-controls.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --replay-controls-test --smoke-test --offscreen \
+            --terrain-retain-frames 2 --terrain-tile-quads 8 \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --replay-speed 0.25 --smoke-test \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json \
+            | tee /tmp/terraflux-replay-quarter.log
+          grep -q '"speed":0.25' /tmp/terraflux-replay-quarter.log
+          if ./build-gl/terraflux-terrain-viewer --replay-speed 0.3 \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json \
+            > /tmp/terraflux-replay-invalid.log 2>&1; then
+            echo "Expected unsupported replay rate to reject"; exit 1
+          fi
+          grep -q "replay speed must be" /tmp/terraflux-replay-invalid.log
+
       - name: Verify viewer offscreen composition and resize recovery
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"

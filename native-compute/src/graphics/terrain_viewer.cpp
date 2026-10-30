@@ -22,6 +22,7 @@
 #include <terraflux/grid.hpp>
 #include <terraflux/math.hpp>
 #include <terraflux/replay.hpp>
+#include <terraflux/replay_clock.hpp>
 #include <terraflux/terrain_mesh.hpp>
 
 #define GLFW_INCLUDE_NONE
@@ -82,7 +83,9 @@ struct Options {
   bool asset_lifecycle_test=false,scene_controls_test=false,scene_detach_test=false,scene_residency_test=false;
   bool residency_report=false,start_inactive=false,resource_recovery_test=false;
   bool offscreen=false,offscreen_resize_test=false;
-  bool hide_terrain=false,hide_fire=false,layers_test=false;
+  bool hide_terrain=false,hide_fire=false,layers_test=false,replay_controls_test=false;
+  double replay_speed=1.0;
+  bool replay_speed_requested=false;
   bool terrain_tiles=false,terrain_tile_test=false,terrain_residency=false,terrain_residency_test=false,terrain_retention_test=false;
   std::uint32_t max_resident_terrain_tiles=4096,terrain_retention_frames=0;
   std::uint32_t terrain_tile_quads=32;
@@ -99,6 +102,15 @@ Options parse_args(int argc, char** argv) {
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
     if (arg == "--smoke-test") options.smoke_test = true;
+    else if(arg=="--replay-controls-test")options.replay_controls_test=true;
+    else if(arg=="--replay-speed" && i+1<argc) {
+      const std::string text=argv[++i];double speed=0;
+      const auto parsed=std::from_chars(text.data(),text.data()+text.size(),speed);
+      if(parsed.ec!=std::errc{} || parsed.ptr!=text.data()+text.size())
+        throw std::invalid_argument("invalid --replay-speed");
+      (void)terraflux::replay::ReplayClock::speed_units(speed);
+      options.replay_speed=speed;options.replay_speed_requested=true;
+    }
     else if(arg=="--hide-terrain")options.hide_terrain=true;
     else if(arg=="--hide-fire")options.hide_fire=true;
     else if(arg=="--layers-test")options.layers_test=true;
@@ -184,8 +196,17 @@ Options parse_args(int argc, char** argv) {
     else if (arg == "--save-state" && i+1<argc)options.save_state=argv[++i];
     else if (arg == "--scene" && i + 1 < argc) options.scene_file = argv[++i];
     else throw std::invalid_argument(
-        "usage: terraflux-terrain-viewer [--request request.json --response response.json] [--obj model.obj | --gltf model.gltf] [--texture texture.ppm] [--scene scene.json (legacy scenes require --obj)] [--hide-terrain] [--hide-fire] [--layers-test with replay --smoke-test] [--terrain-tiles] [--terrain-residency] [--terrain-retain-frames 30] [--terrain-retention-test with --smoke-test --terrain-retain-frames 2] [--max-resident-terrain-tiles 4096] [--terrain-residency-test with --smoke-test --terrain-residency] [--terrain-tile-quads 32] [--terrain-tile-test with --smoke-test --terrain-tiles] [--offscreen] [--offscreen-resize-test with --offscreen --smoke-test] [--profile] [--no-culling] [--no-instancing] [--asset-preview with --gltf] [--benchmark-frames 60] [--smoke-test] [--asset-lifecycle-test with --smoke-test]");
+        "usage: terraflux-terrain-viewer [--request request.json --response response.json] [--obj model.obj | --gltf model.gltf] [--texture texture.ppm] [--scene scene.json (legacy scenes require --obj)] [--replay-speed 1] [--replay-controls-test with replay --smoke-test] [--hide-terrain] [--hide-fire] [--layers-test with replay --smoke-test] [--terrain-tiles] [--terrain-residency] [--terrain-retain-frames 30] [--terrain-retention-test with --smoke-test --terrain-retain-frames 2] [--max-resident-terrain-tiles 4096] [--terrain-residency-test with --smoke-test --terrain-residency] [--terrain-tile-quads 32] [--terrain-tile-test with --smoke-test --terrain-tiles] [--offscreen] [--offscreen-resize-test with --offscreen --smoke-test] [--profile] [--no-culling] [--no-instancing] [--asset-preview with --gltf] [--benchmark-frames 60] [--smoke-test] [--asset-lifecycle-test with --smoke-test]");
   }
+  if(options.replay_speed_requested && options.request_file.empty())
+    throw std::invalid_argument("--replay-speed requires replay input");
+  if(options.replay_controls_test && (!options.smoke_test || options.request_file.empty() ||
+      !options.scene_file.empty() || !options.obj_file.empty() || !options.gltf_file.empty() ||
+      options.layers_test || options.hide_terrain || options.hide_fire || options.replay_speed!=1 ||
+      options.offscreen_resize_test || options.asset_lifecycle_test || options.scene_controls_test ||
+      options.scene_detach_test || options.scene_residency_test || options.terrain_tile_test ||
+      options.terrain_residency_test || options.terrain_retention_test))
+    throw std::invalid_argument("--replay-controls-test requires replay smoke mode, default speed and no assets or other scripted test");
   if(options.layers_test && (!options.smoke_test || options.request_file.empty() ||
       !options.scene_file.empty() || !options.obj_file.empty() || !options.gltf_file.empty() ||
       options.hide_terrain || options.hide_fire || options.offscreen_resize_test || options.asset_lifecycle_test ||
@@ -343,6 +364,8 @@ int main(int argc, char** argv) {
                                               read_file(options.response_file)));
     else
       demo.emplace(make_demo_terrain());
+    if(options.replay_controls_test && playback->frames.size()<3)
+      throw std::invalid_argument("replay control test requires at least three frames");
     auto& grid = playback ? playback->grid : *demo;
     const double cell_size = playback ? playback->cell_size_meters : 30.0;
 
@@ -1041,10 +1064,14 @@ int main(int argc, char** argv) {
       expected_controls_scene=imported->scene;
       scene_playback.set_paused(true);
     }
-    double engine_time=0.0, playback_accumulator=0.0;
+    double engine_time=0.0;
+    std::optional<terraflux::replay::ReplayClock> replay_clock;
+    if(playback){replay_clock.emplace(playback->frames.size());replay_clock->set_speed(options.replay_speed);}
+    std::array<bool,5> previous_speed_keys{};
+    std::vector<std::uint8_t> replay_initial_pixels,replay_paused_pixels;
+    bool layers_playing_snapshot=false;
     std::size_t playback_frame = 0;
     std::size_t uploaded_frame = static_cast<std::size_t>(-1);
-    bool playing = playback.has_value();
     bool previous_unload=false,previous_reload=false,previous_detach=false,previous_attach=false,previous_prev_node=false,previous_next_node=false;
     bool previous_space = false, previous_home = false, previous_back = false, previous_forward = false;
     unsigned rendered_frames = 0;
@@ -1058,8 +1085,10 @@ int main(int argc, char** argv) {
     std::uint64_t benchmark_draws=0,benchmark_visible=0,benchmark_culled=0;
     if(options.profile && !options.benchmark_frames)device.enable_gpu_timing();
 
-    if (playback && options.smoke_test && playback->frames.size() > 1)
-      playback_frame = 1; // exercise non-initial fire state in GPU smoke test
+    if(playback && options.smoke_test && playback->frames.size()>1 && !options.replay_controls_test) {
+      replay_clock->seek(1);replay_clock->set_playing(true);
+      playback_frame=replay_clock->frame(); // Exercise non-initial fire state in smoke tests.
+    }
 
     while (!glfwWindowShouldClose(window.get())) {
       glfwPollEvents();
@@ -1105,15 +1134,16 @@ int main(int argc, char** argv) {
       previous_unload=unload;previous_reload=reload;
       const double now = glfwGetTime();
       const double profile_update_start = glfwGetTime();
-      const double elapsed = (options.benchmark_frames || options.scene_controls_test || options.layers_test)?
-                             (1.0/60.0):std::max(0.0,now-previous_time);
+      const double elapsed=options.replay_controls_test?0.1:
+          (options.benchmark_frames || options.scene_controls_test || options.layers_test)?
+          (1.0/60.0):std::max(0.0,now-previous_time);
       const double delta = std::clamp(elapsed, 0.0, 0.1);
       previous_time = now;
       // Clamp large stalls and catch-up work while keeping updates at 60 Hz.
       // Render/input continues once per frame, independent of fixed updates.
       const auto fixed_report=scheduler.advance(elapsed,[&](double dt) {
         engine_time+=dt;
-        if(playback && playing)playback_accumulator+=dt;
+        if(replay_clock)replay_clock->tick();
       });
       (void)fixed_report;
       const bool pause_key=options.scene_controls_test?rendered_frames==3:
@@ -1167,40 +1197,54 @@ int main(int argc, char** argv) {
       const bool home = glfwGetKey(window.get(), GLFW_KEY_HOME) == GLFW_PRESS;
       const bool back = glfwGetKey(window.get(), GLFW_KEY_COMMA) == GLFW_PRESS;
       const bool forward = glfwGetKey(window.get(), GLFW_KEY_PERIOD) == GLFW_PRESS;
-      if (playback) {
-        if (space && !previous_space) {
-          if (!playing && playback_frame + 1 == playback->frames.size()) playback_frame = 0;
-          playing = !playing;
-          playback_accumulator = 0.0;
+      if(replay_clock) {
+        if(space && !previous_space)replay_clock->toggle();
+        if(home && !previous_home)replay_clock->seek(0);
+        if(back && !previous_back)replay_clock->step_back();
+        if(forward && !previous_forward)replay_clock->step_forward();
+        constexpr std::array<double,5> speeds{0.25,0.5,1,2,4};
+        bool speed_changed=false;
+        for(std::size_t i=0;i<speeds.size();++i) {
+          const bool pressed=glfwGetKey(window.get(),GLFW_KEY_1+static_cast<int>(i))==GLFW_PRESS;
+          if(pressed && !previous_speed_keys[i]){replay_clock->set_speed(speeds[i]);speed_changed=true;}
+          previous_speed_keys[i]=pressed;
         }
-        if (home && !previous_home) {
-          playback_frame = 0; playing = false; playback_accumulator=0;
+        if(options.replay_controls_test) {
+          switch(rendered_frames) {
+            case 0:replay_clock->seek(0);replay_clock->set_speed(1);replay_clock->set_playing(true);break;
+            case 1:replay_clock->set_speed(4);break;
+            case 2:replay_clock->set_playing(false);break;
+            case 3:replay_clock->step_forward();break;
+            case 4:replay_clock->step_back();break;
+            case 5:replay_clock->toggle();break;
+            case 6:replay_clock->seek(0);break;
+          }
+          constexpr std::array<std::size_t,7> frames{0,0,1,2,1,1,0};
+          constexpr std::array<bool,7> running{true,true,false,false,false,true,false};
+          if(replay_clock->frame()!=frames.at(rendered_frames) || replay_clock->playing()!=running.at(rendered_frames) ||
+             std::abs(replay_clock->pending_seconds()-(rendered_frames==1?0.1:0.0))>1e-9 ||
+             replay_clock->speed()!=(rendered_frames?4:1) || std::abs(engine_time-(rendered_frames+1)*0.1)>1e-9)
+            throw std::runtime_error("replay control sequence changed expected timing or engine independence");
         }
-        if (back && !previous_back) {
-          playback_frame = playback_frame == 0 ? 0 : playback_frame - 1;
-          playing = false; playback_accumulator=0;
+        playback_frame=replay_clock->frame();
+        const bool frame_changed=playback_frame!=uploaded_frame;
+        if(frame_changed) {
+          terraflux::replay::apply_frame(playback->frames[playback_frame],*fire_field);
+          device.update_buffer(*fire_buffer,0,std::as_bytes(std::span(fire_field->states)));
+          uploaded_frame=playback_frame;
         }
-        if (forward && !previous_forward) {
-          playback_frame = std::min(playback_frame + 1, playback->frames.size() - 1);
-          playing = false; playback_accumulator=0;
-        }
-        while (playing && playback_accumulator >= 0.35) {
-          playback_accumulator-=0.35;
-          if (playback_frame + 1 < playback->frames.size()) ++playback_frame;
-          else { playing=false; playback_accumulator=0; }
-        }
-        if (playback_frame != uploaded_frame) {
-          terraflux::replay::apply_frame(playback->frames[playback_frame], *fire_field);
-          device.update_buffer(*fire_buffer, 0, std::as_bytes(std::span(fire_field->states)));
-          uploaded_frame = playback_frame;
-          const auto& current = playback->frames[playback_frame];
-          std::string title = "TerraFlux - " + playback->grid_key +
-              " | step " + std::to_string(current.step + 1) + "/" +
-              std::to_string(playback->frames.size()) +
-              " | active " + std::to_string(current.active.size()) +
-              " | burned " + std::to_string(current.burned.size()) +
-              " | Space pause | Home reset | , . step | arrows orbit | +/- zoom"+layer_title();
-          glfwSetWindowTitle(window.get(), title.c_str());
+        if(frame_changed || speed_changed || options.smoke_test || (space && !previous_space) ||
+           (home && !previous_home) || (back && !previous_back) || (forward && !previous_forward)) {
+          const auto& current=playback->frames[playback_frame];
+          std::string title="TerraFlux - "+playback->grid_key+" | step "+std::to_string(current.step+1)+"/"+
+              std::to_string(playback->frames.size())+" | "+replay_clock->speed_label()+
+              (replay_clock->playing()?" playing":" paused")+
+              " | active "+std::to_string(current.active.size())+" | burned "+std::to_string(current.burned.size())+
+              " | Space pause | Home reset | , . step | 1-5 speed | arrows orbit | +/- zoom"+layer_title();
+          glfwSetWindowTitle(window.get(),title.c_str());
+          if(options.smoke_test || options.profile || options.residency_report)
+            std::cout<<"REPLAY_JSON={\"frame\":"<<playback_frame<<",\"playing\":"<<(replay_clock->playing()?"true":"false")
+                     <<",\"speed\":"<<replay_clock->speed()<<",\"pending_seconds\":"<<replay_clock->pending_seconds()<<"}\n";
         }
       }
       previous_space = space; previous_home = home;
@@ -1215,7 +1259,7 @@ int main(int argc, char** argv) {
               (imported->residency.detached().contains(*selected)?" (inactive)":" (active)")+" | [ ] select";
         }
         if(playback)title+=" | Fire "+std::to_string(playback_frame+1)+"/"+
-            std::to_string(playback->frames.size())+" | Space pause fire";
+            std::to_string(playback->frames.size())+" | "+replay_clock->speed_label()+" | 1-5 speed | Space pause fire";
         title+=layer_title();
         if(title!=last_scene_title) {
           glfwSetWindowTitle(window.get(),title.c_str());
@@ -1305,7 +1349,7 @@ int main(int argc, char** argv) {
       const auto camera_vp=update_camera(device, camera, scene_width, scene_height, scene_camera,
                     yaw, pitch, distance,
                     cell_size, fire_field ? fire_field->width : 1,
-                    fire_field ? fire_field->height : 1, options.layers_test?0.0:engine_time);
+                    fire_field ? fire_field->height : 1, (options.layers_test || options.replay_controls_test)?0.0:engine_time);
       const auto terrain_frustum=Frustum::from_view_projection(camera_vp);
       TerrainResidencyChange terrain_residency_change;
       if(options.terrain_residency) {
@@ -1356,6 +1400,7 @@ int main(int argc, char** argv) {
         const auto pixels=device.capture_rgba(scene_width,scene_height);
         if(rendered_frames==0) {
           layers_both=pixels;layers_field_snapshot=fire_field->states;layers_frame_snapshot=playback_frame;
+          layers_playing_snapshot=replay_clock->playing();
           if(!device.count_fire_pixels(scene_width,scene_height))throw std::runtime_error("layer test has no initial visible fire");
         } else if(rendered_frames==1) {
           layers_ground=pixels;
@@ -1382,9 +1427,20 @@ int main(int argc, char** argv) {
         } else if(rendered_frames==4 && pixels!=layers_both)
           throw std::runtime_error("restoring layer visibility changed reference pixels");
         if(fire_field->states!=layers_field_snapshot || playback_frame!=layers_frame_snapshot ||
-           std::abs(engine_time-(rendered_frames+1)/60.0)>1e-9 || !playing ||
-           std::abs(playback_accumulator-engine_time)>1e-9)
+           std::abs(engine_time-(rendered_frames+1)/60.0)>1e-9 || replay_clock->playing()!=layers_playing_snapshot ||
+           std::abs(replay_clock->pending_seconds()-(layers_playing_snapshot?engine_time*replay_clock->speed():0.0))>1e-9)
           throw std::runtime_error("layer visibility changed replay data or engine clock");
+      }
+      if(options.replay_controls_test) {
+        auto expected=terraflux::replay::make_fire_field(playback->grid);
+        terraflux::replay::apply_frame(playback->frames[playback_frame],expected);
+        if(expected.states!=fire_field->states)throw std::runtime_error("replay controls selected incorrect fire data");
+        const auto pixels=device.capture_rgba(scene_width,scene_height);
+        if(rendered_frames==0)replay_initial_pixels=pixels;
+        if(rendered_frames==2)replay_paused_pixels=pixels;
+        if((rendered_frames==4 && pixels!=replay_paused_pixels) ||
+           (rendered_frames==6 && pixels!=replay_initial_pixels))
+          throw std::runtime_error("replay backward/reset pixels did not restore selected frame");
       }
       const auto terrain_snapshot=(options.smoke_test &&
           (options.asset_lifecycle_test || (imported && imported->uses_pbr)))?
@@ -1620,7 +1676,12 @@ int main(int argc, char** argv) {
       }
       glfwSwapBuffers(window.get());
       ++rendered_frames;
-      if(options.layers_test) {
+      if(options.replay_controls_test) {
+        if(rendered_frames==7) {
+          std::cout<<"Replay controls passed: speed, pause, forward, back, resume, reset; frame pixels and engine clock preserved\n";
+          break;
+        }
+      }else if(options.layers_test) {
         if(rendered_frames==5) {
           std::cout<<"Layer visibility passed: both, terrain, fire, hidden, restore; replay data and clock preserved\n";
           break;
@@ -1842,6 +1903,7 @@ int main(int argc, char** argv) {
                 <<",\"culling\":"<<(options.no_culling?"false":"true")
                 <<",\"instancing\":"<<(options.no_instancing?"false":"true")
                 <<",\"offscreen\":"<<(options.offscreen?"true":"false")
+                <<",\"replay_speed\":"<<(replay_clock?std::to_string(replay_clock->speed()):"null")
                 <<",\"terrain_visible\":"<<(layer_visibility.terrain?"true":"false")
                 <<",\"fire_visible\":"<<(layer_visibility.fire?"true":"false")
                 <<",\"terrain_tiled\":"<<(options.terrain_tiles?"true":"false")

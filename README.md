@@ -405,6 +405,36 @@ fixed only for that diagnostic; engine/replay clocks continue at deterministic
 60 Hz, and the fire field/frame are checked unchanged over the short sequence.
 CI covers direct and resident/offscreen paths plus objects with both layers hidden.
 
+### Replay speed and timing controls
+
+Use keys **1–5** for **0.25x, 0.5x, 1x, 2x, 4x**, or set `--replay-speed` to one
+of those numeric values. The flag requires replay input. Titles and REPLAY_JSON
+show the selected rate, frame and play state; benchmark JSON records replay_speed.
+
+```bash
+./build-gl/terraflux-terrain-viewer --request /tmp/terraflux-request.json \
+  --response /tmp/terraflux-response.json --replay-speed 2
+LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a -s "-screen 0 1280x800x24" \
+  ./build-gl/terraflux-terrain-viewer --request /tmp/terraflux-request.json \
+  --response /tmp/terraflux-response.json --replay-controls-test --smoke-test
+```
+
+At 1x a source frame lasts 0.35 seconds of fixed engine time. Speed changes retain
+partial-frame progress and affect the next 60 Hz tick. Space pauses/resumes; Home
+selects frame zero and pauses; comma/period move one frame and pause. These actions
+clear pending partial progress, so paused time creates no replay backlog. Reaching
+the final frame stops immediately; Space at the end restarts from frame zero.
+A single-frame replay stays paused. Reset and stepping preserve the selected rate.
+Engine and scene clocks, camera input and flame animation timing retain their own
+rates. The compute response and its source frame data are unchanged.
+
+`--replay-controls-test` requires replay smoke mode with at least three frames,
+default initial speed, no assets and no other scripted test. Its seven frames use
+six fixed ticks per render to check rate change, pause, forward/back, resume and
+reset. Shader animation is frozen only for pixel comparisons; selected fire data
+and independent engine time are checked on every frame. CI runs monolithic and
+resident/offscreen variants. See the [replay clock contract](docs/GRAPHICS_BACKENDS.md#fixed-tick-replay-clock).
+
 ### Wildfire replay and runtime checks
 
 ```bash
@@ -671,7 +701,7 @@ hours or release-readiness guarantees. The PS4 backend is unimplemented.
 
 | Desktop engine — Phases 1–9 | Full roadmap including PS4 |
 | --- | --- |
-| **~92%** (previously ~91%) | **~63%** (previously ~62%) |
+| **~93%** (previously ~92%) | **~64%** (previously ~63%) |
 
 | Phase | Component | Estimated completion |
 | --- | --- | ---: |
@@ -679,10 +709,10 @@ hours or release-readiness guarantees. The PS4 backend is unimplemented.
 | 2 | Rendering abstraction | ~89% (previously ~88%) |
 | 3 | OpenGL backend | ~91% (previously ~90%) |
 | 4 | 3D terrain renderer | ~89% (previously ~88%) |
-| 5 | Simulation visualization | ~75% (previously 65%) |
+| 5 | Simulation visualization | ~80% (previously ~75%) |
 | 6 | Shader system | ~84% (previously ~82%) |
 | 7 | Scene and asset system | ~90% (previously 86%) |
-| 8 | Engine runtime | ~90% (previously ~89%) |
+| 8 | Engine runtime | ~91% (previously ~90%) |
 | 9 | Performance | ~83% (previously ~82%) |
 | 10 | PS4 backend | 0% |
 
@@ -740,7 +770,11 @@ monolithic pixels. Independent terrain/fire visibility is now available through 
 hiding fire removes active/burned shading without pausing replay. The five-state
 layer test checks isolation, exact restoration, unchanged fire data and continued
 replay timing through monolithic, tiled/resident and offscreen paths.
-Next planned implementation: replay speed controls with deterministic timing tests.
+Replay now uses an exact fixed-tick controller with 0.25x/0.5x/1x/2x/4x rates,
+pause/resume, bounded stepping and endpoint restart. A seven-frame Mesa check
+verifies displayed fire data, backward/reset pixel restoration and independent
+engine timing. Native replay tests now cover nine groups.
+Next planned implementation: refresh the baseline checkpoint and remaining-work list.
 See the [prioritized gaps and acceptance criteria](docs/ENGINE_BASELINE.md#remaining-renderer-work-in-priority-order). GPU meshes are created on demand; CPU model data
 and decoded image recipes remain eager and retained for reattachment. Asynchronous streaming, skeletal animation
 and full glTF/IBL support remain future work.

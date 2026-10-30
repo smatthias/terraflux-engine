@@ -495,5 +495,57 @@ resident/tiled/offscreen paths are exercised; the latter rehydrates after full
 layer hiding. Separate smoke checks verify objects with both surface layers hidden.
 The diagnostic requires visible active fire plus unaffected ground in view.
 
-Next: replay speed controls with deterministic timing tests. Physical GPU
-validation remains outstanding.
+Replay speed controls are described below. Physical GPU validation remains outstanding.
+
+
+## Fixed-tick replay clock
+
+`replay_clock.hpp` provides a resource-free ReplayClock for 1..720 source frames.
+Call tick once per 60 Hz engine update. The original 0.35-second source interval
+is 84 integer units of 1/240 second; supported rates add 1, 2, 4, 8 or 16 units
+per tick. This represents 0.25x, 0.5x, 1x, 2x and 4x exactly and eliminates
+floating threshold drift. No wall-clock reads or mutation of replay/compute data
+occur in the controller. Stalls/catch-up remain governed by FixedStepScheduler's
+existing clamp and update cap; speed scales replay progression only.
+
+set_speed accepts only those five values and preserves the current frame,
+play state and pending source time. Invalid rates (including NaN/infinity) reject
+without changing state. Pause/resume clears phase on a play-state transition;
+repeating an unchanged play state leaves partial progress intact. seek validates
+its index, selects it and pauses with zero phase. Forward/back stepping clamps at
+the ends and pauses. Arrival at the final source frame stops immediately rather
+than waiting an extra source interval; a single-frame replay is always paused.
+Toggle from a paused final frame rewinds to zero and plays when multiple frames
+exist. Rate survives reset, seek, stepping and endpoint restart.
+
+The viewer replaces its local floating accumulator with this controller inside
+the existing engine update callback. Space/Home/comma/period call its play/seek/
+step methods. Edge-triggered keys 1..5 select the five rates, and --replay-speed
+sets the startup rate. Engine and independent scene clocks are not multiplied.
+Flame animation continues to use engine time; the replay rate changes which
+precomputed frame is shown, not the physical simulation timestep or flame wobble.
+Only a changed selected frame re-applies fire data and updates the GPU field.
+
+REPLAY_JSON reports zero-based frame, playing, speed and pending_seconds in smoke
+or enabled diagnostics when frame/controls change. Window titles show speed/play
+state even for changes that do not select a new frame. BENCHMARK_JSON.replay_speed
+is null without replay input. Rates and clock state remain session-only; no scene
+or residency sidecar schema changes are introduced.
+
+Native tests exercise all five rates over exact tick intervals, partial progress
+through a speed change, invalid rates/counts/seeks, no paused backlog, single-step
+bounds, immediate endpoint stop, restart and single-frame behavior. The existing
+replay suite now has nine test groups; total native CTest remains 15 suites.
+
+The seven-frame Mesa --replay-controls-test requires at least three source frames,
+default initial speed, no assets and no other scripted test. Each render advances
+six 60 Hz engine ticks, then applies its diagnostic command: start/reset, 4x,
+pause, forward, back, resume, Home. It checks expected frame/phase/play state and
+engine time, reconstructs the expected CPU fire field, and verifies that backward
+and reset restore exact pixels. Shader animation is frozen for that diagnostic.
+CI covers direct and resident/tiled/offscreen paths, the quarter-speed CLI and an
+unsupported rate rejection. Layer isolation tests also continue to check timing
+using the new clock.
+
+Next: refresh the baseline checkpoint and remaining-work list. Physical GPU
+validation and performance measurements remain outstanding.

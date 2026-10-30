@@ -159,5 +159,7 @@ lifecycle paths. Selective GPU tile residency is implemented with retained recip
 transactional set transitions and budget/rehydration checks. Bounded retention
 hysteresis adds count/byte pressure trimming and failure-safe ages. Independent terrain/fire visibility now addresses part of the pinned P1 simulation
 visualization gap, with reflected layer uniforms and deterministic image/state
-checks. Replay speed controls and timing tests are next. The pinned snapshot remains unchanged. LOD, broader attachment
+checks. Fixed-tick replay speed controls now provide exact 0.25x..4x progression
+and validated pause/step/seek behavior, with CPU/Mesa timing and pixel checks.
+Refreshing this baseline checkpoint and the remaining-work list is next. The pinned snapshot remains unchanged. LOD, broader attachment
 formats/effects and physical GPU evidence remain outstanding.
