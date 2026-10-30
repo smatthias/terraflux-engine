@@ -1004,6 +1004,13 @@ void OpenGLRenderDevice::draw_indexed(const DrawIndexed& command) {
 
 void OpenGLRenderDevice::clear_frame(int framebuffer_width, int framebuffer_height) {
   if (framebuffer_width <= 0 || framebuffer_height <= 0) return;
+  // glClear(GL_DEPTH_BUFFER_BIT) respects DepthMask: a BLEND draw from the
+  // previous frame may have disabled depth writes. Restore writable depth
+  // before clearing, and keep the cached draw-state value synchronized.
+  if(!impl_->depth_write_state || !*impl_->depth_write_state) {
+    impl_->gl.DepthMask(GL_TRUE);
+    impl_->depth_write_state=true;
+  }
   impl_->gl.Viewport(0, 0, framebuffer_width, framebuffer_height);
   impl_->gl.ClearColor(0.065f, 0.095f, 0.13f, 1.0f);
   impl_->gl.Clear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
