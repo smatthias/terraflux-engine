@@ -4,6 +4,7 @@
 
 #include <cmath>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <vector>
 #include <array>
@@ -183,11 +184,67 @@ void streaming_instance_ring() {
   device.update_buffer(persistent,0,std::as_bytes(std::span(uniform)));
   // Destroyed resources are rejected by validation after the owner closes.
 }
+void transparent_sorting_and_pipeline() {
+  graphics::ValidatingRenderDevice device;
+  rejected([&]{
+    (void)device.create_pipeline(
+        {graphics::pbr_textured_object_shader_layout(false),true,true,true});
+  },"alpha blend cannot write depth");
+  rejected([&]{
+    (void)device.create_pipeline(
+        {graphics::pbr_textured_object_shader_layout(false),false,true,false});
+  },"alpha blend requires depth test");
+  graphics::RenderResourceOwner owner(device);
+  const auto alpha=owner.create_pipeline(
+      {graphics::pbr_textured_object_shader_layout(false),true,true,false});
+  std::array<std::byte,48*3> vertices{};
+  std::array<std::uint32_t,3> indices{0,1,2};
+  std::array<std::byte,80> camera{};
+  std::array<std::byte,144> object{};
+  std::array<std::byte,64> pbr{};
+  std::array<std::byte,4> pixel{std::byte{255},std::byte{255},
+                                std::byte{255},std::byte{255}};
+  auto vb=owner.create_buffer({graphics::BufferUsage::Vertex,vertices.size()},vertices);
+  auto ib=owner.create_buffer({graphics::BufferUsage::Index,sizeof(indices)},
+                               std::as_bytes(std::span(indices)));
+  auto cb=owner.create_buffer({graphics::BufferUsage::Uniform,camera.size()},camera);
+  auto ob=owner.create_buffer({graphics::BufferUsage::Uniform,object.size()},object);
+  auto pb=owner.create_buffer({graphics::BufferUsage::Uniform,pbr.size()},pbr);
+  auto texture=owner.create_texture2d({1,1},pixel);
+  graphics::TransparentRenderQueue queue;
+  const auto add=[&](double distance, int index){
+    graphics::PreparedDraw draw;
+    draw.command={alpha,vb,ib,0,3,{{0,cb},{2,ob},{5,pb}},{},
+                  {{3,texture},{6,texture},{7,texture},{8,texture},{9,texture}}};
+    draw.object_uniform=ob;
+    draw.material=graphics::make_object_uniform(
+        math::Mat4::translation({static_cast<double>(index),0,0}),{1,1,1});
+    queue.add({std::move(draw),distance});
+  };
+  add(3,0);
+  add(10,1);
+  add(5,2);
+  add(10,3);
+  queue.sort_back_to_front();
+  const auto& sorted=queue.entries();
+  check(sorted.size()==4 && sorted[0].distance_squared==10 &&
+        sorted[1].distance_squared==10 && sorted[2].distance_squared==5 &&
+        sorted[3].distance_squared==3,"back-to-front sorting");
+  check(sorted[0].draw.material.model[12]==1 &&
+        sorted[1].draw.material.model[12]==3,
+        "stable order for identical depths");
+  check(queue.submit(device)==4 && device.draw_count()==4 &&
+        queue.entries().empty(),"transparent pass submits once per primitive");
+  rejected([&]{add(-1,0);},"negative camera distance rejected");
+  rejected([&]{add(std::numeric_limits<double>::infinity(),0);},
+           "infinite camera distance rejected");
+}
 }
 int main(){
   try{frustum_and_scaled_bounds();batch_order_and_draw_validation();
     hardware_instance_batching();
     streaming_instance_ring();
-    std::cout<<"TerraFlux visibility: 4 test groups passed\n";
+    transparent_sorting_and_pipeline();
+    std::cout<<"TerraFlux visibility: 5 test groups passed\n";
   }catch(const std::exception&e){std::cerr<<"visibility tests: "<<e.what()<<'\n';return 1;}
 }
