@@ -360,7 +360,8 @@ TextureWrap texture_wrap(std::size_t value){
 } // namespace
 
 GltfModel import_gltf(const std::string& json_text,
-                      const GltfBufferResolver& external_buffer) {
+                      const GltfBufferResolver& external_buffer,
+                      const std::vector<std::uint8_t>* embedded_binary) {
   if(json_text.empty() || json_text.size()>16'000'000)
     throw std::invalid_argument("glTF JSON exceeds 16 MB limit");
   const Json root=terraflux::json::Parser(json_text).parse_document();
@@ -379,13 +380,24 @@ GltfModel import_gltf(const std::string& json_text,
     throw std::invalid_argument("glTF requires 1..128 meshes and 1..16 buffers");
   std::vector<std::vector<std::uint8_t>> buffers;
   buffers.reserve(buffers_json.size());
-  for(const auto& entry:buffers_json){
+  for(std::size_t buffer_index=0;buffer_index<buffers_json.size();++buffer_index){
+    const auto& entry=buffers_json[buffer_index];
     const auto& o=object(entry);
     const auto length=uint(field(o,"byteLength"),"byteLength");
     if(length==0 || length>64'000'000)throw std::invalid_argument("glTF buffer size invalid");
-    const auto uri=string(field(o,"uri"));
-    auto bytes=uri.starts_with("data:")?decode_base64(uri):
-                external_buffer?external_buffer(uri):std::vector<std::uint8_t>{};
+    const auto* supplied_uri=optional(o,"uri");
+    std::vector<std::uint8_t> bytes;
+    if(!supplied_uri){
+      if(!embedded_binary || buffer_index!=0)
+        throw std::invalid_argument("missing glTF buffer URI requires GLB BIN chunk");
+      bytes=*embedded_binary;
+      if(bytes.size()<length || bytes.size()-length>3)
+        throw std::invalid_argument("GLB BIN chunk length or padding invalid");
+    }else{
+      const auto uri=string(*supplied_uri);
+      bytes=uri.starts_with("data:")?decode_base64(uri):
+            external_buffer?external_buffer(uri):std::vector<std::uint8_t>{};
+    }
     if(bytes.size()<length || bytes.size()>64'000'000)
       throw std::invalid_argument("glTF buffer URI unresolved or truncated");
     buffers.push_back(std::move(bytes));
@@ -611,6 +623,40 @@ GltfModel import_gltf(const std::string& json_text,
   }
   import_nodes(doc,result);
   return result;
+}
+
+GltfModel import_glb(std::span<const std::uint8_t> bytes,
+                     const GltfBufferResolver& external_buffer) {
+  if(bytes.size()<20 || bytes.size()>80'000'000 || bytes.size()%4!=0)
+    throw std::invalid_argument("invalid glb container byte size");
+  const auto u32=[&](std::size_t pos)->std::uint32_t{
+    if(pos>bytes.size() || bytes.size()-pos<4)
+      throw std::invalid_argument("truncated glb chunk header");
+    return std::uint32_t(bytes[pos]) | (std::uint32_t(bytes[pos+1])<<8) |
+           (std::uint32_t(bytes[pos+2])<<16) | (std::uint32_t(bytes[pos+3])<<24);
+  };
+  constexpr std::uint32_t magic=0x46546c67, json_type=0x4e4f534a,bin_type=0x004e4942;
+  if(u32(0)!=magic || u32(4)!=2 || u32(8)!=bytes.size())
+    throw std::invalid_argument("glb magic, version or declared size invalid");
+  const std::size_t json_len=u32(12);
+  if(u32(16)!=json_type || !json_len || json_len>16'000'000 ||
+     json_len%4!=0 || json_len>bytes.size()-20)
+    throw std::invalid_argument("glb requires valid first JSON chunk");
+  const std::string json_text(reinterpret_cast<const char*>(bytes.data()+20),json_len);
+  std::size_t offset=20+json_len;
+  std::vector<std::uint8_t> binary;
+  const std::vector<std::uint8_t>* embedded=nullptr;
+  if(offset<bytes.size()){
+    if(bytes.size()-offset<8)
+      throw std::invalid_argument("truncated glb BIN chunk header");
+    const std::size_t bin_len=u32(offset);
+    if(u32(offset+4)!=bin_type || bin_len%4!=0 ||
+       bin_len>64'000'000 || bin_len!=bytes.size()-offset-8)
+      throw std::invalid_argument("unsupported or malformed glb BIN chunk");
+    binary.assign(bytes.begin()+static_cast<std::ptrdiff_t>(offset+8),bytes.end());
+    embedded=&binary;
+  }
+  return import_gltf(json_text,external_buffer,embedded);
 }
 
 } // namespace terraflux::assets

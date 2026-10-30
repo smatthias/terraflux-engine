@@ -311,7 +311,14 @@ int main(int argc, char** argv) {
           const auto contents=read_file(path.string());
           return std::vector<std::uint8_t>(contents.begin(),contents.end());
         };
-        auto asset=terraflux::assets::import_gltf(read_file(source_file),resolver);
+        const auto source_contents=read_file(source_file);
+        const auto is_glb=source_contents.size()>=4 &&
+             source_contents.substr(0,4)==std::string("glTF",4);
+        const auto asset_bytes=std::span(
+            reinterpret_cast<const std::uint8_t*>(source_contents.data()),
+            source_contents.size());
+        auto asset=is_glb?terraflux::assets::import_glb(asset_bytes,resolver):
+                          terraflux::assets::import_gltf(source_contents,resolver);
         if(asset.meshes.empty())throw std::invalid_argument("glTF contains no meshes");
         object=std::move(asset.meshes.front());
         gltf_images=std::move(asset.images);

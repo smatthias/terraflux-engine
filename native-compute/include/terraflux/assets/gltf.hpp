@@ -4,6 +4,7 @@
 #include <terraflux/assets/obj.hpp>
 
 #include <cstdint>
+#include <span>
 #include <optional>
 #include <functional>
 #include <string>
@@ -42,6 +43,11 @@ struct GltfModel {
 using GltfBufferResolver = std::function<std::vector<std::uint8_t>(const std::string& uri)>;
 
 GltfModel import_gltf(const std::string& json_text,
-                      const GltfBufferResolver& external_buffer = {});
+                      const GltfBufferResolver& external_buffer = {},
+                      const std::vector<std::uint8_t>* embedded_binary = nullptr);
+// Strict glTF 2.0 binary container: JSON chunk first and an optional BIN
+// chunk second. Resource resolver handles external image/buffer URIs.
+GltfModel import_glb(std::span<const std::uint8_t> bytes,
+                     const GltfBufferResolver& external_buffer = {});
 
 } // namespace terraflux::assets
