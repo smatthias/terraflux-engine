@@ -162,7 +162,7 @@ void multiple_distinct_meshes(const std::string& json) {
 }
 void textured_materials(const std::string& json) {
   const auto asset=terraflux::assets::import_gltf(json);
-  require(asset.images.size()==2,"PNG and JPEG image sources decoded");
+  require(asset.images.size()==4,"PNG and JPEG base, MR and normal images decoded");
   const auto& a=asset.images.at("gltf-image-0");
   const auto& b=asset.images.at("gltf-image-1");
   require(a.width==16 && a.height==16 && b.width==16 && b.height==16,
@@ -181,6 +181,10 @@ void textured_materials(const std::string& json) {
           asset.materials.at("gltf-material-1").albedo_sampling.mag==
               terraflux::TextureMagFilter::Nearest,
           "glTF min/mag/mip/wrap samplers imported");
+  require(asset.materials.at("gltf-material-0").metallic_roughness_map=="gltf-image-2" &&
+          asset.materials.at("gltf-material-0").normal_map=="gltf-image-3" &&
+          std::abs(asset.materials.at("gltf-material-0").normal_scale-.75)<1e-8,
+          "metallic/roughness and tangent-space normal maps imported");
   require(asset.materials.at("gltf-material-0").albedo_map=="gltf-image-0" &&
           asset.materials.at("gltf-material-1").albedo_map=="gltf-image-1",
           "material texture indices resolved");
@@ -202,6 +206,71 @@ void textured_materials(const std::string& json) {
   rejects([&]{(void)terraflux::assets::import_gltf(
     replace_first(json,"\"wrapS\": 33071","\"wrapS\": 123"));},
     "invalid sampler wrap rejected");
+  rejects([&]{(void)terraflux::assets::import_gltf(
+    replace_first(json,"\"scale\": 0.75","\"scale\": -1"));},
+    "negative normal scale rejected");
+  rejects([&]{(void)terraflux::assets::import_gltf(
+    replace_first(json,"\"metallicRoughnessTexture\": {","\"metallicRoughnessTexture\": {\"texCoord\": 1,"));},
+    "unsupported MR UV set rejected");
+}
+
+std::vector<std::uint8_t> glb_from_gltf(std::string json) {
+  const auto prefix=std::string("\"uri\": \"data:application/octet-stream;base64,");
+  const auto pos=json.find(prefix);
+  require(pos!=std::string::npos,"embedded geometry needed to build GLB");
+  const auto start=pos+prefix.size(),end=json.find('"',start);
+  require(end!=std::string::npos,"data URI terminated");
+  const std::string b64=json.substr(start,end-start);
+  const std::string alphabet="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  std::vector<std::uint8_t> bin;
+  std::uint32_t accum=0;
+  int bits=0;
+  for(const char c:b64){
+    if(c=='=')break;
+    const auto value=alphabet.find(c);
+    require(value!=std::string::npos,"fixture base64 valid");
+    accum=(accum<<6)|static_cast<std::uint32_t>(value);
+    bits+=6;
+    if(bits>=8){bits-=8;bin.push_back(static_cast<std::uint8_t>((accum>>bits)&255));}
+  }
+  require(bin.size()==152,"GLB source geometry is 152 bytes");
+  json.replace(pos,end-pos+1,"\"extras\": 0"); // the URI-less GLB buffer 0
+  while(json.size()%4)json.push_back(' ');
+  while(bin.size()%4)bin.push_back(0);
+  std::vector<std::uint8_t> out;
+  const auto put=[&](std::uint32_t n){
+    for(int i=0;i<4;++i)out.push_back(static_cast<std::uint8_t>((n>>(8*i))&255));
+  };
+  put(0x46546c67);put(2);
+  put(static_cast<std::uint32_t>(12+8+json.size()+8+bin.size()));
+  put(static_cast<std::uint32_t>(json.size()));put(0x4e4f534a);
+  out.insert(out.end(),json.begin(),json.end());
+  put(static_cast<std::uint32_t>(bin.size()));put(0x004e4942);
+  out.insert(out.end(),bin.begin(),bin.end());
+  return out;
+}
+void binary_glb_import(const std::string& json){
+  const auto data=glb_from_gltf(json);
+  const auto model=terraflux::assets::import_glb(data);
+  require(model.meshes.size()==1 && model.meshes[0].indices.size()==12 &&
+          model.instances.size()==2,"GLB BIN and JSON produce equivalent scene");
+  const auto broken=[&](std::size_t pos,std::uint8_t value){
+    auto bytes=data;bytes.at(pos)=value;
+    rejects([&]{(void)terraflux::assets::import_glb(bytes);},"malformed GLB rejected");
+  };
+  broken(0,0); // magic
+  broken(4,1); // version
+  broken(8,0); // total byte length
+  broken(16,0); // first chunk type
+  broken(data.size()-152-4,1); // corrupt BIN header/chunk length
+  auto truncated=data;truncated.pop_back();
+  rejects([&]{(void)terraflux::assets::import_glb(truncated);},"GLB truncation rejected");
+  auto wrong=data;
+  // Preserve valid alignment but make BIN chunk length inconsistent.
+  wrong[wrong.size()-152-8]=0;
+  rejects([&]{(void)terraflux::assets::import_glb(wrong);},
+          "GLB bad BIN chunk length rejected");
+  rejects([&]{(void)terraflux::assets::import_glb({});},"empty GLB rejected");
 }
 void external_buffer_callback(const std::string& json) {
   const auto original="data:application/octet-stream;base64,";
@@ -263,6 +332,7 @@ int main(int argc,char** argv) {
     const std::string json((std::istreambuf_iterator<char>(file)),
                             std::istreambuf_iterator<char>());
     valid_mesh(json);
+    binary_glb_import(json);
     rejects_invalid_contracts(json);
     invalid_scene_hierarchy(json);
     matrix_and_scene_selection(json);
@@ -277,6 +347,6 @@ int main(int argc,char** argv) {
     const std::string texjson((std::istreambuf_iterator<char>(texfile)),
                                std::istreambuf_iterator<char>());
     textured_materials(texjson);
-    std::cout<<"glTF 2.0: 7 test groups passed\n";
+    std::cout<<"glTF 2.0: 8 test groups passed\n";
   }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
 }

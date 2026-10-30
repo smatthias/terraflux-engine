@@ -356,3 +356,30 @@ support yet. The legacy diffuse OBJ renderer remains unchanged.
 
 The sample uses both mipmapped/clamp/mirror and linear/repeat textures with
 different material metallic/roughness settings.
+
+
+## Phase 7: GLB, metallic-roughness and normal mapping
+
+The bounded GLB 2.0 loader accepts a JSON chunk followed by an optional
+embedded BIN chunk, with strict magic, version, declared-size, padding and
+chunk-boundary validation. The existing viewer's `--gltf` option detects
+binary GLB by magic bytes. Embedded geometry, external URI resources and
+base-color textures remain supported.
+
+glTF materials now accept `pbrMetallicRoughness.metallicRoughnessTexture`
+(green channel = roughness, blue = metallic), and `normalTexture`
+with `scale`. For normal maps the fragment shader reconstructs a local
+tangent frame using the world-position and UV gradients, which works for
+supported meshes without supplied tangents. UV set 0 only; malformed map
+references, unsupported UV sets, transparency, occlusion and emissive
+textures remain rejected rather than silently discarded.
+
+```bash
+python3 examples/pack_gltf_fixture.py \
+  examples/assets/textured_multi_mesh.gltf /tmp/terraflux-textured.glb
+./build-gl/terraflux-terrain-viewer --gltf /tmp/terraflux-textured.glb
+```
+
+This is a **direct-light PBR subset**. It does not yet implement image-based
+lighting, precomputed tangent attributes, emissive/occlusion textures, full
+alpha modes or all glTF extensions.

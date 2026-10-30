@@ -193,3 +193,8 @@ jobs:
           xvfb-run -a -s "-screen 0 1280x800x24" \
             ./build-gl/terraflux-terrain-viewer --smoke-test \
             --gltf examples/assets/textured_multi_mesh.gltf
+          python3 examples/pack_gltf_fixture.py \
+            examples/assets/textured_multi_mesh.gltf /tmp/terraflux-textured.glb
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test \
+            --gltf /tmp/terraflux-textured.glb
