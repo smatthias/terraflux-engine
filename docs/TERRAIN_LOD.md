@@ -1,8 +1,27 @@
 # Terrain LOD design — first bounded increment
 
-Status: **design complete; implementation pending**.
+Status: **level-0 CPU foundation implemented; simplification pending**.
 Reviewed against the CPU tile partitioner and TerrainTileRenderer interfaces on
 30 October 2026. Existing defaults and simulation behavior remain unchanged.
+
+## Implemented level-0 foundation
+
+`terraflux/terrain_lod.hpp` now exposes `TerrainTileLod`, `TerrainLodOptions`,
+`TerrainLodSet` and `build_terrain_lods`. Level 0 owns the exact existing partition;
+`level1` and `max_vertical_error` are empty. No simplification, selector or GPU
+integration is claimed. Stable IDs are vector indices in tile (Y,X) order.
+
+The default 512 MiB logical recipe cap includes used TerrainVertex elements,
+indices and source-map entries. It excludes vector capacity, container overhead,
+source storage, temporary builders and future packed GPU recipes. Tile count and
+element caps still apply. Per-category bounds apply while partitioning; the
+combined cap is checked before publication, not as a peak-memory limit.
+Overflow-safe admission uses remaining-budget division before multiplication.
+
+A new `terraflux-terrain-lod-tests` CTest target checks curved terrain with holes
+and partial edges, exact source maps/bounds/packed geometry, owned copies,
+permuted grid input, empty/exact/over budgets and invalid input rejection.
+Remaining API descriptions below are design proposals for later increments.
 
 ## Scope and integration points
 
@@ -158,5 +177,6 @@ implementation change. This design does not yet freeze an automatic selector API
 7. Add camera selection with hysteresis and explicit diagnostics.
 8. Measure actual hardware impact.
 
-The first four items form the next CPU-only increment. Shader modules, animation,
+Item 1's data structures and exact level-0 preservation are implemented. Eligibility
+detection, simplification, error measurement and expanded invariants remain next. Shader modules, animation,
 general asynchronous loading and PS4 remain separate workstreams.
