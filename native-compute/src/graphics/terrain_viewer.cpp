@@ -266,10 +266,10 @@ int main(int argc, char** argv) {
       std::vector<BoundingSphere> additional_bounds;
       struct Section {
         std::uint32_t first=0,count=0;
-        TextureHandle albedo{};
+        TextureHandle albedo{},metallic_roughness{},normal{};
         terraflux::math::Vec3 base_color{1,1,1};
         BufferHandle pbr_uniform{};
-        float metallic=1,roughness=1;
+        float metallic=1,roughness=1,normal_scale=1;
       };
       std::map<std::string,TextureHandle> textures;
       std::vector<Section> sections;
@@ -452,6 +452,10 @@ int main(int argc, char** argv) {
         if(source.empty())
           image=use_gltf?terraflux::assets::ImageRgba8{1,1,{255,255,255,255}}:
                          terraflux::assets::checkerboard_image();
+        else if(source.generic_string()=="__default_mr__")
+          image={1,1,{255,255,255,255}}; // roughness G=1, metallic B=1
+        else if(source.generic_string()=="__default_normal__")
+          image={1,1,{128,128,255,255}}; // tangent-space +Z
         else if(use_gltf && gltf_images.contains(source.generic_string())) {
           image=gltf_images.at(source.generic_string());
         } else {
@@ -479,8 +483,9 @@ int main(int argc, char** argv) {
         for(const auto& section:mesh.sections) {
           terraflux::math::Vec3 color{1,1,1};
           terraflux::TextureSampling sampling{};
-          double metallic=1,roughness=1;
-          std::filesystem::path texture_file;
+          double metallic=1,roughness=1,normal_scale=1;
+          std::filesystem::path texture_file,metallic_file,normal_file;
+          terraflux::TextureSampling metallic_sampling{},normal_sampling{};
           if(!section.material_name.empty()) {
             const auto it=material_files.find(section.material_name);
             if(it==material_files.end())
@@ -489,6 +494,13 @@ int main(int argc, char** argv) {
             sampling=it->second.material.albedo_sampling;
             metallic=it->second.material.metallic_factor;
             roughness=it->second.material.roughness_factor;
+            normal_scale=it->second.material.normal_scale;
+            metallic_sampling=it->second.material.metallic_roughness_sampling;
+            normal_sampling=it->second.material.normal_sampling;
+            if(!it->second.material.metallic_roughness_map.empty())
+              metallic_file=it->second.material.metallic_roughness_map;
+            if(!it->second.material.normal_map.empty())
+              normal_file=it->second.material.normal_map;
             if(!it->second.material.albedo_map.empty())
               texture_file=(use_gltf && gltf_images.contains(it->second.material.albedo_map))?
                   std::filesystem::path(it->second.material.albedo_map):
@@ -496,16 +508,27 @@ int main(int argc, char** argv) {
           }
           if(!options.texture_file.empty())texture_file=options.texture_file;
           const auto handle=cached_texture(texture_file,sampling);
+          TextureHandle mr_handle{},normal_handle{};
+          if(use_gltf) {
+            mr_handle=cached_texture(metallic_file.empty()?
+                    std::filesystem::path("__default_mr__"):metallic_file,
+                    metallic_sampling);
+            normal_handle=cached_texture(normal_file.empty()?
+                    std::filesystem::path("__default_normal__"):normal_file,
+                    normal_sampling);
+          }
           BufferHandle pbr_uniform{};
           if(use_gltf) {
             PbrMaterialUniform pbr{};
-            pbr.factors={static_cast<float>(metallic),static_cast<float>(roughness),0,0};
+            pbr.factors={static_cast<float>(metallic),static_cast<float>(roughness),
+                         static_cast<float>(normal_scale),0};
             const auto bytes=std::as_bytes(std::span(&pbr,1));
             pbr_uniform=owned.create_buffer({BufferUsage::Uniform,bytes.size()},bytes);
           }
-          result.push_back({section.first_index,section.index_count,handle,color,
+          result.push_back({section.first_index,section.index_count,
+                            handle,mr_handle,normal_handle,color,
                             pbr_uniform,static_cast<float>(metallic),
-                            static_cast<float>(roughness)});
+                            static_cast<float>(roughness),static_cast<float>(normal_scale)});
         }
         if(result.empty())throw std::invalid_argument("mesh has no drawable material sections");
         return result;
@@ -707,7 +730,7 @@ int main(int argc, char** argv) {
         const auto upload_pbr=[&](const std::vector<ImportedGpu::Section>& sections) {
           for(const auto& s:sections) {
             PbrMaterialUniform pbr{};
-            pbr.factors={s.metallic,s.roughness,0,0};
+            pbr.factors={s.metallic,s.roughness,s.normal_scale,0};
             pbr.eye={static_cast<float>(eye.x),static_cast<float>(eye.y),
                      static_cast<float>(eye.z),1};
             device.update_buffer(s.pbr_uniform,0,std::as_bytes(std::span(&pbr,1)));
@@ -736,9 +759,14 @@ int main(int argc, char** argv) {
                 tint.x*color.x,tint.y*color.y,tint.z*color.z});
             std::vector<UniformBufferBinding> uniforms{{0,camera},{2,object_uniform}};
             if(imported->is_gltf)uniforms.push_back({5,section.pbr_uniform});
+            std::vector<TextureBinding> textures{{3,section.albedo}};
+            if(imported->is_gltf){
+              textures.push_back({6,section.metallic_roughness});
+              textures.push_back({7,section.normal});
+            }
             draw_queue.add({{imported->pipeline,vertex,index,
                 section.first,section.count,
-                std::move(uniforms),{},{{3,section.albedo}}},
+                std::move(uniforms),{},std::move(textures)},
                 object_uniform,material});
           }
         };
