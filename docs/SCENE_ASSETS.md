@@ -254,3 +254,31 @@ Individual runs:
 Each run emits one machine-readable `BENCHMARK_JSON=` line, including GPU
 query sample count. This is an A/B benchmark foundation, not hardware
 instancing or a demonstration of universal frame-rate improvement.
+
+
+## Phase 9: Hardware instancing of opaque mesh/material draws
+
+The backend-neutral `DrawIndexed.instance_count` now supports indexed hardware
+instancing via OpenGL 4.3 `glDrawElementsInstanced`. The instanced vertex
+shader reads one 144-byte model/normal/tint record per object from a
+std430 shader storage buffer (binding 4). Its shader layout is reflected
+and validated like the existing shaders. Frustum culling runs **before**
+batching; the render queue groups equal mesh, primitive range, camera
+and texture combinations, and chunks to at most 256 objects per draw.
+
+To compare rendering with the same camera, scene and settings:
+
+```bash
+python3 examples/benchmark_instancing.py --frames 120
+```
+
+For a 100-object scene, 20 objects are visible initially. The new path can
+reduce **20 separate opaque object draw calls to one**, plus the terrain
+draw call (total 2), versus 21 with `--no-instancing`. This does **not**
+change the visibility calculation, shading or original OBJ/glTF materials.
+`--no-instancing` selects the legacy path for debugging/benchmarking.
+
+The existing culling A/B script forces legacy per-object rendering to isolate
+culling from instancing. Per-instance GPU buffer updates still occur for
+each distinct draw group: persistent mapped instance-buffer streaming,
+indirect draws and multi-material instancing remain future optimizations.

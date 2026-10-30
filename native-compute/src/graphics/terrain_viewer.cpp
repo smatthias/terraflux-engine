@@ -66,7 +66,7 @@ std::filesystem::path asset_path(const std::filesystem::path& directory,
 }
 
 struct Options {
-  bool smoke_test=false, profile=false, no_culling=false;
+  bool smoke_test=false, profile=false, no_culling=false, no_instancing=false;
   std::uint32_t benchmark_frames=0;
   std::string request_file, response_file, obj_file, gltf_file, texture_file, scene_file;
 };
@@ -78,6 +78,7 @@ Options parse_args(int argc, char** argv) {
     if (arg == "--smoke-test") options.smoke_test = true;
     else if (arg == "--profile") options.profile = true;
     else if (arg == "--no-culling") options.no_culling = true;
+    else if (arg == "--no-instancing") options.no_instancing = true;
     else if (arg == "--benchmark-frames" && i+1 < argc) {
       const std::string text=argv[++i];
       std::uint32_t n=0;
@@ -94,7 +95,7 @@ Options parse_args(int argc, char** argv) {
     else if (arg == "--texture" && i + 1 < argc) options.texture_file = argv[++i];
     else if (arg == "--scene" && i + 1 < argc) options.scene_file = argv[++i];
     else throw std::invalid_argument(
-        "usage: terraflux-terrain-viewer [--request request.json --response response.json] [--obj model.obj | --gltf model.gltf] [--texture texture.ppm] [--scene scene.json with --obj] [--profile] [--no-culling] [--benchmark-frames 60] [--smoke-test]");
+        "usage: terraflux-terrain-viewer [--request request.json --response response.json] [--obj model.obj | --gltf model.gltf] [--texture texture.ppm] [--scene scene.json with --obj] [--profile] [--no-culling] [--no-instancing] [--benchmark-frames 60] [--smoke-test]");
   }
   if (options.request_file.empty() != options.response_file.empty())
     throw std::invalid_argument("--request and --response must be provided together");
@@ -108,6 +109,9 @@ Options parse_args(int argc, char** argv) {
     throw std::invalid_argument("benchmark and smoke-test cannot run together");
   if(options.no_culling && !options.benchmark_frames && !options.profile)
     throw std::invalid_argument("--no-culling requires --profile or --benchmark-frames");
+  if(options.no_instancing && !options.benchmark_frames && !options.profile &&
+     !options.smoke_test)
+    throw std::invalid_argument("--no-instancing requires --profile, --benchmark-frames or --smoke-test");
   return options;
 }
 
@@ -272,7 +276,8 @@ int main(int argc, char** argv) {
         std::uint32_t indices=0;
       };
       std::vector<AdditionalMesh> additional_meshes;
-      PipelineHandle pipeline;
+      PipelineHandle pipeline,instanced_pipeline;
+      BufferHandle instance_storage;
       std::uint32_t indices = 0;
       terraflux::scene::Scene scene;
       terraflux::scene::NodeId left_pivot = 0, right_pivot = 0;
@@ -500,6 +505,14 @@ int main(int argc, char** argv) {
             {BufferUsage::Uniform,init_bytes.size()},init_bytes);
       }
       obj.pipeline = owned.create_pipeline({textured_object_shader_layout(),true});
+      if(!options.no_instancing){
+        obj.instanced_pipeline=owned.create_pipeline(
+            {instanced_textured_object_shader_layout(),true});
+        constexpr std::size_t kMaxBatch=256;
+        std::vector<ObjectUniform> empty(kMaxBatch);
+        const auto bytes=std::as_bytes(std::span(empty));
+        obj.instance_storage=owned.create_buffer({BufferUsage::Storage,bytes.size()},bytes);
+      }
       imported = std::move(obj);
       std::size_t triangle_count=imported->indices/3;
       std::size_t sections_count=imported->sections.size();
@@ -697,12 +710,16 @@ int main(int argc, char** argv) {
                   imported->primary_bounds,{0.79,0.43,0.92});
         }
       }
-      const auto queue_stats=draw_queue.submit(device);
+      const auto queue_stats=(imported && !options.no_instancing)?
+          draw_queue.submit_instanced(device,imported->instanced_pipeline,
+                                      imported->instance_storage,256):
+          draw_queue.submit(device);
       frame_draws+=static_cast<std::uint32_t>(queue_stats.submitted);
       if(options.smoke_test || (options.profile && profile_frames%120==0)) {
         std::cout << "Visibility: " << visible_instances << " visible, "
                   << culled_instances << " culled, "
                   << queue_stats.submitted << " opaque draws, "
+                  << queue_stats.instances << " object instances, "
                   << queue_stats.state_groups << " state groups\n";
       }
       if(record_gpu)device.end_gpu_timing();
@@ -757,6 +774,7 @@ int main(int argc, char** argv) {
       std::cout << "BENCHMARK_JSON={\"frames\":"<<options.benchmark_frames
                 <<",\"warmup\":"<<kBenchmarkWarmup
                 <<",\"culling\":"<<(options.no_culling?"false":"true")
+                <<",\"instancing\":"<<(options.no_instancing?"false":"true")
                 <<",\"resolution\":["<<1280<<","<<800<<"]"
                 <<",\"cpu_update_mean_ms\":"<<benchmark_cpu_update*1000/n
                 <<",\"cpu_render_mean_ms\":"<<benchmark_cpu_render*1000/n

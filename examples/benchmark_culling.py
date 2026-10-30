@@ -14,7 +14,8 @@ ROOT = Path(__file__).resolve().parent.parent
 def run(viewer: Path, scene: Path, frames: int, no_culling: bool) -> dict:
     command = [
         str(viewer), "--obj", str(ROOT / "examples/assets/pyramid.obj"),
-        "--scene", str(scene), "--benchmark-frames", str(frames)
+        "--scene", str(scene), "--benchmark-frames", str(frames),
+        "--no-instancing"  # isolate frustum culling from instancing
     ]
     if no_culling:
         command.append("--no-culling")
