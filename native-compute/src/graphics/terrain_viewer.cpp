@@ -67,7 +67,7 @@ std::filesystem::path asset_path(const std::filesystem::path& directory,
 }
 
 struct Options {
-  bool smoke_test=false, profile=false, no_culling=false, no_instancing=false;
+  bool smoke_test=false, profile=false, no_culling=false, no_instancing=false,asset_preview=false;
   std::uint32_t benchmark_frames=0;
   std::string request_file, response_file, obj_file, gltf_file, texture_file, scene_file;
 };
@@ -80,6 +80,7 @@ Options parse_args(int argc, char** argv) {
     else if (arg == "--profile") options.profile = true;
     else if (arg == "--no-culling") options.no_culling = true;
     else if (arg == "--no-instancing") options.no_instancing = true;
+    else if (arg == "--asset-preview") options.asset_preview = true;
     else if (arg == "--benchmark-frames" && i+1 < argc) {
       const std::string text=argv[++i];
       std::uint32_t n=0;
@@ -96,7 +97,7 @@ Options parse_args(int argc, char** argv) {
     else if (arg == "--texture" && i + 1 < argc) options.texture_file = argv[++i];
     else if (arg == "--scene" && i + 1 < argc) options.scene_file = argv[++i];
     else throw std::invalid_argument(
-        "usage: terraflux-terrain-viewer [--request request.json --response response.json] [--obj model.obj | --gltf model.gltf] [--texture texture.ppm] [--scene scene.json with --obj] [--profile] [--no-culling] [--no-instancing] [--benchmark-frames 60] [--smoke-test]");
+        "usage: terraflux-terrain-viewer [--request request.json --response response.json] [--obj model.obj | --gltf model.gltf] [--texture texture.ppm] [--scene scene.json with --obj] [--profile] [--no-culling] [--no-instancing] [--asset-preview with --gltf] [--benchmark-frames 60] [--smoke-test]");
   }
   if (options.request_file.empty() != options.response_file.empty())
     throw std::invalid_argument("--request and --response must be provided together");
@@ -110,6 +111,8 @@ Options parse_args(int argc, char** argv) {
     throw std::invalid_argument("benchmark and smoke-test cannot run together");
   if(options.no_culling && !options.benchmark_frames && !options.profile)
     throw std::invalid_argument("--no-culling requires --profile or --benchmark-frames");
+  if(options.asset_preview && (options.gltf_file.empty() || options.benchmark_frames))
+    throw std::invalid_argument("--asset-preview requires --gltf and cannot benchmark");
   if(options.no_instancing && !options.benchmark_frames && !options.profile &&
      !options.smoke_test)
     throw std::invalid_argument("--no-instancing requires --profile, --benchmark-frames or --smoke-test");
@@ -395,7 +398,8 @@ int main(int argc, char** argv) {
       const double extent = std::max({max_pos.x-min_pos.x, max_pos.y-min_pos.y,
                                       max_pos.z-min_pos.z});
       if (!(extent > 0.0)) throw std::runtime_error("imported model has no spatial extent");
-      const double scale = (scene_camera.starting_distance * (use_gltf ? 0.22 : 0.095)) / extent;
+      const double gltf_scale=options.asset_preview?0.43:0.22;
+      const double scale=(scene_camera.starting_distance*(use_gltf?gltf_scale:0.095))/extent;
       const auto geometry = prepare_textured_asset_upload(object); // local + UV
       const auto vertex_bytes = bytes_of(geometry.vertices);
       const auto index_bytes = bytes_of(geometry.indices);
@@ -586,7 +590,10 @@ int main(int argc, char** argv) {
       const auto init_object = make_object_uniform(terraflux::math::Mat4::identity());
       const auto init_bytes = std::as_bytes(std::span(&init_object,1));
       if(use_gltf) {
-        const auto anchor=terraflux::math::Mat4::translation(scene_camera.target) *
+        const auto focus=scene_camera.target+
+            terraflux::math::Vec3{0,options.asset_preview?
+                  scene_camera.starting_distance*0.045:0,0};
+        const auto anchor=terraflux::math::Mat4::translation(focus) *
             terraflux::math::Mat4::scaling({scale,scale,scale}) *
             terraflux::math::Mat4::translation(obj.local_center*-1.0);
         if(node_worlds.size()>1024)
@@ -636,7 +643,8 @@ int main(int argc, char** argv) {
                 << " instances sharing per-mesh geometry\n";
     }
 
-    double yaw = 0.45, pitch = 0.75, distance = scene_camera.starting_distance;
+    double yaw = 0.45, pitch = options.asset_preview?0.42:0.75;
+    double distance=scene_camera.starting_distance*(options.asset_preview?0.75:1.0);
     double previous_time = glfwGetTime();
     terraflux::runtime::FixedStepScheduler scheduler(1.0/60.0,0.25,8);
     double engine_time=0.0, playback_accumulator=0.0;

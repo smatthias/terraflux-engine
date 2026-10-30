@@ -388,3 +388,8 @@ alpha modes or all glTF extensions.
 ## Phase 7: Occlusion, emissive and alpha-mask materials
 
 The glTF loader accepts occlusionTexture (red channel and strength), emissiveTexture and emissiveFactor. The PBR fragment shader applies occlusion to ambient light, adds emissive contribution and supports alphaMode MASK with alphaCutoff and baseColorFactor alpha. Opaque materials use neutral fallback textures; unsupported alphaMode BLEND is rejected because transparent sorting and blending have not been implemented. Normal-map tangent frames remain derivative-based; full IBL and extensions remain outside this milestone.
+
+
+### Close-up material preview
+
+Use `--asset-preview --gltf examples/assets/textured_multi_mesh.gltf` to choose a closer, higher-scale material-inspection camera and lift the model slightly above the terrain. It is deliberately opt-in: terrain placement and benchmark camera behavior remain unchanged. This helps assess normal, AO, emissive and alpha-cutout effects, but does not replace a GPU screenshot comparison.
