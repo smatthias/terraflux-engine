@@ -179,6 +179,28 @@ preserves all active resource counts/bytes, detaches all drawables, then
 reattaches and renders one model within the same cap. It reports recovery;
 it does not introduce automatic eviction or retry policy into normal operation.
 
+### Retained CPU recipe payload
+
+```bash
+./build-gl/terraflux-terrain-viewer --scene examples/mixed_asset_scene.json \
+  --cpu-recipe-budget-mib 64 --resource-budget-mib 64 --residency-report
+```
+
+The optional CPU cap (0..16384 MiB; unlimited by default) limits logical retained
+vertex/index payload and decoded glTF image bytes. Reports expose category and
+combined `cpu_recipe_bytes` plus `cpu_recipe_budget_bytes`. Canonical path aliases
+share recipes and count once; separate imported files count separately. Selective GPU
+eviction/detachment does not reduce these retained recipes, which support reactivation.
+
+The scene loader checks accumulated payload after each canonical model, and the
+viewer checks its completed recipe before GPU upload. Parsing/decoding is still
+eager: transient parser buffers, source JSON/binary data, vector spare capacity,
+material strings/maps, allocator overhead and temporary upload layouts are
+excluded. This is a retained-payload admission limit, not a hard process-memory
+or peak-RSS limit. File-backed OBJ textures are decoded on demand and are not
+retained as CPU image recipes. Over-budget candidate loads reject without
+replacing an already active imported scope.
+
 ### Persist selection and inactive bindings
 
 ```bash
@@ -467,7 +489,7 @@ hours or release-readiness guarantees. The PS4 backend is unimplemented.
 
 | Desktop engine — Phases 1–9 | Full roadmap including PS4 |
 | --- | --- |
-| **~82%** (previously ~81%) | **~53%** |
+| **~83%** (previously ~82%) | **~54%** (previously ~53%) |
 
 | Phase | Component | Estimated completion |
 | --- | --- | ---: |
@@ -479,7 +501,7 @@ hours or release-readiness guarantees. The PS4 backend is unimplemented.
 | 6 | Shader system | 76% |
 | 7 | Scene and asset system | ~90% (previously 86%) |
 | 8 | Engine runtime | ~86% |
-| 9 | Performance | ~70% (previously ~65%) |
+| 9 | Performance | ~75% (previously ~70%) |
 | 10 | PS4 backend | 0% |
 
 Latest milestones: selective node reattachment and on-demand GPU mesh residency,
@@ -489,11 +511,11 @@ resolution, serializable Motion,
 shared mixed-format scene assets, isolated
 GPU asset lifetimes, unload/reload with failure recovery, and independent
 scene pause/resume and single-step controls. The mixed-format example includes
-OBJ, glTF, GLB, transparent materials and repeated model references. Native testing comprises 13
+OBJ, glTF, GLB, transparent materials and repeated model references. Native testing comprises 14
 CTest suites and 71 simulation parity fixtures; CI also exercises the viewer
 under Mesa/Xvfb. See the branch's CI results for validation of each commit.
 
-Next planned work: bounded retained CPU recipe/image accounting. GPU meshes are created on demand; CPU model data
+Next planned work: checkpoint the engine baseline and document remaining renderer gaps. GPU meshes are created on demand; CPU model data
 and decoded image recipes remain eager and retained for reattachment. Asynchronous streaming, skeletal animation
 and full glTF/IBL support remain future work.
 This desktop-engine breakdown is separate from the earlier simulation-focused

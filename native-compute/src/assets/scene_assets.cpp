@@ -12,7 +12,7 @@ std::string read(const std::filesystem::path& source) {
   return {std::istreambuf_iterator<char>(input),std::istreambuf_iterator<char>()};
 }
 }
-SceneModelAssets load_scene_assets(const scene::Scene& scene,const std::filesystem::path& scene_file) {
+SceneModelAssets load_scene_assets(const scene::Scene& scene,const std::filesystem::path& scene_file,std::uint64_t max_recipe_bytes) {
   SceneModelAssets result;
   const auto directory=std::filesystem::canonical(std::filesystem::absolute(scene_file).parent_path());
   std::map<std::filesystem::path,std::uint32_t> loaded;
@@ -71,6 +71,7 @@ SceneModelAssets load_scene_assets(const scene::Scene& scene,const std::filesyst
       result.sources.push_back(source);
       result.gltf_meshes.push_back(is_gltf);
     }
+    check_cpu_recipe_budget(cpu_recipe_bytes(result.meshes,result.images),max_recipe_bytes);
     loaded.emplace(source,model_index);
     result.model_indices.emplace(name,model_index);
     result.mesh_indices.emplace(name,instances.front().mesh_index);
@@ -78,10 +79,10 @@ SceneModelAssets load_scene_assets(const scene::Scene& scene,const std::filesyst
   }
   return result;
 }
-SceneObjAssets load_scene_obj_assets(const scene::Scene& scene,const std::filesystem::path& scene_file) {
+SceneObjAssets load_scene_obj_assets(const scene::Scene& scene,const std::filesystem::path& scene_file,std::uint64_t max_recipe_bytes) {
   for(const auto& [name,path]:scene.mesh_assets())
     if(std::filesystem::path(path).extension()!=".obj")
       throw std::invalid_argument("OBJ-only scene loader cannot load glTF/GLB");
-  return load_scene_assets(scene,scene_file);
+  return load_scene_assets(scene,scene_file,max_recipe_bytes);
 }
 } // namespace terraflux::assets

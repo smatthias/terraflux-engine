@@ -72,6 +72,10 @@ if(BUILD_TESTING)
       "${CMAKE_SOURCE_DIR}/../examples/assets/textured_multi_mesh.gltf"
       "${CMAKE_SOURCE_DIR}/../examples/assets/tangent_blend.gltf")
 
+  add_executable(terraflux-cpu-recipe-tests tests/cpu_recipe_tests.cpp)
+  target_link_libraries(terraflux-cpu-recipe-tests PRIVATE terraflux_compute)
+  add_test(NAME terraflux-cpu-recipe-tests COMMAND terraflux-cpu-recipe-tests)
+
   add_executable(terraflux-material-tests tests/material_tests.cpp)
   target_link_libraries(terraflux-material-tests PRIVATE terraflux_compute)
   add_test(NAME terraflux-material-tests COMMAND terraflux-material-tests)

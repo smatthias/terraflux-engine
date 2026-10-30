@@ -78,7 +78,7 @@ struct Options {
   bool residency_report=false,start_inactive=false,resource_recovery_test=false;
   std::optional<terraflux::scene::NodeId> selected_node,activate_node;
   std::uint32_t max_resident_meshes=512,max_scene_instances=1024;
-  std::optional<std::uint64_t> resource_budget_bytes;
+  std::optional<std::uint64_t> resource_budget_bytes,cpu_recipe_budget_bytes;
   std::uint32_t benchmark_frames=0;
   std::string load_state,save_state;
   std::string request_file, response_file, obj_file, gltf_file, texture_file, scene_file;
@@ -94,12 +94,13 @@ Options parse_args(int argc, char** argv) {
     else if (arg == "--scene-detach-test") options.scene_detach_test=true;
     else if (arg == "--scene-controls-test") options.scene_controls_test=true;
     else if (arg == "--asset-lifecycle-test") options.asset_lifecycle_test=true;
-    else if(arg=="--resource-budget-mib" && i+1<argc) {
+    else if((arg=="--resource-budget-mib" || arg=="--cpu-recipe-budget-mib") && i+1<argc) {
       const std::string value=argv[++i];std::uint64_t mib=0;
       const auto parsed=std::from_chars(value.data(),value.data()+value.size(),mib);
       if(parsed.ec!=std::errc{} || parsed.ptr!=value.data()+value.size() || mib>16384)
         throw std::invalid_argument("resource byte budget must be 0..16384 MiB");
-      options.resource_budget_bytes=mib*1048576;
+      if(arg=="--cpu-recipe-budget-mib")options.cpu_recipe_budget_bytes=mib*1048576;
+      else options.resource_budget_bytes=mib*1048576;
     }
     else if(arg=="--start-inactive")options.start_inactive=true;
     else if((arg=="--select-node" || arg=="--activate-node") && i+1<argc) {
@@ -372,6 +373,7 @@ int main(int argc, char** argv) {
       std::uint32_t indices = 0;
       terraflux::scene::Scene scene;
       std::string authored_signature;
+      terraflux::assets::CpuRecipeBytes cpu_payload;
       terraflux::scene::NodeId left_pivot = 0, right_pivot = 0;
       terraflux::scene::NodeId left_mesh = 0, right_mesh = 0;
       double separation = 1.0;
@@ -396,7 +398,8 @@ int main(int argc, char** argv) {
         }else{
           if(!options.obj_file.empty())
             throw std::invalid_argument("asset scenes declare their models; omit --obj");
-          scene_assets=terraflux::assets::load_scene_assets(*loaded_scene,options.scene_file);
+          scene_assets=terraflux::assets::load_scene_assets(*loaded_scene,options.scene_file,
+              options.cpu_recipe_budget_bytes.value_or(std::numeric_limits<std::uint64_t>::max()));
         }
       }
       const bool asset_scene=!scene_assets.meshes.empty();
@@ -524,11 +527,16 @@ int main(int argc, char** argv) {
         if (!(extent > 0.0)) throw std::runtime_error("imported model has no spatial extent");
         const double gltf_scale=options.asset_preview?0.43:0.22;
         const double scale=(scene_camera.starting_distance*(use_pbr?gltf_scale:0.095))/extent;
+        auto cpu_payload=terraflux::assets::mesh_recipe_bytes(object);
+        cpu_payload.include(terraflux::assets::cpu_recipe_bytes(extra_meshes,gltf_images));
+        terraflux::assets::check_cpu_recipe_budget(cpu_payload,
+            options.cpu_recipe_budget_bytes.value_or(std::numeric_limits<std::uint64_t>::max()));
         const auto geometry = prepare_textured_asset_upload(object); // local + UV
         auto candidate=std::make_unique<ImportedGpu>(device);
         auto& obj=*candidate;
         obj.resources=std::make_unique<RenderResourceOwner>(device);
         auto& asset_owned=*obj.resources;
+        obj.cpu_payload=cpu_payload;
         obj.is_gltf=use_gltf;
         obj.uses_pbr=use_pbr;
         obj.primary_bounds=mesh_bounds(object);
@@ -824,6 +832,11 @@ int main(int argc, char** argv) {
           <<",\"live_buffers\":"<<resources.buffers<<",\"live_textures\":"<<resources.textures
           <<",\"live_pipelines\":"<<resources.pipelines
           <<",\"buffer_bytes\":"<<bytes.buffer_bytes<<",\"texture_bytes\":"<<bytes.texture_bytes
+          <<",\"cpu_vertex_bytes\":"<<imported->cpu_payload.vertex_bytes
+          <<",\"cpu_index_bytes\":"<<imported->cpu_payload.index_bytes
+          <<",\"cpu_image_bytes\":"<<imported->cpu_payload.image_bytes
+          <<",\"cpu_recipe_bytes\":"<<imported->cpu_payload.total()
+          <<",\"cpu_recipe_budget_bytes\":"<<(options.cpu_recipe_budget_bytes?std::to_string(*options.cpu_recipe_budget_bytes):"null")
           <<",\"total_resource_bytes\":"<<bytes.total()
           <<",\"peak_buffer_bytes\":"<<telemetry.peak_bytes.buffer_bytes
           <<",\"peak_texture_bytes\":"<<telemetry.peak_bytes.texture_bytes

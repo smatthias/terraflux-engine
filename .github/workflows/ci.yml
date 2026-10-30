@@ -161,7 +161,7 @@ jobs:
           grep -q "scene residency budget exceeded" /tmp/terraflux-over-budget.log
           xvfb-run -a -s "-screen 0 1280x800x24" \
             ./build-gl/terraflux-terrain-viewer --smoke-test --residency-report \
-            --resource-budget-mib 64 --scene examples/mixed_asset_scene.json \
+            --resource-budget-mib 64 --cpu-recipe-budget-mib 64 --scene examples/mixed_asset_scene.json \
             | tee /tmp/terraflux-byte-budget.log
           python3 - <<'PYBYTES'
           import json
@@ -170,6 +170,9 @@ jobs:
                                if s.startswith("RESIDENCY_JSON=")))
           assert stats["resource_budget_bytes"]==64*1024*1024
           assert 0<stats["total_resource_bytes"]<=stats["resource_budget_bytes"]
+          assert stats["cpu_recipe_budget_bytes"]==64*1024*1024
+          assert stats["cpu_recipe_bytes"]==stats["cpu_vertex_bytes"]+stats["cpu_index_bytes"]+stats["cpu_image_bytes"]
+          assert 0<stats["cpu_recipe_bytes"]<=stats["cpu_recipe_budget_bytes"]
           PYBYTES
           if xvfb-run -a -s "-screen 0 1280x800x24" \
             ./build-gl/terraflux-terrain-viewer --smoke-test --resource-budget-mib 0 \
@@ -177,6 +180,13 @@ jobs:
             echo "Expected zero byte budget to reject terrain allocation"; exit 1
           fi
           grep -q "resource byte budget exceeded" /tmp/terraflux-byte-rejected.log
+          if xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --start-inactive \
+            --cpu-recipe-budget-mib 0 --scene examples/mixed_asset_scene.json \
+            > /tmp/terraflux-cpu-rejected.log 2>&1; then
+            echo "Expected zero CPU recipe budget to reject retained models"; exit 1
+          fi
+          grep -q "CPU recipe payload budget exceeded" /tmp/terraflux-cpu-rejected.log
           xvfb-run -a -s "-screen 0 1280x800x24" \
             ./build-gl/terraflux-terrain-viewer --smoke-test --resource-recovery-test \
             --residency-report --scene examples/mixed_asset_scene.json \

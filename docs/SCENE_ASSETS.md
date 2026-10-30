@@ -773,3 +773,26 @@ rejects a new buffer at a full cap, evicts drawables, then reattaches/renders on
 model within that same cap. Normal runtime still leaves eviction/retry decisions
 to the caller. Native sanitizer tests cover recovery, historical peaks, lowered
 caps and explicit reset; Mesa CI validates rejection and rendered recovery.
+
+
+## Retained CPU recipe payload accounting
+
+`assets/cpu_recipe_budget.hpp` provides overflow-checked size arithmetic,
+`mesh_recipe_bytes`, `cpu_recipe_bytes` and `check_cpu_recipe_budget`. Counts
+cover used MeshVertex elements, uint32 indices and retained decoded image pixel
+vectors. They exclude vector capacity and container/material/string overhead,
+encoded source data, parser temporaries and transient GPU upload layouts.
+Canonical aliases are deduplicated before accounting. Different source files
+remain separate recipes even if their data matches.
+
+Both scene-loader entry points accept an optional retained-payload limit.
+Accumulated canonical models are checked before continuing to the next model;
+individual parser/decoder peaks are not bounded by this limit. The viewer also
+checks standalone assets and all completed recipes before GPU upload, exposing
+`--cpu-recipe-budget-mib` and CPU category/total diagnostics. CPU recipes remain
+resident across selective GPU eviction/detachment within a scope; full imported-scope
+release frees them. File-backed OBJ image decodes remain transient.
+Tests cover payload versus capacity, exact/zero/over limits, shared scene aliases,
+combined/size arithmetic overflow and preservation after failed accumulation.
+Mesa CI verifies positive accounting and rejection of a zero CPU cap even when
+all drawable nodes start inactive. This is not process heap/RSS accounting.

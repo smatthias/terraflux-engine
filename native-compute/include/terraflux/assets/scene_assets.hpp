@@ -1,5 +1,6 @@
 #pragma once
 #include <terraflux/assets/gltf.hpp>
+#include <terraflux/assets/cpu_recipe_budget.hpp>
 #include <terraflux/scene.hpp>
 #include <filesystem>
 #include <map>
@@ -26,8 +27,10 @@ using SceneObjAssets=SceneModelAssets;
 // hierarchy beneath scene-node transforms. References stay beneath their base
 // directory, including symlinks; external glTF data is resolved by the loader.
 SceneModelAssets load_scene_assets(const scene::Scene& scene,
-                                   const std::filesystem::path& scene_file);
+                                   const std::filesystem::path& scene_file,
+    std::uint64_t max_recipe_bytes=std::numeric_limits<std::uint64_t>::max());
 // Compatibility entry point for callers explicitly requiring OBJ-only assets.
 SceneObjAssets load_scene_obj_assets(const scene::Scene& scene,
-                                     const std::filesystem::path& scene_file);
+                                     const std::filesystem::path& scene_file,
+    std::uint64_t max_recipe_bytes=std::numeric_limits<std::uint64_t>::max());
 } // namespace terraflux::assets
