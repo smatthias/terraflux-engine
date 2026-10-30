@@ -137,6 +137,26 @@ jobs:
             --scene examples/mixed_asset_scene.json | tee /tmp/terraflux-mixed-scene.log
           grep -q "7 meshes" /tmp/terraflux-mixed-scene.log
           grep -q "17 instances" /tmp/terraflux-mixed-scene.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --residency-report \
+            --max-resident-meshes 7 --max-scene-instances 17 \
+            --scene examples/mixed_asset_scene.json | tee /tmp/terraflux-budget.log
+          python3 - <<'PYBUDGET'
+          import json
+          from pathlib import Path
+          line=next(s.split("=",1)[1] for s in Path("/tmp/terraflux-budget.log").read_text().splitlines()
+                    if s.startswith("RESIDENCY_JSON="))
+          stats=json.loads(line)
+          assert stats["referenced_meshes"]==7 and stats["instances"]==17
+          assert stats["max_meshes"]==7 and stats["max_instances"]==17
+          assert stats["detached_nodes"]==0 and stats["live_buffers"]>0
+          PYBUDGET
+          if xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --max-resident-meshes 6 \
+            --scene examples/mixed_asset_scene.json > /tmp/terraflux-over-budget.log 2>&1; then
+            echo "Expected over-budget scene to fail"; exit 1
+          fi
+          grep -q "scene residency budget exceeded" /tmp/terraflux-over-budget.log
           for source in "--scene examples/asset_scene.json" \
                         "--scene examples/mixed_asset_scene.json" \
                         "--obj examples/assets/pyramid.obj --scene examples/scenes/twin_pyramids.json"; do

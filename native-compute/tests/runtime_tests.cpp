@@ -294,9 +294,31 @@ void scene_residency_api() {
   const auto prepare=[&](Instance& instance){
     resident[instance.mesh_index]=true;instance.resource=std::make_shared<int>(9);
   };
+  const auto stats=residency.statistics(live);
+  check(stats.instances==1 && stats.referenced_meshes==1 && stats.detached_nodes==1 &&
+        stats.saved_instances==2,"residency diagnostics distinguish live and saved instances");
+  int admissions=0;
+  residency.set_budget({1,3});
+  rejects([&]{residency.reattach(graph,live,first,[&](Instance&){++admissions;},evict);},
+          "mesh residency budget rejects new mesh before preparation");
+  residency.set_budget({2,2});
+  rejects([&]{residency.reattach(graph,live,first,[&](Instance&){++admissions;},evict);},
+          "expanded instance budget enforced before preparation");
+  check(admissions==0 && live.size()==1 && residency.detached().contains(first) &&
+        !graph.get(first).mesh_instance,"budget rejection preserves current residency and graph");
+  residency.set_budget({2,3});
+
   check(residency.reattach(graph,live,first,prepare,evict) && live.size()==3 &&
         graph.get(first).mesh_asset=="model" && resident[1],"successful reattachment publishes complete node");
   check(!residency.reattach(graph,live,first,prepare,evict),"duplicate attachment is a no-op");
+  residency.check_budget(live);
+  const auto admitted=residency.statistics(live);
+  check(admitted.instances==3 && admitted.referenced_meshes==2 && admitted.detached_nodes==0,
+        "shared mesh aliases count once at exact budget boundary");
+  residency.set_budget({0,0});
+  rejects([&]{residency.check_budget(live);},"zero budget rejects nonempty live set");
+  residency.check_budget({});
+
   const auto world=graph.world_matrix(second).transformPoint({0,0,0});
   check(near(world.x,3),"parent transform survives residency changes");
   rejects([&]{(void)Residency::reference_counts(live,1);},"invalid mesh index rejected");

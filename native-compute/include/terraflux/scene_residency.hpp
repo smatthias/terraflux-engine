@@ -3,14 +3,38 @@
 #include <algorithm>
 #include <iterator>
 #include <map>
+#include <set>
+#include <stdexcept>
 #include <type_traits>
 #include <utility>
 
 namespace terraflux::runtime {
 // Instance supplies node and mesh_index. Resource preparation/retirement is
 // supplied by the host, so this API requires neither OpenGL nor a window.
+struct ResidencyBudget {
+  std::size_t max_meshes=512,max_instances=1024;
+};
+struct ResidencyStatistics {
+  std::size_t instances=0,referenced_meshes=0,detached_nodes=0,saved_instances=0;
+};
 template<class Instance>class SceneResidency {
  public:
+  void set_budget(ResidencyBudget budget) {budget_=budget;}
+  ResidencyBudget budget() const {return budget_;}
+  ResidencyStatistics statistics(const std::vector<Instance>& live) const {
+    ResidencyStatistics stats;
+    stats.instances=live.size();stats.detached_nodes=detached_.size();
+    std::set<std::uint32_t> meshes;
+    for(const auto& instance:live)meshes.insert(instance.mesh_index);
+    stats.referenced_meshes=meshes.size();
+    for(const auto& [node,saved]:detached_)stats.saved_instances+=saved.instances.size();
+    return stats;
+  }
+  void check_budget(const std::vector<Instance>& live) const {
+    const auto stats=statistics(live);
+    if(stats.instances>budget_.max_instances || stats.referenced_meshes>budget_.max_meshes)
+      throw std::length_error("scene residency budget exceeded");
+  }
   struct SavedNode {std::optional<std::string> asset;std::vector<Instance> instances;};
   const std::map<scene::NodeId,SavedNode>& detached() const {return detached_;}
   static std::vector<std::size_t> reference_counts(const std::vector<Instance>& instances,
@@ -46,6 +70,11 @@ template<class Instance>class SceneResidency {
                   std::is_nothrow_move_assignable_v<Instance>);
     const auto found=detached_.find(node);
     if(found==detached_.end())return false;
+    // Admission precedes resource callbacks; aliases/shared meshes count once.
+    auto proposed=live;
+    proposed.insert(proposed.end(),found->second.instances.begin(),found->second.instances.end());
+    check_budget(proposed);
+    proposed.clear();
     auto candidates=found->second.instances;
     try{
       live.reserve(live.size()+candidates.size());
@@ -59,6 +88,7 @@ template<class Instance>class SceneResidency {
     return true;
   }
  private:
+  ResidencyBudget budget_;
   std::map<scene::NodeId,SavedNode> detached_;
 };
 } // namespace terraflux::runtime

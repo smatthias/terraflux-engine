@@ -667,3 +667,22 @@ the same API exercised by headless tests. Those tests cover shared meshes,
 expanded model instances, failed preparation/cleanup, duplicate operations,
 hierarchy preservation, bounds validation and legacy primary-mesh bindings.
 Existing Mesa residency sweeps verify the viewer integration.
+
+
+## Residency diagnostics and admission budgets
+
+`SceneResidency::statistics` reports live instances, distinct referenced mesh
+indices, detached nodes and saved instance recipes. `ResidencyBudget` limits
+referenced meshes and expanded draw instances. `check_budget` supports initial
+admission; reattachment preflights the proposed complete draw set before any
+resource preparation callbacks. Exact-boundary admission and shared-mesh
+counting are tested; rejection preserves graph bindings and detached recipes.
+Changing a configured budget does not automatically evict existing instances.
+
+The viewer exposes `--max-resident-meshes` (0..512), `--max-scene-instances`
+(0..1024), and `--residency-report`. JSON diagnostics include all live OpenGL
+buffer/texture/pipeline counts alongside logical residency. CPU models and
+image recipes remain eager. This is admission control, not byte accounting,
+physical VRAM measurement, automatic victim selection or asynchronous loading.
+CI verifies the mixed scene at its exact 7-mesh/17-instance limits and rejects
+a 6-mesh limit, while headless tests cover reattachment rejection before callbacks.

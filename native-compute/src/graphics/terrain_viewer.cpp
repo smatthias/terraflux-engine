@@ -74,6 +74,8 @@ std::filesystem::path asset_path(const std::filesystem::path& directory,
 struct Options {
   bool smoke_test=false, profile=false, no_culling=false, no_instancing=false,asset_preview=false;
   bool asset_lifecycle_test=false,scene_controls_test=false,scene_detach_test=false,scene_residency_test=false;
+  bool residency_report=false;
+  std::uint32_t max_resident_meshes=512,max_scene_instances=1024;
   std::uint32_t benchmark_frames=0;
   std::string request_file, response_file, obj_file, gltf_file, texture_file, scene_file;
 };
@@ -87,6 +89,16 @@ Options parse_args(int argc, char** argv) {
     else if (arg == "--scene-detach-test") options.scene_detach_test=true;
     else if (arg == "--scene-controls-test") options.scene_controls_test=true;
     else if (arg == "--asset-lifecycle-test") options.asset_lifecycle_test=true;
+    else if(arg=="--residency-report")options.residency_report=true;
+    else if((arg=="--max-resident-meshes" || arg=="--max-scene-instances") && i+1<argc) {
+      const std::string value=argv[++i];std::uint32_t limit=0;
+      const auto parsed=std::from_chars(value.data(),value.data()+value.size(),limit);
+      const auto maximum=arg=="--max-resident-meshes"?512U:1024U;
+      if(parsed.ec!=std::errc{} || parsed.ptr!=value.data()+value.size() || limit>maximum)
+        throw std::invalid_argument("invalid scene residency budget limit");
+      if(arg=="--max-resident-meshes")options.max_resident_meshes=limit;
+      else options.max_scene_instances=limit;
+    }
     else if (arg == "--profile") options.profile = true;
     else if (arg == "--no-culling") options.no_culling = true;
     else if (arg == "--no-instancing") options.no_instancing = true;
@@ -503,6 +515,8 @@ int main(int argc, char** argv) {
           }
           if(obj.scene_instances.empty() || obj.scene_instances.size()>1024)
             throw std::invalid_argument("scene requires 1..1024 mesh instances");
+          obj.residency.set_budget({options.max_resident_meshes,options.max_scene_instances});
+          obj.residency.check_budget(obj.scene_instances);
         }else if(!use_gltf) {
           const auto anchor = obj.scene.create_node("Terrain anchor");
           obj.left_pivot = obj.scene.create_node("Rotating left", anchor);
@@ -720,6 +734,20 @@ int main(int argc, char** argv) {
     if(has_asset && !options.smoke_test && !options.benchmark_frames)
       std::cout<<"Asset controls: U unload | R reload | D detach | A reattach | P pause scene | N single tick (failed reload preserves current asset)\n";
 
+    const auto report_residency=[&] {
+      if(!(options.residency_report || options.profile) || !imported || !imported->uses_scene_file)return;
+      const auto stats=imported->residency.statistics(imported->scene_instances);
+      const auto budget=imported->residency.budget();
+      const auto resources=device.live_resource_counts();
+      std::cout<<"RESIDENCY_JSON={\"instances\":"<<stats.instances
+          <<",\"referenced_meshes\":"<<stats.referenced_meshes
+          <<",\"detached_nodes\":"<<stats.detached_nodes
+          <<",\"saved_instances\":"<<stats.saved_instances
+          <<",\"max_meshes\":"<<budget.max_meshes<<",\"max_instances\":"<<budget.max_instances
+          <<",\"live_buffers\":"<<resources.buffers<<",\"live_textures\":"<<resources.textures
+          <<",\"live_pipelines\":"<<resources.pipelines<<"}\n";
+    };
+    report_residency();
     const auto evict_unused=[&](ImportedGpu& asset) {
       const auto references=terraflux::runtime::SceneResidency<ImportedGpu::SceneInstance>::reference_counts(
           asset.scene_instances,asset.additional_meshes.size()+1);
@@ -745,6 +773,7 @@ int main(int argc, char** argv) {
       if(!options.no_instancing)
         asset.instance_ring=std::make_unique<OpaqueRenderQueue::InstanceBufferRing>(device);
       std::cout<<"Detached scene node "<<node<<"; "<<asset.scene_instances.size()<<" mesh instances remain\n";
+      report_residency();
     };
 
     const auto reattach_node=[&](terraflux::scene::NodeId node) {
@@ -761,6 +790,7 @@ int main(int argc, char** argv) {
           },[&]{evict_unused(asset);});
       if(!changed)return;
       std::cout<<"Reattached scene node "<<node<<"; "<<asset.scene_instances.size()<<" mesh instances resident\n";
+      report_residency();
     };
 
     double yaw = 0.45, pitch = options.asset_preview?0.42:0.75;
@@ -807,6 +837,7 @@ int main(int argc, char** argv) {
             imported.reload(load_imported);
             scene_playback.reset();
             std::cout<<"Asset reloaded\n";
+            report_residency();
           }
           catch(const std::exception& error){
             std::cerr<<"Asset reload failed; current asset preserved: "<<error.what()<<'\n';
@@ -1155,6 +1186,7 @@ int main(int argc, char** argv) {
       }
       ++profile_frames;
       if(options.profile && profile_frames%120==0) {
+        report_residency();
         const auto measured=cpu_profiler.summary();
         const auto gpu=device.gpu_timing_summary();
         std::cout << "CPU profile (last " << measured.samples << " frames): update "

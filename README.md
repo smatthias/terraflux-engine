@@ -97,6 +97,23 @@ resets scene animation to authored transforms and resumes its clock. Reload
 is synchronous and temporarily holds the old and new GPU scopes together.
 Static glTF hierarchies have no animation for P/N to advance.
 
+### Residency diagnostics and budgets
+
+```bash
+./build-gl/terraflux-terrain-viewer --scene examples/mixed_asset_scene.json \
+  --residency-report --max-resident-meshes 7 --max-scene-instances 17
+```
+
+`RESIDENCY_JSON` reports live draw instances, distinct referenced meshes,
+detached nodes/saved instances, configured limits and live OpenGL API resource
+counts (including terrain). Reports appear at initial admission and detach/
+reattach/reload; `--profile` also reports every 120 frames. Limits default to
+512 meshes and 1024 instances; zero intentionally rejects nonempty residency.
+These budgets apply to scene-file GPU residency, not CPU data, texture bytes,
+physical VRAM or automatic LRU eviction. Initial admission and reattachment
+reject over-budget draw sets before GPU preparation; existing state remains
+available if an interactive reattachment/reload is rejected.
+
 ### Wildfire replay and runtime checks
 
 ```bash
@@ -363,7 +380,7 @@ hours or release-readiness guarantees. The PS4 backend is unimplemented.
 
 | Desktop engine — Phases 1–9 | Full roadmap including PS4 |
 | --- | --- |
-| **~77%** (previously ~76%) | **~50%** |
+| **~78%** (previously ~77%) | **~51%** (previously ~50%) |
 
 | Phase | Component | Estimated completion |
 | --- | --- | ---: |
@@ -374,8 +391,8 @@ hours or release-readiness guarantees. The PS4 backend is unimplemented.
 | 5 | Simulation visualization | 65% |
 | 6 | Shader system | 76% |
 | 7 | Scene and asset system | ~90% (previously 86%) |
-| 8 | Engine runtime | ~75% (previously ~70%) |
-| 9 | Performance | 55% |
+| 8 | Engine runtime | ~78% (previously ~75%) |
+| 9 | Performance | ~58% (previously 55%) |
 | 10 | PS4 backend | 0% |
 
 Latest milestones: selective node reattachment and on-demand GPU mesh residency,
@@ -389,7 +406,7 @@ OBJ, glTF, GLB, transparent materials and repeated model references. Native test
 CTest suites and 71 simulation parity fixtures; CI also exercises the viewer
 under Mesa/Xvfb. See the branch's CI results for validation of each commit.
 
-Next planned work: residency diagnostics and memory/resource budgets. GPU meshes are created on demand; CPU model data
+Next planned work: explicit residency selection and budget-aware model activation. GPU meshes are created on demand; CPU model data
 and decoded image recipes remain eager and retained for reattachment. Asynchronous streaming, skeletal animation
 and full glTF/IBL support remain future work.
 This desktop-engine breakdown is separate from the earlier simulation-focused
