@@ -141,8 +141,11 @@ This is the proposed execution sequence, not ten equally sized completion units.
 Physical GPU evidence requires hardware access; independent implementation work
 can continue while that evidence is pending.
 
-1. Prepare a reproducible physical-GPU validation checklist using existing tests.
-2. Execute hardware smoke checks and record GPU/driver/results.
+Completed: [physical-GPU validation checklist](GPU_VALIDATION.md), including logging,
+acceptance criteria and repeated benchmark commands. Hardware execution remains pending.
+
+1. Execute hardware smoke checks and record GPU/driver/results.
+2. Run the interactive hardware review, including resize and lifecycle controls.
 3. Run repeated hardware benchmarks and record frame-time and resource behavior.
 4. Specify terrain LOD geometry, holes, seams and selection acceptance criteria.
 5. Implement bounded CPU LOD generation with invariant tests.
