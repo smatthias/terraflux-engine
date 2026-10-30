@@ -290,9 +290,13 @@ in vec3 worldPosition;
 layout(binding=3) uniform sampler2D AlbedoTexture;
 layout(binding=6) uniform sampler2D MetallicRoughnessTexture;
 layout(binding=7) uniform sampler2D NormalTexture;
+layout(binding=8) uniform sampler2D OcclusionTexture;
+layout(binding=9) uniform sampler2D EmissiveTexture;
 layout(std140,binding=5) uniform PbrMaterial {
-  vec4 factors;
+  vec4 factors; // metallic, roughness, normalScale, occlusionStrength
   vec4 eye;
+  vec4 emissive; // emissive RGB factor (linear), alpha cutoff
+  vec4 options; // alpha factor, mask enabled
 };
 out vec4 fragColor;
 const float PI=3.14159265358979323846;
@@ -309,6 +313,8 @@ float smithG1(float nd,float roughness){
   return nd/max(nd*(1.0-k)+k,1e-5);
 }
 void main(){
+  vec4 albedo=texture(AlbedoTexture,textureUv);
+  if(options.y>0.5 && albedo.a*options.x<emissive.w)discard;
   vec3 N=normalize(surfaceNormal);
   // Reconstruct a tangent frame from world-space derivatives and UVs.
   // glTF normal texture is linear tangent-space RGB.
@@ -331,8 +337,8 @@ void main(){
   float metallic=clamp(factors.x*mr.b,0.0,1.0);
   float roughness=clamp(factors.y*mr.g,0.045,1.0);
   // Base-color texture and baseColorFactor use sRGB, light in linear RGB.
-  vec3 base=pow(max(texture(AlbedoTexture,textureUv).rgb,vec3(0.0)),vec3(2.2));
-  base*=pow(max(surfaceTint,vec3(0.0)),vec3(2.2));
+  vec3 base=pow(max(albedo.rgb,vec3(0.0)),vec3(2.2));
+  base*=max(surfaceTint,vec3(0.0));
   vec3 F0=mix(vec3(0.04),base,metallic);
   float nv=max(dot(N,V),0.0),nl=max(dot(N,L),0.0);
   float vh=max(dot(V,H),0.0);
@@ -341,7 +347,12 @@ void main(){
   float G=smithG1(nv,roughness)*smithG1(nl,roughness);
   vec3 spec=D*G*F/max(4.0*nv*nl,0.001);
   vec3 diffuse=(1.0-F)*(1.0-metallic)*base/PI;
-  vec3 color=(diffuse+spec)*vec3(3.2)*nl + base*vec3(0.055)*(1.0-metallic);
+  float occlusion=mix(1.0,texture(OcclusionTexture,textureUv).r,
+                      clamp(factors.w,0.0,1.0));
+  vec3 glow=pow(max(texture(EmissiveTexture,textureUv).rgb,vec3(0.0)),
+                vec3(2.2))*emissive.rgb;
+  vec3 color=(diffuse+spec)*vec3(3.2)*nl +
+             base*vec3(0.055)*(1.0-metallic)*occlusion+glow;
   // ACES approximation plus display conversion.
   color=(color*(2.51*color+0.03))/(color*(2.43*color+0.59)+0.14);
   fragColor=vec4(pow(clamp(color,0.0,1.0),vec3(1.0/2.2)),1.0);
@@ -428,8 +439,8 @@ ShaderLayout reflect_program(const GL& gl, GLuint program, const ShaderLayout& e
         });
     if (name == "Camera" && values[4] != (is_fire ? 80 : 64))
       throw std::runtime_error("Camera UBO does not match expected std140 size");
-    if (name == "PbrMaterial" && values[4] != 32)
-      throw std::runtime_error("PbrMaterial UBO must have two vec4s");
+    if (name == "PbrMaterial" && values[4] != 64)
+      throw std::runtime_error("PbrMaterial UBO must have four vec4s");
     if (name == "Object" && values[4] != 144)
       throw std::runtime_error("Object UBO must contain model, normalMatrix and tint");
     // PbrMaterial exists only in the fragment shader. Some Mesa drivers
@@ -772,7 +783,10 @@ PipelineHandle OpenGLRenderDevice::create_pipeline(PipelineDesc desc) {
         !(textured && binding.kind == ShaderResourceKind::SampledTexture &&
           binding.name=="AlbedoTexture") &&
         !(pbr && binding.kind==ShaderResourceKind::SampledTexture &&
-          (binding.name=="MetallicRoughnessTexture" || binding.name=="NormalTexture")) &&
+          (binding.name=="MetallicRoughnessTexture" ||
+           binding.name=="NormalTexture" ||
+           binding.name=="OcclusionTexture" ||
+           binding.name=="EmissiveTexture")) &&
         !(instanced && binding.kind==ShaderResourceKind::StorageBuffer &&
           binding.name=="InstanceData" && binding.slot==4) &&
         !(wildfire && binding.kind == ShaderResourceKind::StorageBuffer &&

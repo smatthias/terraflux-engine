@@ -15,7 +15,8 @@ bool finite(math::Vec3 p) {
 }
 using Key=std::tuple<std::uint32_t,std::uint32_t,std::uint32_t,
                      std::uint32_t,std::uint32_t,std::uint32_t,std::uint32_t,
-                     std::uint32_t,std::uint32_t,std::uint32_t>;
+                     std::uint32_t,std::uint32_t,std::uint32_t,std::uint32_t,
+                     std::uint32_t>;
 Key key(const PreparedDraw& item) {
   const auto& cmd=item.command;
   const auto find_texture=[&](std::uint32_t slot) {
@@ -32,7 +33,7 @@ Key key(const PreparedDraw& item) {
           cmd.first_index,cmd.index_count,
           camera==cmd.uniform_buffers.end()?0:camera->buffer.id,
           pbr==cmd.uniform_buffers.end()?0:pbr->buffer.id,
-          find_texture(6),find_texture(7)};
+          find_texture(6),find_texture(7),find_texture(8),find_texture(9)};
 }
 }
 BoundingSphere mesh_bounds(const assets::Mesh& mesh) {
@@ -139,7 +140,8 @@ QueueStats OpaqueRenderQueue::submit_instanced(RenderDevice& device,
   // Validate the whole batch before any draw or writes.
   for(const auto& item:pending_){
     if(!item.object_uniform || (item.command.uniform_buffers.size()!=2 && item.command.uniform_buffers.size()!=3) ||
-       !item.command.storage_buffers.empty() || (item.command.textures.size()!=1 && item.command.textures.size()!=3) ||
+       !item.command.storage_buffers.empty() || (item.command.textures.size()!=1 && item.command.textures.size()!=3 &&
+        item.command.textures.size()!=5) ||
        item.command.instance_count!=1)
       throw std::invalid_argument("instanced queue requires ordinary textured object draws");
     const auto& bindings=item.command.uniform_buffers;
@@ -234,7 +236,8 @@ QueueStats OpaqueRenderQueue::submit_instanced_streamed(RenderDevice& device,
     throw std::invalid_argument("instancing requires a pipeline and valid capacity");
   for(const auto& item:pending_){
     if(!item.object_uniform || (item.command.uniform_buffers.size()!=2 && item.command.uniform_buffers.size()!=3) ||
-       !item.command.storage_buffers.empty() || (item.command.textures.size()!=1 && item.command.textures.size()!=3) ||
+       !item.command.storage_buffers.empty() || (item.command.textures.size()!=1 && item.command.textures.size()!=3 &&
+        item.command.textures.size()!=5) ||
        item.command.instance_count!=1)
       throw std::invalid_argument("streamed queue requires ordinary textured object draws");
     const auto& bindings=item.command.uniform_buffers;
