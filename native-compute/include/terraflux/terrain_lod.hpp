@@ -15,7 +15,7 @@ struct TerrainLodPatch {
 // tile input still throws. Source and output geometry remain unchanged.
 std::vector<TerrainLodPatch> analyze_terrain_lod_patches(
     const TerrainMesh& source,TerrainTileOptions options={});
-// Level 1 is reserved for a later simplification increment. Its absence means
+// Level 1 is opt-in. Its absence means
 // exact level-0 fallback, not a second allocation or a zero-error measurement.
 struct TerrainTileLod {
   TerrainTile level0;
@@ -24,6 +24,7 @@ struct TerrainTileLod {
 };
 struct TerrainLodOptions {
   TerrainTileOptions tiles{};
+  bool enable_level1=false; // Complete 4x4 patches only; no GPU integration.
   // Used vertex, index and source-map elements only; excludes capacities,
   // containers, source mesh, temporary builders and future packed GPU recipes.
   std::size_t max_recipe_bytes=512ULL*1024*1024;
@@ -33,7 +34,9 @@ struct TerrainLodSet {
   std::size_t recipe_bytes=0;
 };
 // Exact partition order, geometry, metadata and source mappings. Output owns
-// its data; source is untouched. No simplification or GPU work occurs yet.
+// its data; source is untouched. Optional level 1 preserves all patch boundaries.
+// Error measurement remains absent; this is not ready for automatic selection.
+// Element/byte caps include both stored levels. No GPU work occurs.
 // Invalid source/options use the tile partitioner's invalid_argument contract;
 // aggregate payload/count overflow throws length_error before publication.
 TerrainLodSet build_terrain_lods(const TerrainMesh& source,
