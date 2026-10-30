@@ -725,7 +725,7 @@ resolution, serializable Motion,
 shared mixed-format scene assets, isolated
 GPU asset lifetimes, unload/reload with failure recovery, and independent
 scene pause/resume and single-step controls. The mixed-format example includes
-OBJ, glTF, GLB, transparent materials and repeated model references. Native testing comprises 15
+OBJ, glTF, GLB, transparent materials and repeated model references. Native testing comprises 16
 CTest suites and 71 simulation parity fixtures; CI also exercises the viewer
 under Mesa/Xvfb. See the branch's CI results for validation of each commit.
 
@@ -740,8 +740,8 @@ Owned offscreen targets now provide RGBA8 color and Depth32Float depth attachmen
 validated pass handles/extents, shared byte-budget admission, telemetry and scope
 cleanup. OpenGL creation checks framebuffer completeness and rolls back partial
 allocations. A dedicated Mesa test covers clear/load, depth occlusion, geometry,
-target switching, budget rejection and repeated cleanup. Native CTest remains
-15 display-independent suites; the extra GL test runs explicitly under Xvfb.
+target switching, budget rejection and repeated cleanup. Native CTest now comprises
+16 display-independent suites; the extra GL test runs explicitly under Xvfb.
 Offscreen color now exposes a borrowed sampled texture view, with no duplicate
 byte charge and invalidation when its target is destroyed. The reusable
 `FullscreenComposite` helper copies it into a separate offscreen/window pass
@@ -782,9 +782,11 @@ logged smoke checks, interactive review and repeated benchmark commands.
 Hardware execution is pending. The [terrain LOD design](docs/TERRAIN_LOD.md)
 is complete: boundary-preserving 4x4 patch simplification, hole fallback,
 error measurement and transactional integration criteria. LOD implementation
-remains pending; the next independent increment is CPU LOD generation and tests.
-Progress this task: ↑ terrain LOD specification completed; phase and overall
-implementation estimates are unchanged.
+is underway; the next independent increment is eligible-patch simplification.
+Progress this task: ↑ CPU LOD level-0 foundation implemented with exact partition
+preservation, source mappings and logical recipe admission. The new native test
+target brings the registered total to 16. Simplification and viewer integration
+remain pending; phase and overall planning estimates are unchanged.
 See the [prioritized gaps and acceptance criteria](docs/ENGINE_BASELINE.md#remaining-renderer-work-in-priority-order). GPU meshes are created on demand; CPU model data
 and decoded image recipes remain eager and retained for reattachment. Asynchronous streaming, skeletal animation
 and full glTF/IBL support remain future work.
