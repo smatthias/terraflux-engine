@@ -129,6 +129,14 @@ jobs:
             --scene examples/scenes/twin_pyramids.json
           xvfb-run -a -s "-screen 0 1280x800x24" \
             ./build-gl/terraflux-terrain-viewer --smoke-test \
+            --scene examples/asset_scene.json | tee /tmp/terraflux-scene-assets.log
+          grep -q "2 meshes" /tmp/terraflux-scene-assets.log
+          grep -q "3 instances" /tmp/terraflux-scene-assets.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --no-instancing \
+            --scene examples/asset_scene.json
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test \
             --obj examples/assets/pyramid.obj \
             --scene examples/scenes/culling_demo.json | tee /tmp/terraflux-culling.log
           grep -q "Visibility: 2 visible, 1 culled" /tmp/terraflux-culling.log

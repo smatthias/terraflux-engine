@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -27,7 +28,8 @@ struct Node {
   NodeId parent = 0;
   std::string name;
   Transform local{};
-  bool mesh_instance = false; // Draw the scene's primary asset at this node.
+  bool mesh_instance = false; // Draw a named asset, or the legacy primary asset.
+  std::optional<std::string> mesh_asset;
   std::optional<math::Vec3> angular_velocity; // rad/s, runtime Spin component
   std::optional<math::Vec3> linear_velocity; // local units/s, runtime Motion component
 };
@@ -40,6 +42,9 @@ class Scene {
   void set_parent(NodeId node, NodeId parent);
   void set_transform(NodeId node, const Transform& value);
   void set_mesh_instance(NodeId node, bool enabled);
+  void declare_mesh_asset(std::string name, std::string relative_obj_path);
+  void set_mesh_asset(NodeId node, const std::string& asset_name);
+  const std::map<std::string,std::string>& mesh_assets() const { return mesh_assets_; }
   void set_angular_velocity(NodeId node, std::optional<math::Vec3> radians_per_second);
   void set_linear_velocity(NodeId node, std::optional<math::Vec3> units_per_second);
   const Node& get(NodeId node) const;
@@ -48,6 +53,7 @@ class Scene {
 
  private:
   std::vector<Node> nodes_;
+  std::map<std::string,std::string> mesh_assets_;
   void check_node(NodeId node) const;
 };
 

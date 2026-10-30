@@ -69,12 +69,26 @@ std::string serialize_scene(const Scene& scene) {
   std::ostringstream out;
   out.imbue(std::locale::classic());
   out<<std::setprecision(std::numeric_limits<double>::max_digits10);
-  out<<"{\n  \"format\":\"terraflux.scene\",\n  \"version\":1,\n  \"nodes\":[\n";
+  out<<"{\n  \"format\":\"terraflux.scene\",\n  \"version\":"
+     <<(scene.mesh_assets().empty()?1:2)<<",\n";
+  if(!scene.mesh_assets().empty()) {
+    out<<"  \"assets\":{";
+    bool first=true;
+    for(const auto& [name,path]:scene.mesh_assets()) {
+      if(!first)out<<',';
+      out<<escaped(name)<<':'<<escaped(path);
+      first=false;
+    }
+    out<<"},\n";
+  }
+  out<<"  \"nodes\":[\n";
   for(std::size_t id=0;id<scene.size();++id){
     const auto& node=scene.get(static_cast<NodeId>(id));
     if(node.name.empty() || node.name.size()>256)
       throw std::invalid_argument("scene node name length invalid");
     (void)node.local.matrix();
+    if(!scene.mesh_assets().empty() && node.mesh_instance && !node.mesh_asset)
+      throw std::invalid_argument("asset scenes require named references on all mesh instances");
     if(id==0 && node.mesh_instance)
       throw std::invalid_argument("scene root cannot be drawable");
     out<<"    {\"name\":"<<escaped(node.name)
@@ -86,6 +100,7 @@ std::string serialize_scene(const Scene& scene) {
     vec3_out(out,node.local.rotation_radians);
     out<<",\"scale\":";
     vec3_out(out,node.local.scale);
+    if(node.mesh_asset)out<<",\"mesh_asset\":"<<escaped(*node.mesh_asset);
     if(node.angular_velocity) {
       out<<",\"spin\":";
       vec3_out(out,*node.angular_velocity);
@@ -108,16 +123,24 @@ Scene deserialize_scene(const std::string& json_text) {
     throw std::invalid_argument("scene JSON is empty or exceeds 2MB");
   const auto root=terraflux::json::Parser(json_text).parse_document();
   const auto& doc=terraflux::json::object(root);
+  const auto version=terraflux::json::number(terraflux::json::field(doc,"version"));
   if(terraflux::json::string(terraflux::json::field(doc,"format"))!="terraflux.scene" ||
-     terraflux::json::number(terraflux::json::field(doc,"version"))!=1)
+     (version!=1 && version!=2))
     throw std::invalid_argument("unsupported TerraFlux scene document");
   const auto& nodes=array(terraflux::json::field(doc,"nodes"));
   if(nodes.empty() || nodes.size()>kMaxNodes)
     throw std::invalid_argument("scene node count must be 1..4096");
   Scene scene;
+  if(doc.contains("assets")) {
+    if(version!=2)throw std::invalid_argument("scene assets require version 2");
+    const auto& assets=terraflux::json::object(doc.at("assets"));
+    for(const auto& [name,path]:assets)
+      scene.declare_mesh_asset(name,terraflux::json::string(path));
+  }
   std::vector<NodeId> parents(nodes.size());
   std::vector<Transform> transforms(nodes.size());
   std::vector<bool> mesh_flags(nodes.size());
+  std::vector<std::optional<std::string>> mesh_assets(nodes.size());
   std::vector<std::optional<math::Vec3>> spin_components(nodes.size());
   std::vector<std::optional<math::Vec3>> motion_components(nodes.size());
   for(std::size_t id=0;id<nodes.size();++id) {
@@ -134,6 +157,17 @@ Scene deserialize_scene(const std::string& json_text) {
     (void)transforms[id].matrix();
     const auto it=obj.find("mesh_instance");
     mesh_flags[id]=it!=obj.end() && bool_value(it->second);
+    if(obj.contains("mesh_asset")) {
+      if(version!=2)throw std::invalid_argument("mesh_asset requires scene version 2");
+      mesh_assets[id]=terraflux::json::string(obj.at("mesh_asset"));
+      if(!scene.mesh_assets().contains(*mesh_assets[id]))
+        throw std::invalid_argument("unknown scene asset reference");
+      if(it!=obj.end() && !mesh_flags[id])
+        throw std::invalid_argument("mesh_asset conflicts with mesh_instance false");
+      mesh_flags[id]=true;
+    }
+    if(version==2 && mesh_flags[id] && !mesh_assets[id])
+      throw std::invalid_argument("version 2 mesh instances require mesh_asset");
     if(obj.contains("spin")) {
       auto v=vec3(obj,"spin");
       // Validate before modifying the scene.
@@ -159,6 +193,7 @@ Scene deserialize_scene(const std::string& json_text) {
   for(std::size_t id=0;id<nodes.size();++id){
     scene.set_transform(static_cast<NodeId>(id),transforms[id]);
     if(mesh_flags[id])scene.set_mesh_instance(static_cast<NodeId>(id),true);
+    if(mesh_assets[id])scene.set_mesh_asset(static_cast<NodeId>(id),*mesh_assets[id]);
     if(motion_components[id])
       scene.set_linear_velocity(static_cast<NodeId>(id),motion_components[id]);
     if(spin_components[id])

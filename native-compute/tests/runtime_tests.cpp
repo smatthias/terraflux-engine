@@ -91,7 +91,7 @@ void reject_invalid_scene() {
     return copy;
   };
   check(deserialize_scene(base).get(1).mesh_instance,"base scene parses");
-  rejects([&]{(void)deserialize_scene(replace("\"version\":1","\"version\":2"));},
+  rejects([&]{(void)deserialize_scene(replace("\"version\":1","\"version\":3"));},
           "unknown scene schema version rejected");
   rejects([&]{(void)deserialize_scene(replace("\"parent\":1","\"parent\":2"));},
           "self parent rejected");

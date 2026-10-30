@@ -425,3 +425,39 @@ upward at 0.05 units/s, so both children move together while spinning:
 Motion is unbounded constant velocity, not collision, physics or looping
 animation. Automated tests cover fixed-step determinism, combined Spin and
 Motion, hierarchy transforms, save/load continuation and invalid components.
+
+## Phase 8: Named OBJ scene assets (scene format version 2)
+
+Scene JSON can declare its own OBJ models and assign a different asset to
+any drawable node. Run the included scene without `--obj`:
+
+```bash
+./build-gl/terraflux-terrain-viewer --scene examples/asset_scene.json
+```
+
+Version 2 adds a top-level `"assets"` object mapping names to relative `.obj`
+paths and a `"mesh_asset"` name on each drawable node. Paths resolve from the
+scene file's directory, independent of the working directory. For example:
+
+```json
+"assets": {"pyramid": "assets/pyramid.obj"}
+```
+
+A node with `"mesh_asset": "pyramid"` draws that model; its existing TRS,
+Spin and Motion components continue working. Version 2 requires a named
+reference for every mesh instance. Existing version 1 scenes still work
+with `--obj`; asset scenes reject an extra `--obj` to avoid ambiguity.
+
+The loader bounds the registry to 128 names and each OBJ file to 64 MB,
+rejects missing files, unknown names, absolute paths, parent traversal and
+symlink escapes, and loads canonical path aliases once. Each unique OBJ
+shares one GPU geometry allocation across its nodes. Mesh bounds drive
+per-instance culling and material groups feed the existing instancing
+queue. MTL libraries resolve relative to their own OBJ files; material names
+are scoped per model to prevent collisions, and texture caching is retained.
+
+The fixture uses two source models and three instances, including a shared
+path alias. Tests cover schema roundtrips, legacy compatibility, deduplication,
+invalid references, file errors and path containment. This milestone supports
+OBJ scene references; glTF/GLB still use their authored hierarchies via `--gltf`.
+Dynamic loading/unloading and mixed OBJ/glTF scene references remain future work.

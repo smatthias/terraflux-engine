@@ -4,6 +4,7 @@
 #include <terraflux/graphics/resource_owner.hpp>
 #include <terraflux/graphics/visibility.hpp>
 #include <terraflux/assets/obj.hpp>
+#include <terraflux/assets/scene_assets.hpp>
 #include <terraflux/assets/gltf.hpp>
 #include <terraflux/assets/material.hpp>
 #include <terraflux/scene.hpp>
@@ -97,16 +98,16 @@ Options parse_args(int argc, char** argv) {
     else if (arg == "--texture" && i + 1 < argc) options.texture_file = argv[++i];
     else if (arg == "--scene" && i + 1 < argc) options.scene_file = argv[++i];
     else throw std::invalid_argument(
-        "usage: terraflux-terrain-viewer [--request request.json --response response.json] [--obj model.obj | --gltf model.gltf] [--texture texture.ppm] [--scene scene.json with --obj] [--profile] [--no-culling] [--no-instancing] [--asset-preview with --gltf] [--benchmark-frames 60] [--smoke-test]");
+        "usage: terraflux-terrain-viewer [--request request.json --response response.json] [--obj model.obj | --gltf model.gltf] [--texture texture.ppm] [--scene scene.json (legacy scenes require --obj)] [--profile] [--no-culling] [--no-instancing] [--asset-preview with --gltf] [--benchmark-frames 60] [--smoke-test]");
   }
   if (options.request_file.empty() != options.response_file.empty())
     throw std::invalid_argument("--request and --response must be provided together");
   if (!options.obj_file.empty() && !options.gltf_file.empty())
     throw std::invalid_argument("--obj and --gltf are mutually exclusive");
-  if (!options.texture_file.empty() && options.obj_file.empty() && options.gltf_file.empty())
-    throw std::invalid_argument("--texture requires --obj or --gltf");
-  if (!options.scene_file.empty() && options.obj_file.empty())
-    throw std::invalid_argument("--scene requires --obj; glTF already has authored scene nodes");
+  if (!options.texture_file.empty() && options.obj_file.empty() && options.gltf_file.empty() && options.scene_file.empty())
+    throw std::invalid_argument("--texture requires --obj, --gltf or --scene");
+  if (!options.scene_file.empty() && !options.gltf_file.empty())
+    throw std::invalid_argument("--scene cannot be combined with --gltf");
   if(options.benchmark_frames && options.smoke_test)
     throw std::invalid_argument("benchmark and smoke-test cannot run together");
   if(options.no_culling && !options.benchmark_frames && !options.profile)
@@ -195,6 +196,19 @@ terraflux::math::Mat4 update_camera(terraflux::graphics::RenderDevice& device,
 int main(int argc, char** argv) {
   try {
     const Options options = parse_args(argc, argv);
+    std::optional<terraflux::scene::Scene> loaded_scene;
+    terraflux::assets::SceneObjAssets scene_assets;
+    if(!options.scene_file.empty()) {
+      loaded_scene=terraflux::scene::deserialize_scene(read_file(options.scene_file));
+      if(loaded_scene->mesh_assets().empty()) {
+        if(options.obj_file.empty())throw std::invalid_argument("legacy --scene requires --obj");
+      }else{
+        if(!options.obj_file.empty())
+          throw std::invalid_argument("asset scenes declare their models; omit --obj");
+        scene_assets=terraflux::assets::load_scene_obj_assets(*loaded_scene,options.scene_file);
+      }
+    }
+    const bool asset_scene=!scene_assets.meshes.empty();
 
     std::optional<terraflux::replay::Playback> playback;
     std::optional<terraflux::compute::Grid> demo;
@@ -261,6 +275,7 @@ int main(int argc, char** argv) {
       struct SceneInstance {
         BufferHandle uniform;
         terraflux::scene::NodeId node=0;
+        std::uint32_t mesh_index=0;
       };
       std::vector<SceneInstance> scene_instances;
       terraflux::math::Mat4 scene_anchor=terraflux::math::Mat4::identity();
@@ -295,9 +310,10 @@ int main(int argc, char** argv) {
       terraflux::math::Vec3 local_center{};
     };
     std::optional<ImportedGpu> imported;
-    if (!options.obj_file.empty() || !options.gltf_file.empty()) {
+    if (!options.obj_file.empty() || !options.gltf_file.empty() || asset_scene) {
       const bool use_gltf=!options.gltf_file.empty();
-      const auto source_file=use_gltf?options.gltf_file:options.obj_file;
+      const auto source_file=use_gltf?options.gltf_file:
+          asset_scene?scene_assets.sources.front().string():options.obj_file;
       const auto source_folder=std::filesystem::path(source_file).parent_path();
       struct LocatedMaterial {
         terraflux::assets::Material material;
@@ -334,6 +350,32 @@ int main(int argc, char** argv) {
           node_worlds.emplace_back(instance.mesh_index,instance.world);
         for(const auto& [name,material]:asset.materials)
           material_files.emplace(name,LocatedMaterial{material,source_folder});
+      } else if(asset_scene) {
+        // Keep per-file material names distinct even when OBJ libraries reuse
+        // names. Each mesh and its material sections are uploaded only once.
+        for(std::size_t i=0;i<scene_assets.meshes.size();++i) {
+          auto& mesh=scene_assets.meshes[i];
+          const auto prefix="scene/"+std::to_string(i)+"/";
+          for(auto& section:mesh.sections)
+            if(!section.material_name.empty())section.material_name=prefix+section.material_name;
+          for(const auto& reference:mesh.material_libraries) {
+            const auto path=asset_path(scene_assets.sources[i].parent_path(),reference);
+            std::ifstream file(path);
+            if(!file)throw std::runtime_error("cannot open material library: "+path.string());
+            for(const auto& [name,material]:terraflux::assets::parse_mtl(file))
+              if(!material_files.emplace(prefix+name,LocatedMaterial{material,path.parent_path()}).second)
+                throw std::invalid_argument("duplicate material in scene asset: "+name);
+          }
+        }
+        object=std::move(scene_assets.meshes.front());
+        for(std::size_t i=1;i<scene_assets.meshes.size();++i)
+          extra_meshes.push_back(std::move(scene_assets.meshes[i]));
+        for(std::size_t id=1;id<loaded_scene->size();++id) {
+          const auto node=static_cast<terraflux::scene::NodeId>(id);
+          const auto& reference=loaded_scene->get(node).mesh_asset;
+          if(reference)node_worlds.emplace_back(scene_assets.mesh_indices.at(*reference),
+                                                loaded_scene->world_matrix(node));
+        }
       } else {
         std::ifstream model_file(options.obj_file);
         if (!model_file) throw std::runtime_error("cannot open OBJ "+options.obj_file);
@@ -354,7 +396,7 @@ int main(int argc, char** argv) {
       };
       auto min_pos=object.vertices.front().position;
       auto max_pos=min_pos;
-      if(use_gltf) {
+      if(use_gltf || asset_scene) {
         std::vector<std::pair<terraflux::math::Vec3,terraflux::math::Vec3>> bounds;
         for(std::size_t mesh_id=0;mesh_id<extra_meshes.size()+1;++mesh_id) {
           const auto& mesh=get_mesh(static_cast<std::uint32_t>(mesh_id));
@@ -383,7 +425,7 @@ int main(int argc, char** argv) {
             }
           }
         }
-        if(!initialized)throw std::invalid_argument("glTF scene contains no mesh instances");
+        if(!initialized)throw std::invalid_argument("asset scene contains no mesh instances");
       }else{
         for(const auto& vertex:object.vertices) {
           const auto& p=vertex.position;
@@ -414,7 +456,7 @@ int main(int argc, char** argv) {
                           (min_pos.z + max_pos.z)*0.5};
       if(!use_gltf && !options.scene_file.empty()) {
         obj.uses_scene_file=true;
-        obj.scene=terraflux::scene::deserialize_scene(read_file(options.scene_file));
+        obj.scene=std::move(*loaded_scene);
         obj.scene_anchor=terraflux::math::Mat4::translation(scene_camera.target) *
             terraflux::math::Mat4::scaling({scale,scale,scale}) *
             terraflux::math::Mat4::translation(obj.local_center*-1.0);
@@ -422,7 +464,8 @@ int main(int argc, char** argv) {
           const auto& node=obj.scene.get(static_cast<terraflux::scene::NodeId>(id));
           if(node.mesh_instance) {
             // Hold node identifiers until the corresponding UBOs are created.
-            obj.scene_instances.push_back({{},static_cast<terraflux::scene::NodeId>(id)});
+            const auto mesh_index=asset_scene?scene_assets.mesh_indices.at(*node.mesh_asset):0;
+            obj.scene_instances.push_back({{},static_cast<terraflux::scene::NodeId>(id),mesh_index});
           }
         }
         if(obj.scene_instances.empty() || obj.scene_instances.size()>1024)
@@ -858,8 +901,16 @@ int main(int argc, char** argv) {
           for(const auto& instance:imported->scene_instances) {
             const auto model=imported->scene_anchor*
                 imported->scene.world_matrix(instance.node);
-            enqueue(imported->vb,imported->ib,imported->sections,instance.uniform,
-                    model,imported->primary_bounds,{0.16,0.57,0.95});
+            auto vertex=imported->vb,index=imported->ib;
+            const auto* sections=&imported->sections;
+            auto bounds=imported->primary_bounds;
+            if(instance.mesh_index>0) {
+              const auto& mesh=imported->additional_meshes.at(instance.mesh_index-1);
+              vertex=mesh.vb;index=mesh.ib;sections=&mesh.sections;
+              bounds=imported->additional_bounds.at(instance.mesh_index-1);
+            }
+            enqueue(vertex,index,*sections,instance.uniform,
+                    model,bounds,{0.16,0.57,0.95});
           }
         }else {
           using terraflux::scene::Transform;

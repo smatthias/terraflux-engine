@@ -1,6 +1,7 @@
 #include <terraflux/scene.hpp>
 
 #include <cmath>
+#include <filesystem>
 #include <limits>
 #include <stdexcept>
 #include <utility>
@@ -24,7 +25,7 @@ math::Mat4 Transform::matrix() const {
          math::Mat4::scaling(scale);
 }
 
-Scene::Scene() { nodes_.push_back({root(), "Root", {}, false, std::nullopt, std::nullopt}); }
+Scene::Scene() { nodes_.push_back({root(), "Root", {}, false, std::nullopt, std::nullopt, std::nullopt}); }
 
 void Scene::check_node(NodeId id) const {
   if (id >= nodes_.size()) throw std::out_of_range("unknown scene node");
@@ -36,7 +37,7 @@ NodeId Scene::create_node(std::string name, NodeId parent) {
   if (nodes_.size() >= std::numeric_limits<NodeId>::max())
     throw std::overflow_error("scene node ID space exhausted");
   const auto id = static_cast<NodeId>(nodes_.size());
-  nodes_.push_back({parent, std::move(name), {}, false, std::nullopt, std::nullopt});
+  nodes_.push_back({parent, std::move(name), {}, false, std::nullopt, std::nullopt, std::nullopt});
   return id;
 }
 
@@ -61,6 +62,30 @@ void Scene::set_mesh_instance(NodeId node, bool enabled) {
   if (node == root() && enabled)
     throw std::invalid_argument("scene root cannot be a drawable mesh instance");
   nodes_[node].mesh_instance = enabled;
+  if(!enabled)nodes_[node].mesh_asset.reset();
+}
+
+void Scene::declare_mesh_asset(std::string name,std::string path) {
+  if(name.empty() || name.size()>128 || name.find('\0')!=std::string::npos)
+    throw std::invalid_argument("invalid scene asset name");
+  if(mesh_assets_.size()>=128 || mesh_assets_.contains(name))
+    throw std::invalid_argument("duplicate scene asset or asset limit exceeded");
+  const std::filesystem::path relative(path);
+  if(path.empty() || path.size()>1024 || path.find('\0')!=std::string::npos ||
+     path.find('\\')!=std::string::npos || path.find(':')!=std::string::npos ||
+     relative.has_root_path() || relative.extension()!=".obj")
+    throw std::invalid_argument("scene asset must be a relative .obj path");
+  for(const auto& part:relative)
+    if(part=="..")throw std::invalid_argument("scene asset parent traversal forbidden");
+  mesh_assets_.emplace(std::move(name),relative.lexically_normal().generic_string());
+}
+
+void Scene::set_mesh_asset(NodeId node,const std::string& name) {
+  check_node(node);
+  if(node==root())throw std::invalid_argument("scene root cannot reference a mesh asset");
+  if(!mesh_assets_.contains(name))throw std::invalid_argument("unknown scene mesh asset: "+name);
+  nodes_[node].mesh_asset=name;
+  nodes_[node].mesh_instance=true;
 }
 
 void Scene::set_angular_velocity(NodeId node, std::optional<math::Vec3> velocity) {
