@@ -268,6 +268,8 @@ int main(int argc, char** argv) {
         std::uint32_t first=0,count=0;
         TextureHandle albedo{};
         terraflux::math::Vec3 base_color{1,1,1};
+        BufferHandle pbr_uniform{};
+        float metallic=1,roughness=1;
       };
       std::map<std::string,TextureHandle> textures;
       std::vector<Section> sections;
@@ -424,10 +426,19 @@ int main(int argc, char** argv) {
         obj.scene.set_transform(obj.right_mesh, {
             obj.local_center * -1.0, {}, {1,1,1}});
       }
-      const auto cached_texture=[&](const std::filesystem::path& source) {
-        const std::string key=source.empty()?
+      const auto cached_texture=[&](const std::filesystem::path& source,
+                                     terraflux::TextureSampling sampling) {
+        const std::string path_key=source.empty()?
              (use_gltf?"__white__":"__checkerboard__"):
                               source.lexically_normal().generic_string();
+        // Samplers belong to texture objects: same image with different
+        // sampling settings must not alias one GL texture.
+        const auto& s=sampling;
+        const std::string key=path_key+"@"+
+            std::to_string(static_cast<int>(s.min))+":"+
+            std::to_string(static_cast<int>(s.mag))+":"+
+            std::to_string(static_cast<int>(s.wrap_s))+":"+
+            std::to_string(static_cast<int>(s.wrap_t));
         if(const auto it=obj.textures.find(key);it!=obj.textures.end())
           return it->second;
         terraflux::assets::ImageRgba8 image;
@@ -451,7 +462,7 @@ int main(int argc, char** argv) {
           }
         }
         const auto bytes=std::as_bytes(std::span(image.pixels));
-        const auto id=owned.create_texture2d({image.width,image.height},bytes);
+        const auto id=owned.create_texture2d({image.width,image.height,sampling},bytes);
         obj.textures.emplace(key,id);
         return id;
       };
@@ -460,20 +471,34 @@ int main(int argc, char** argv) {
         result.reserve(mesh.sections.size());
         for(const auto& section:mesh.sections) {
           terraflux::math::Vec3 color{1,1,1};
+          terraflux::TextureSampling sampling{};
+          double metallic=1,roughness=1;
           std::filesystem::path texture_file;
           if(!section.material_name.empty()) {
             const auto it=material_files.find(section.material_name);
             if(it==material_files.end())
               throw std::invalid_argument("undefined imported material: "+section.material_name);
             color=it->second.material.base_color;
+            sampling=it->second.material.albedo_sampling;
+            metallic=it->second.material.metallic_factor;
+            roughness=it->second.material.roughness_factor;
             if(!it->second.material.albedo_map.empty())
               texture_file=(use_gltf && gltf_images.contains(it->second.material.albedo_map))?
                   std::filesystem::path(it->second.material.albedo_map):
                   asset_path(it->second.folder,it->second.material.albedo_map);
           }
           if(!options.texture_file.empty())texture_file=options.texture_file;
-          const auto handle=cached_texture(texture_file);
-          result.push_back({section.first_index,section.index_count,handle,color});
+          const auto handle=cached_texture(texture_file,sampling);
+          BufferHandle pbr_uniform{};
+          if(use_gltf) {
+            PbrMaterialUniform pbr{};
+            pbr.factors={static_cast<float>(metallic),static_cast<float>(roughness),0,0};
+            const auto bytes=std::as_bytes(std::span(&pbr,1));
+            pbr_uniform=owned.create_buffer({BufferUsage::Uniform,bytes.size()},bytes);
+          }
+          result.push_back({section.first_index,section.index_count,handle,color,
+                            pbr_uniform,static_cast<float>(metallic),
+                            static_cast<float>(roughness)});
         }
         if(result.empty())throw std::invalid_argument("mesh has no drawable material sections");
         return result;
@@ -520,10 +545,13 @@ int main(int argc, char** argv) {
         obj.object_uniform_right = owned.create_buffer(
             {BufferUsage::Uniform,init_bytes.size()},init_bytes);
       }
-      obj.pipeline = owned.create_pipeline({textured_object_shader_layout(),true});
+      obj.pipeline = owned.create_pipeline({
+          use_gltf?pbr_textured_object_shader_layout(false):
+                   textured_object_shader_layout(),true});
       if(!options.no_instancing){
         obj.instanced_pipeline=owned.create_pipeline(
-            {instanced_textured_object_shader_layout(),true});
+            {use_gltf?pbr_textured_object_shader_layout(true):
+                      instanced_textured_object_shader_layout(),true});
         obj.instance_ring=std::make_unique<OpaqueRenderQueue::InstanceBufferRing>(device);
       }
       imported = std::move(obj);
@@ -661,6 +689,27 @@ int main(int argc, char** argv) {
       ++frame_draws;
       OpaqueRenderQueue draw_queue;
       std::size_t visible_instances=0,culled_instances=0;
+      if(imported && imported->is_gltf) {
+        // Keep view vector in material UBO, not the terrain camera UBO,
+        // whose 80-byte fire-grid layout is shared by existing shaders.
+        const auto& t=scene_camera.target;
+        const terraflux::math::Vec3 eye{
+          t.x+distance*std::sin(yaw)*std::cos(pitch),
+          t.y+distance*std::sin(pitch),
+          t.z+distance*std::cos(yaw)*std::cos(pitch)};
+        const auto upload_pbr=[&](const std::vector<ImportedGpu::Section>& sections) {
+          for(const auto& s:sections) {
+            PbrMaterialUniform pbr{};
+            pbr.factors={s.metallic,s.roughness,0,0};
+            pbr.eye={static_cast<float>(eye.x),static_cast<float>(eye.y),
+                     static_cast<float>(eye.z),1};
+            device.update_buffer(s.pbr_uniform,0,std::as_bytes(std::span(&pbr,1)));
+          }
+        };
+        upload_pbr(imported->sections);
+        for(const auto& mesh:imported->additional_meshes)
+          upload_pbr(mesh.sections);
+      }
       if (imported) {
         const auto frustum=Frustum::from_view_projection(camera_vp);
         // Opaque assets only. Terrain/fire passes retain original ordering.
@@ -678,9 +727,11 @@ int main(int argc, char** argv) {
             const auto& color=section.base_color;
             const auto material=make_object_uniform(model,{
                 tint.x*color.x,tint.y*color.y,tint.z*color.z});
+            std::vector<UniformBufferBinding> uniforms{{0,camera},{2,object_uniform}};
+            if(imported->is_gltf)uniforms.push_back({5,section.pbr_uniform});
             draw_queue.add({{imported->pipeline,vertex,index,
                 section.first,section.count,
-                {{0,camera},{2,object_uniform}},{},{{3,section.albedo}}},
+                std::move(uniforms),{},{{3,section.albedo}}},
                 object_uniform,material});
           }
         };
