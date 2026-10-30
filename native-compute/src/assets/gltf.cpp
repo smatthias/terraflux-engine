@@ -419,9 +419,32 @@ GltfModel import_gltf(const std::string& json_text,
     const auto key="gltf-image-"+std::to_string(i);
     result.images.emplace(key,decode_image(encoded,mime));
   }
+TextureMinFilter texture_min(std::size_t value){
+  switch(value){
+    case 9728:return TextureMinFilter::Nearest;
+    case 9729:return TextureMinFilter::Linear;
+    case 9984:return TextureMinFilter::NearestMipNearest;
+    case 9985:return TextureMinFilter::LinearMipNearest;
+    case 9986:return TextureMinFilter::NearestMipLinear;
+    case 9987:return TextureMinFilter::LinearMipLinear;
+    default:throw std::invalid_argument("unsupported glTF minFilter");
+  }
+}
+TextureMagFilter texture_mag(std::size_t value){
+  if(value==9728)return TextureMagFilter::Nearest;
+  if(value==9729)return TextureMagFilter::Linear;
+  throw std::invalid_argument("unsupported glTF magFilter");
+}
+TextureWrap texture_wrap(std::size_t value){
+  if(value==10497)return TextureWrap::Repeat;
+  if(value==33071)return TextureWrap::ClampToEdge;
+  if(value==33648)return TextureWrap::MirroredRepeat;
+  throw std::invalid_argument("unsupported glTF texture wrapping");
+}
   // Images are decoded by shared image index; texture objects can alias
   // the same source. Sampler overrides are limited to repeat/no-mip modes.
   std::vector<std::string> image_for_texture;
+  std::vector<TextureSampling> sampling_for_texture;
   if(texture_list)for(const auto& item:*texture_list){
     const auto& tex=object(item);
     if(optional(tex,"extensions"))
@@ -429,20 +452,21 @@ GltfModel import_gltf(const std::string& json_text,
     const auto index=uint(field(tex,"source"),"texture source");
     if(!image_list || index>=image_list->size())
       throw std::invalid_argument("glTF texture references missing image");
+    // glTF's defaults are LINEAR mag, LINEAR_MIPMAP_LINEAR min and REPEAT wrap.
+    TextureSampling sampling{TextureMinFilter::LinearMipLinear,
+                             TextureMagFilter::Linear,
+                             TextureWrap::Repeat,TextureWrap::Repeat};
     if(const auto* sampler_id=optional(tex,"sampler")) {
       const auto idx=uint(*sampler_id,"sampler");
       if(!samplers || idx>=samplers->size())
         throw std::invalid_argument("glTF texture references missing sampler");
       const auto& sampler=object((*samplers)[idx]);
-      // The current OpenGL path uses GL_NEAREST and GL_REPEAT without mipmaps.
-      // Refuse incompatible authoring choices rather than silently ignoring.
-      const auto wrap_s=integer(sampler,"wrapS",10497);
-      const auto wrap_t=integer(sampler,"wrapT",10497);
-      const auto min=integer(sampler,"minFilter",9728);
-      const auto mag=integer(sampler,"magFilter",9728);
-      if(wrap_s!=10497 || wrap_t!=10497 || min!=9728 || mag!=9728)
-        throw std::invalid_argument("glTF sampler requires unsupported filtering/wrapping");
+      sampling.min=texture_min(integer(sampler,"minFilter",9987));
+      sampling.mag=texture_mag(integer(sampler,"magFilter",9729));
+      sampling.wrap_s=texture_wrap(integer(sampler,"wrapS",10497));
+      sampling.wrap_t=texture_wrap(integer(sampler,"wrapT",10497));
     }
+    sampling_for_texture.push_back(sampling);
     image_for_texture.push_back("gltf-image-"+std::to_string(index));
   }
   const Json::Array* materials=nullptr;
@@ -472,6 +496,7 @@ GltfModel import_gltf(const std::string& json_text,
         if(integer(info,"texCoord")!=0 || optional(info,"extensions"))
           throw std::invalid_argument("only baseColorTexture TEXCOORD_0 supported");
         m.albedo_map=image_for_texture[index];
+        m.albedo_sampling=sampling_for_texture[index];
       }
       if(const auto* color=optional(po,"baseColorFactor")){
         const auto& values=array(*color);

@@ -116,7 +116,12 @@ void ValidatingRenderDevice::destroy_buffer(BufferHandle handle) {
 
 TextureHandle ValidatingRenderDevice::create_texture2d(
     TextureDesc desc, std::span<const std::byte> rgba8) {
-  if (!desc.width || !desc.height ||
+  const auto valid_min=static_cast<unsigned>(desc.sampling.min)<=5;
+  const auto valid_mag=static_cast<unsigned>(desc.sampling.mag)<=1;
+  const auto valid_wrap=static_cast<unsigned>(desc.sampling.wrap_s)<=2 &&
+                        static_cast<unsigned>(desc.sampling.wrap_t)<=2;
+  if(!valid_min || !valid_mag || !valid_wrap ||
+      !desc.width || !desc.height ||
       desc.width>4096 || desc.height>4096 ||
       static_cast<std::uint64_t>(desc.width)*desc.height>4'000'000 ||
       rgba8.size()!=static_cast<std::size_t>(desc.width)*desc.height*4)

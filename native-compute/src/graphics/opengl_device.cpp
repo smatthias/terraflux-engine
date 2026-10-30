@@ -62,6 +62,7 @@ struct GL {
   PFNGLACTIVETEXTUREPROC ActiveTexture = get_proc<PFNGLACTIVETEXTUREPROC>("glActiveTexture");
   PFNGLTEXIMAGE2DPROC TexImage2D = get_proc<PFNGLTEXIMAGE2DPROC>("glTexImage2D");
   PFNGLTEXPARAMETERIPROC TexParameteri = get_proc<PFNGLTEXPARAMETERIPROC>("glTexParameteri");
+  PFNGLGENERATEMIPMAPPROC GenerateMipmap = get_proc<PFNGLGENERATEMIPMAPPROC>("glGenerateMipmap");
   PFNGLDRAWELEMENTSPROC DrawElements = get_proc<PFNGLDRAWELEMENTSPROC>("glDrawElements");
   PFNGLDRAWELEMENTSINSTANCEDPROC DrawElementsInstanced =
       get_proc<PFNGLDRAWELEMENTSINSTANCEDPROC>("glDrawElementsInstanced");
@@ -602,6 +603,29 @@ void OpenGLRenderDevice::destroy_buffer(BufferHandle handle) {
   }
 }
 
+GLint gl_min_filter(TextureMinFilter filter) {
+  switch(filter){
+    case TextureMinFilter::Nearest:return GL_NEAREST;
+    case TextureMinFilter::Linear:return GL_LINEAR;
+    case TextureMinFilter::NearestMipNearest:return GL_NEAREST_MIPMAP_NEAREST;
+    case TextureMinFilter::LinearMipNearest:return GL_LINEAR_MIPMAP_NEAREST;
+    case TextureMinFilter::NearestMipLinear:return GL_NEAREST_MIPMAP_LINEAR;
+    case TextureMinFilter::LinearMipLinear:return GL_LINEAR_MIPMAP_LINEAR;
+  }
+  throw std::invalid_argument("unsupported texture min filter");
+}
+GLint gl_mag_filter(TextureMagFilter filter){
+  return filter==TextureMagFilter::Linear?GL_LINEAR:GL_NEAREST;
+}
+GLint gl_wrap(TextureWrap wrap){
+  switch(wrap){
+    case TextureWrap::Repeat:return GL_REPEAT;
+    case TextureWrap::ClampToEdge:return GL_CLAMP_TO_EDGE;
+    case TextureWrap::MirroredRepeat:return GL_MIRRORED_REPEAT;
+  }
+  throw std::invalid_argument("unsupported texture wrap");
+}
+
 TextureHandle OpenGLRenderDevice::create_texture2d(
     TextureDesc desc, std::span<const std::byte> rgba8) {
   const auto handle=impl_->validator.create_texture2d(desc,rgba8);
@@ -613,13 +637,14 @@ TextureHandle OpenGLRenderDevice::create_texture2d(
   }
   impl_->gl.BindTexture(GL_TEXTURE_2D,name);
   impl_->texture_units.clear(); // creation modifies the active texture unit
-  impl_->gl.TexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);
-  impl_->gl.TexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
-  impl_->gl.TexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_REPEAT);
-  impl_->gl.TexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_REPEAT);
+  impl_->gl.TexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,gl_min_filter(desc.sampling.min));
+  impl_->gl.TexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,gl_mag_filter(desc.sampling.mag));
+  impl_->gl.TexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,gl_wrap(desc.sampling.wrap_s));
+  impl_->gl.TexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,gl_wrap(desc.sampling.wrap_t));
   impl_->gl.TexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,
                         static_cast<GLsizei>(desc.width),static_cast<GLsizei>(desc.height),
                         0,GL_RGBA,GL_UNSIGNED_BYTE,rgba8.data());
+  if(desc.sampling.uses_mipmaps())impl_->gl.GenerateMipmap(GL_TEXTURE_2D);
   impl_->textures.emplace(handle.id,Impl::GpuTexture{name});
   return handle;
 }

@@ -1,5 +1,6 @@
 #pragma once
 #include <terraflux/math.hpp>
+#include <terraflux/texture_sampling.hpp>
 #include <cstdint>
 #include <istream>
 #include <span>
@@ -14,6 +15,7 @@ struct ImageRgba8 {
 struct Material {
   math::Vec3 base_color{1.0,1.0,1.0};
   std::string albedo_map;
+  TextureSampling albedo_sampling{};
   // Imported glTF PBR factors; current OpenGL renderer draws base color
   // only. These are preserved for a future metallic/roughness shader.
   double metallic_factor=1.0;

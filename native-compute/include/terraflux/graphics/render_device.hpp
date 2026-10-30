@@ -1,5 +1,6 @@
 #pragma once
 
+#include <terraflux/texture_sampling.hpp>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -58,6 +59,7 @@ struct TextureHandle {
 };
 struct TextureDesc {
   std::uint32_t width=0,height=0; // 4 channels, RGBA8
+  TextureSampling sampling{};
 };
 struct PipelineHandle {
   std::uint32_t id = 0;
