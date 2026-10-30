@@ -63,7 +63,73 @@ void verify(const TerrainMesh& source) {
     rejects<std::length_error>([&]{build_terrain_lods(source,options);});
   }
 }
+TerrainMesh patch_mesh(int width=5,int height=5,int offset=0) {
+  std::vector<compute::GridCell> cells;
+  for(int y=0;y<height;++y)for(int x=0;x<width;++x) {
+    compute::GridCell c{};c.x=offset+x;c.y=offset+y;
+    c.elevation_meters=x*x+y*y;c.fuel_load=1;cells.push_back(c);
+  }
+  return build_terrain_mesh(compute::Grid(cells),30);
+}
+void patch_eligibility() {
+  using S=TerrainLodPatchStatus;
+  const auto check=[](const TerrainMesh& m,S status) {
+    const auto r=analyze_terrain_lod_patches(m);
+    require(r.size()==1 && r[0].status==status,"patch classification");
+  };
+  const auto full=patch_mesh();const auto original=full;
+  check(full,S::Eligible);same_mesh(full,original);
+  auto cyclic=full;
+  for(std::size_t i=0;i<cyclic.indices.size();i+=3)
+    std::rotate(cyclic.indices.begin()+i,cyclic.indices.begin()+i+1,cyclic.indices.begin()+i+3);
+  check(cyclic,S::Eligible);
+  auto reversed=full;std::swap(reversed.indices[0],reversed.indices[1]);
+  check(reversed,S::NoncanonicalTopology);
+  auto missing=full;missing.indices.erase(missing.indices.begin(),missing.indices.begin()+3);
+  check(missing,S::Incomplete);
+  auto hole=full;hole.indices.clear();
+  for(std::size_t i=0;i<full.indices.size();i+=3)
+    if(full.indices[i]!=12 && full.indices[i+1]!=12 && full.indices[i+2]!=12)
+      hole.indices.insert(hole.indices.end(),full.indices.begin()+i,full.indices.begin()+i+3);
+  check(hole,S::Incomplete);
+  auto reordered=full;
+  for(std::size_t i=0;i<full.indices.size()/2;i+=3)
+    for(std::size_t j=0;j<3;++j)
+      std::swap(reordered.indices[i+j],reordered.indices[full.indices.size()-i-3+j]);
+  check(reordered,S::Eligible);
+  auto duplicate=full;std::copy_n(duplicate.indices.begin(),3,duplicate.indices.begin()+3);
+  check(duplicate,S::NoncanonicalTopology);
+  auto diagonal=full;
+  diagonal.indices[0]=0;diagonal.indices[1]=1;diagonal.indices[2]=6;
+  diagonal.indices[3]=0;diagonal.indices[4]=6;diagonal.indices[5]=5;
+  check(diagonal,S::NoncanonicalTopology);
+  auto irregular=full;irregular.vertices[12].position.x+=0.01;
+  check(irregular,S::IrregularCoordinates);
+  auto alias=full;alias.vertices.push_back(alias.vertices[1]);
+  alias.indices[1]=static_cast<std::uint32_t>(alias.vertices.size()-1);
+  check(alias,S::NoncanonicalTopology);
+  check(patch_mesh(4,5),S::Incomplete);
+  check(patch_mesh(5,5,std::numeric_limits<std::int32_t>::max()-4),S::Eligible);
+  check(patch_mesh(5,5,std::numeric_limits<std::int32_t>::min()),S::Eligible);
+  const auto multiple=analyze_terrain_lod_patches(patch_mesh(10,6),TerrainTileOptions{5});
+  require(multiple.size()==6,"nonempty partial patch reports only");
+  std::size_t eligible=0;
+  for(std::size_t i=0;i<multiple.size();++i) {
+    eligible+=multiple[i].status==S::Eligible;
+    if(i)require(multiple[i-1].tile_index<multiple[i].tile_index ||
+      (multiple[i-1].tile_index==multiple[i].tile_index &&
+       std::pair{multiple[i-1].patch_y,multiple[i-1].patch_x}<
+       std::pair{multiple[i].patch_y,multiple[i].patch_x}),"stable report order");
+  }
+  require(eligible==2,"eligible patches remain independent of partial edges");
+  require(analyze_terrain_lod_patches(TerrainMesh{}).empty(),"no records for empty space");
+  const auto tiny=analyze_terrain_lod_patches(full,TerrainTileOptions{1});
+  require(tiny.size()==16 && std::all_of(tiny.begin(),tiny.end(),[](auto p){return p.status==S::Incomplete;}),"one-quad tiles fall back");
+  TerrainTileOptions cap;cap.max_tiles=0;
+  rejects<std::length_error>([&]{analyze_terrain_lod_patches(full,cap);});
+}
 void run() {
+  patch_eligibility();
   std::vector<compute::GridCell> cells;
   for(int y=0;y<7;++y)for(int x=0;x<8;++x) {
     if(x==3 && y==3)continue;
