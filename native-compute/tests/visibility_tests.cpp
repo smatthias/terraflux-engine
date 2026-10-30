@@ -127,10 +127,67 @@ void hardware_instance_batching() {
   invalid.instance_count=0;
   rejected([&]{device.draw_indexed(invalid);},"zero instances rejected");
 }
+
+void streaming_instance_ring() {
+  graphics::ValidatingRenderDevice device;
+  graphics::RenderResourceOwner owner(device);
+  std::array<std::byte,32*3> vertices{};
+  std::array<std::byte,6*4> indices{};
+  std::array<std::byte,64> camera{};
+  std::array<std::byte,144> uniform{};
+  std::array<std::byte,4> texture{};
+  const auto vb=owner.create_buffer({graphics::BufferUsage::Vertex,vertices.size()},vertices);
+  const auto ib=owner.create_buffer({graphics::BufferUsage::Index,indices.size()},indices);
+  const auto cb=owner.create_buffer({graphics::BufferUsage::Uniform,camera.size()},camera);
+  const auto u1=owner.create_buffer({graphics::BufferUsage::Uniform,uniform.size()},uniform);
+  const auto tex=owner.create_texture2d({1,1},texture);
+  const auto flat=owner.create_pipeline({graphics::textured_object_shader_layout(),true});
+  const auto instanced=owner.create_pipeline({graphics::instanced_textured_object_shader_layout(),true});
+  const auto add_scene=[&](graphics::OpaqueRenderQueue& queue,std::uint32_t count) {
+    for(std::uint32_t i=0;i<count;++i){
+      graphics::PreparedDraw draw;
+      draw.command={flat,vb,ib,0,6,{{0,cb},{2,u1}},{},{{3,tex}}};
+      draw.object_uniform=u1;
+      draw.material=graphics::make_object_uniform(
+          math::Mat4::translation({static_cast<double>(i),0,0}),{1,1,1});
+      queue.add(std::move(draw));
+    }
+  };
+  {
+    graphics::OpaqueRenderQueue::InstanceBufferRing ring(device);
+    rejected([&]{(void)ring.acquire(1);},"ring acquire requires begin_frame");
+    std::vector<graphics::BufferHandle> handles;
+    for(int frame=0;frame<4;++frame){
+      graphics::OpaqueRenderQueue queue;
+      add_scene(queue,8);
+      const auto stats=queue.submit_instanced_streamed(device,instanced,ring,3);
+      check(stats.submitted==3 && stats.instances==8,"ring preserves 3+3+2 instancing");
+      check(ring.live_buffers()==static_cast<std::size_t>(std::min(frame+1,3)*3),
+            "ring allocates independent per-frame group storage");
+      if(frame==3)check(ring.orphan_count()==3,"first reused frame orphans all groups");
+    }
+    // The fourth frame returned to slot 0. A larger group causes safe
+    // replacement of its storage buffer without unbounded live resources.
+    ring.begin_frame();
+    const auto old_count=ring.live_buffers();
+    const auto buffer=ring.acquire(16);
+    check(static_cast<bool>(buffer) && ring.live_buffers()==old_count,
+          "stream slot grows in place on increased instance count");
+    rejected([&]{(void)ring.acquire(0);},"zero instance batch rejected");
+  }
+  check(device.live_buffer_count()==4,"ring destructor frees all stream buffers");
+  const auto persistent=owner.create_buffer({graphics::BufferUsage::Storage,uniform.size()},uniform);
+  rejected([&]{device.orphan_storage_buffer(u1);},
+           "cannot orphan non-storage buffer");
+  device.orphan_storage_buffer(persistent);
+  device.update_buffer(persistent,0,std::as_bytes(std::span(uniform)));
+  // Destroyed resources are rejected by validation after the owner closes.
+}
 }
 int main(){
   try{frustum_and_scaled_bounds();batch_order_and_draw_validation();
     hardware_instance_batching();
-    std::cout<<"TerraFlux visibility: 3 test groups passed\n";
+    streaming_instance_ring();
+    std::cout<<"TerraFlux visibility: 4 test groups passed\n";
   }catch(const std::exception&e){std::cerr<<"visibility tests: "<<e.what()<<'\n';return 1;}
 }

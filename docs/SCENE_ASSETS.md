@@ -282,3 +282,21 @@ The existing culling A/B script forces legacy per-object rendering to isolate
 culling from instancing. Per-instance GPU buffer updates still occur for
 each distinct draw group: persistent mapped instance-buffer streaming,
 indirect draws and multi-material instancing remain future optimizations.
+
+
+## Phase 9: Triple-frame SSBO streaming
+
+Hardware instancing now uses a **three-frame ring** of GPU storage buffers.
+Each material/mesh draw group in a frame has its own buffer, so a later
+submission cannot overwrite object transforms still needed by an earlier
+draw. On reuse, OpenGL calls `glBufferData(..., nullptr, GL_STREAM_DRAW)` to
+orphan the previous storage allocation before writing fresh instance data.
+There is no explicit GPU wait or CPU-side mapping. Buffer capacity grows
+only when a group exceeds its previous size; old buffers are destroyed,
+and all ring-owned buffers are released on viewer shutdown or an exception.
+
+`--no-instancing` still selects the legacy per-object draw path. The
+`BENCHMARK_JSON` output includes `stream_buffers` and `stream_orphans` for
+diagnosing ring reuse and allocation behavior. OpenGL driver internals may
+still impose costs; measure real GPU performance rather than assuming
+faster frame times from streaming alone.

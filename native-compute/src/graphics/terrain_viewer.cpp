@@ -277,7 +277,7 @@ int main(int argc, char** argv) {
       };
       std::vector<AdditionalMesh> additional_meshes;
       PipelineHandle pipeline,instanced_pipeline;
-      BufferHandle instance_storage;
+      std::unique_ptr<OpaqueRenderQueue::InstanceBufferRing> instance_ring;
       std::uint32_t indices = 0;
       terraflux::scene::Scene scene;
       terraflux::scene::NodeId left_pivot = 0, right_pivot = 0;
@@ -508,10 +508,7 @@ int main(int argc, char** argv) {
       if(!options.no_instancing){
         obj.instanced_pipeline=owned.create_pipeline(
             {instanced_textured_object_shader_layout(),true});
-        constexpr std::size_t kMaxBatch=256;
-        std::vector<ObjectUniform> empty(kMaxBatch);
-        const auto bytes=std::as_bytes(std::span(empty));
-        obj.instance_storage=owned.create_buffer({BufferUsage::Storage,bytes.size()},bytes);
+        obj.instance_ring=std::make_unique<OpaqueRenderQueue::InstanceBufferRing>(device);
       }
       imported = std::move(obj);
       std::size_t triangle_count=imported->indices/3;
@@ -711,8 +708,8 @@ int main(int argc, char** argv) {
         }
       }
       const auto queue_stats=(imported && !options.no_instancing)?
-          draw_queue.submit_instanced(device,imported->instanced_pipeline,
-                                      imported->instance_storage,256):
+          draw_queue.submit_instanced_streamed(device,imported->instanced_pipeline,
+                                               *imported->instance_ring,256):
           draw_queue.submit(device);
       frame_draws+=static_cast<std::uint32_t>(queue_stats.submitted);
       if(options.smoke_test || (options.profile && profile_frames%120==0)) {
@@ -783,6 +780,10 @@ int main(int argc, char** argv) {
                 <<",\"gpu_max_ms\":"<<gpu.max_ms
                 <<",\"gpu_samples\":"<<gpu.samples
                 <<",\"gpu_skipped\":"<<gpu.skipped
+                <<",\"stream_buffers\":"<<(imported && imported->instance_ring?
+                     imported->instance_ring->live_buffers():0)
+                <<",\"stream_orphans\":"<<(imported && imported->instance_ring?
+                     imported->instance_ring->orphan_count():0)
                 <<",\"draws_per_frame\":"<<static_cast<double>(benchmark_draws)/n
                 <<",\"visible_per_frame\":"<<static_cast<double>(benchmark_visible)/n
                 <<",\"culled_per_frame\":"<<static_cast<double>(benchmark_culled)/n
@@ -793,6 +794,9 @@ int main(int argc, char** argv) {
                 <<gpu.min_ms<<" ms min, "<<gpu.max_ms<<" ms max ("
                 <<gpu.samples<<" samples, "<<gpu.skipped<<" skipped)\n";
     }
+    // Explicitly drain streamed SSBO allocations before other resources
+    // and before releasing the current OpenGL context.
+    if(imported)imported->instance_ring.reset();
     // Owned GPU resources release before OpenGL context teardown.
     owned.reset();
     if(options.smoke_test) {
