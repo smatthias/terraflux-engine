@@ -149,7 +149,7 @@ implementation percentages remain unchanged.
 1. Execute hardware smoke checks and record GPU/driver/results.
 2. Run the interactive hardware review, including resize and lifecycle controls.
 3. Run repeated hardware benchmarks and record frame-time and resource behavior.
-4. Implement level-0 preservation and eligible CPU LOD patch generation.
+4. Implement eligible CPU LOD patch generation; exact level-0 preservation is complete.
 5. Add geometric error, seam/hole invariants and aggregate-budget tests.
 6. Integrate LOD selection with transactional terrain residency.
 7. Verify LOD rendering, layer isolation and replay across direct/offscreen paths.
@@ -168,6 +168,14 @@ checks passing. The separate proprietary GeoSentinel3D application and its data
 are outside this repository's scope. Main/PR merge decisions remain separate
 from this checkpoint; no release or deployment is implied.
 
+
+## Follow-up implementation
+
+The branch now adds the CPU LOD level-0 foundation with exact geometry/source-map
+preservation and a combined logical recipe-byte cap. It registers a sixteenth
+native suite. The pinned checkpoint and its 15-suite evidence above remain
+historical; they do not certify this later change. Simplification and GPU LOD
+selection remain pending. See [LOD implementation status](TERRAIN_LOD.md).
 
 ## Implementation references
 
