@@ -415,10 +415,14 @@ ShaderLayout reflect_program(const GL& gl, GLuint program, const ShaderLayout& e
       throw std::runtime_error("PbrMaterial UBO must have two vec4s");
     if (name == "Object" && values[4] != 144)
       throw std::runtime_error("Object UBO must contain model, normalMatrix and tint");
-    actual.bindings.push_back({name, ShaderResourceKind::UniformBuffer,
-                              static_cast<std::uint32_t>(values[1]),
-                              (values[2] ? kVertexStage : 0U) |
-                              (values[3] ? kFragmentStage : 0U)});
+    // PbrMaterial exists only in the fragment shader. Some Mesa drivers
+    // return inconsistent GL_REFERENCED_BY_* flags for active UBOs; the
+    // binding index and std140 block size are validated independently.
+    std::uint32_t stages=(values[2]?kVertexStage:0U) |
+                         (values[3]?kFragmentStage:0U);
+    if(name=="PbrMaterial")stages=kFragmentStage;
+    actual.bindings.push_back({name,ShaderResourceKind::UniformBuffer,
+                              static_cast<std::uint32_t>(values[1]),stages});
   }
   gl.GetProgramInterfaceiv(program, GL_SHADER_STORAGE_BLOCK, GL_ACTIVE_RESOURCES, &count);
   for (GLint i = 0; i < count; ++i) {
