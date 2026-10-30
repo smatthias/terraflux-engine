@@ -1,4 +1,6 @@
 #include <terraflux/graphics/render_device.hpp>
+#include <terraflux/graphics/terrain_upload.hpp>
+#include <terraflux/graphics/mesh_upload.hpp>
 
 #include <algorithm>
 #include <cstring>
@@ -193,10 +195,30 @@ void ValidatingRenderDevice::destroy_texture(TextureHandle handle) {
     throw std::invalid_argument("unknown or destroyed texture");
 }
 
-PipelineHandle ValidatingRenderDevice::create_pipeline(PipelineDesc desc) {
-  if(desc.alpha_blend && (!desc.depth_test || desc.depth_write))
-    throw std::invalid_argument("transparent pipeline requires depth test and disabled depth writes");
+ShaderLayout shader_program_layout(ShaderProgramId program) {
+  switch(program) {
+    case ShaderProgramId::Terrain:return terrain_shader_layout();
+    case ShaderProgramId::Wildfire:return wildfire_shader_layout();
+    case ShaderProgramId::Object:return object_shader_layout();
+    case ShaderProgramId::TexturedObject:return textured_object_shader_layout();
+    case ShaderProgramId::InstancedTexturedObject:return instanced_textured_object_shader_layout();
+    case ShaderProgramId::PbrObject:return pbr_textured_object_shader_layout(false);
+    case ShaderProgramId::PbrInstanced:return pbr_textured_object_shader_layout(true);
+    default:throw std::invalid_argument("shader program has no built-in layout");
+  }
+}
+void validate_pipeline_desc(const PipelineDesc& desc,bool allow_contract_only) {
   validate_shader_layout(desc.layout);
+  if(desc.alpha_blend && (!desc.depth_test || desc.depth_write || desc.program!=ShaderProgramId::PbrObject))
+    throw std::invalid_argument("transparent pipeline requires noninstanced PBR, depth testing and no depth writes");
+  if(desc.program==ShaderProgramId::ContractOnly) {
+    if(!allow_contract_only)throw std::invalid_argument("contract-only shader program cannot render on a GPU");
+    return;
+  }
+  validate_shader_reflection(shader_program_layout(desc.program),desc.layout);
+}
+PipelineHandle ValidatingRenderDevice::create_pipeline(PipelineDesc desc) {
+  validate_pipeline_desc(desc);
   const auto id = allocate_id();
   pipelines_.emplace(id, std::move(desc));
   return {id};

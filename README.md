@@ -231,6 +231,17 @@ the configured state file. Full asset unload retains the last residency snapshot
 for saving. Budgets, animation time, runtime transforms and camera state are not
 saved; the fingerprint is a compatibility check, not an asset-integrity signature.
 
+### Explicit pipeline shader identities
+
+`PipelineDesc` now starts with a required `ShaderProgramId`, followed by layout
+and depth/blend state. Built-in identities cover terrain, wildfire, untextured
+objects, textured objects, instanced textured objects and both PBR variants.
+Layout metadata is validated against the selected contract; binding names do
+not select or redirect shader source. Missing/unknown IDs and mismatched layouts
+reject before backend compilation. `ContractOnly` exists for CPU validation tests
+and cannot render through OpenGL. See the [pipeline contract](docs/GRAPHICS_BACKENDS.md#explicit-shader-program-identities)
+for migration and remaining module/render-pass work.
+
 ### Wildfire replay and runtime checks
 
 ```bash
@@ -497,16 +508,16 @@ hours or release-readiness guarantees. The PS4 backend is unimplemented.
 
 | Desktop engine — Phases 1–9 | Full roadmap including PS4 |
 | --- | --- |
-| **~83%** (previously ~82%) | **~54%** (previously ~53%) |
+| **~84%** (previously ~83%) | **~55%** (previously ~54%) |
 
 | Phase | Component | Estimated completion |
 | --- | --- | ---: |
 | 1 | Core extraction | 100% |
-| 2 | Rendering abstraction | 65% |
+| 2 | Rendering abstraction | ~72% (previously 65%) |
 | 3 | OpenGL backend | 85% |
 | 4 | 3D terrain renderer | 75% |
 | 5 | Simulation visualization | 65% |
-| 6 | Shader system | 76% |
+| 6 | Shader system | ~80% (previously 76%) |
 | 7 | Scene and asset system | ~90% (previously 86%) |
 | 8 | Engine runtime | ~86% |
 | 9 | Performance | ~75% (previously ~70%) |
@@ -523,7 +534,8 @@ OBJ, glTF, GLB, transparent materials and repeated model references. Native test
 CTest suites and 71 simulation parity fixtures; CI also exercises the viewer
 under Mesa/Xvfb. See the branch's CI results for validation of each commit.
 
-Next planned implementation: explicit shader/pipeline identity in the rendering abstraction.
+Latest abstraction increment: explicit shader/pipeline identities with shared layout validation.
+Next planned implementation: backend-neutral render-target and pass descriptions.
 See the [prioritized gaps and acceptance criteria](docs/ENGINE_BASELINE.md#remaining-renderer-work-in-priority-order). GPU meshes are created on demand; CPU model data
 and decoded image recipes remain eager and retained for reattachment. Asynchronous streaming, skeletal animation
 and full glTF/IBL support remain future work.

@@ -316,6 +316,7 @@ int main(int argc, char** argv) {
     const auto camera_bytes = std::as_bytes(std::span(initial_camera));
     const auto camera = owned.create_buffer({BufferUsage::Uniform, camera_bytes.size()}, camera_bytes);
     const auto pipeline = owned.create_pipeline({
+        playback?ShaderProgramId::Wildfire:ShaderProgramId::Terrain,
         playback ? wildfire_shader_layout() : terrain_shader_layout(), true});
 
     // Two independent world transforms share the original asset VBO/IBO.
@@ -757,14 +758,16 @@ int main(int argc, char** argv) {
               {BufferUsage::Uniform,init_bytes.size()},init_bytes);
         }
         obj.pipeline = asset_owned.create_pipeline({
+            use_pbr?ShaderProgramId::PbrObject:ShaderProgramId::TexturedObject,
             use_pbr?pbr_textured_object_shader_layout(false):
                      textured_object_shader_layout(),true});
         if(use_pbr)
           obj.transparent_pipeline=asset_owned.create_pipeline({
-              pbr_textured_object_shader_layout(false),true,true,false});
+              ShaderProgramId::PbrObject,pbr_textured_object_shader_layout(false),true,true,false});
         if(!options.no_instancing){
           obj.instanced_pipeline=asset_owned.create_pipeline(
-              {use_pbr?pbr_textured_object_shader_layout(true):
+              {use_pbr?ShaderProgramId::PbrInstanced:ShaderProgramId::InstancedTexturedObject,
+               use_pbr?pbr_textured_object_shader_layout(true):
                         instanced_textured_object_shader_layout(),true});
           obj.instance_ring=std::make_unique<OpaqueRenderQueue::InstanceBufferRing>(device);
         }

@@ -40,8 +40,8 @@ ShaderLayout. Vertex stride and offsets are *not* properties that OpenGL
 shader reflection exposes: they are validated from the declared layout and
 configured in the vertex array. The backend also supports object and PBR pipelines, texture sampling,
 material uniforms, storage buffers, transparency and indexed instancing.
-Shader source selection remains coupled to the built-in layout families;
-explicit pipeline shader identity is a remaining abstraction gap.
+Shader source selection now uses explicit engine program IDs. Built-in GLSL
+remains embedded in the backend; external shader-module support is still pending.
 
 The GLFW demo creates a procedural elevation grid using the existing compute
 types, builds the shared TerrainMesh, uploads GPU buffers and renders the mesh
@@ -131,3 +131,45 @@ wide sparse grids should later be tiled rather than allocating unbounded GPU
 buffers. The OpenGL backend reflects `GL_SHADER_STORAGE_BLOCK` alongside
 vertex attributes and uniform blocks. This API remains a desktop GPU backend;
 the PS4/PSSL shader can later consume the same declared `FireState` layout.
+
+
+## Explicit shader program identities
+
+`ShaderProgramId` is a backend-neutral engine identity, not a GL program handle.
+`PipelineDesc` declares it explicitly before the shader layout and depth/blend
+state. The built-in contract registry maps each identity to its expected layout;
+the OpenGL backend maps the same identity to the appropriate GLSL stages.
+No resource-name scan chooses a shader family. Compiled-driver reflection still
+checks the resulting program against the declared layout.
+
+```cpp
+using namespace terraflux::graphics;
+auto pipeline = device.create_pipeline({
+    ShaderProgramId::Terrain, terrain_shader_layout(), true});
+```
+
+| Identity | Contract |
+| --- | --- |
+| Terrain | Terrain vertex layout and camera uniform |
+| Wildfire | Terrain upload stride, camera and FireState storage |
+| Object | Local untextured geometry and object uniform |
+| TexturedObject | Textured local geometry, object uniform and albedo sampler |
+| InstancedTexturedObject | Textured geometry with InstanceData storage |
+| PbrObject | Textured per-object PBR material/resources; optional sorted alpha blend |
+| PbrInstanced | Opaque instanced PBR material/resources |
+| ContractOnly | CPU validation of custom layouts; rejected by GPU creation |
+
+Unspecified and unknown IDs reject. A declared built-in must match its full
+layout (stride, attribute format/offset/location and binding name/kind/slot/
+stages), independent of declaration order. Transparent blending requires
+PbrObject with depth testing enabled and depth writes disabled; transparent
+instancing remains unsupported. Both devices use the shared descriptor validator
+before allocating a pipeline handle; OpenGL also rejects ContractOnly before
+compilation. Existing callers must supply an identity when constructing a
+PipelineDesc; there is deliberately no automatic layout-based fallback.
+
+This increment replaces the checkpoint's implicit shader-selection gap. It does
+not add runtime shader compilation inputs, file hot reload, arbitrary shader
+modules, render targets/passes or PS4/PSSL support. Native tests cover all built-in
+identities, invalid/missing IDs, layout mismatch, metadata ordering and contract-only
+boundaries; existing Mesa paths exercise actual compile/link/reflection and draws.

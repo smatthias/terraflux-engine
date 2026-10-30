@@ -816,71 +816,24 @@ void OpenGLRenderDevice::destroy_texture(TextureHandle handle) {
 }
 
 PipelineHandle OpenGLRenderDevice::create_pipeline(PipelineDesc desc) {
-  validate_shader_layout(desc.layout);
-  const bool wildfire = std::any_of(desc.layout.bindings.begin(), desc.layout.bindings.end(),
-      [](const ShaderBinding& binding) {
-        return binding.kind == ShaderResourceKind::StorageBuffer &&
-               binding.name == "FireState";
-      });
-  const bool object = std::any_of(desc.layout.bindings.begin(), desc.layout.bindings.end(),
-      [](const ShaderBinding& binding) {
-        return binding.kind == ShaderResourceKind::UniformBuffer &&
-               binding.name == "Object" && binding.slot == 2;
-      });
-  const bool instanced = std::any_of(desc.layout.bindings.begin(),desc.layout.bindings.end(),
-      [](const ShaderBinding& binding) {
-        return binding.kind==ShaderResourceKind::StorageBuffer &&
-               binding.name=="InstanceData" && binding.slot==4;
-      });
-  const bool pbr = std::any_of(desc.layout.bindings.begin(),desc.layout.bindings.end(),
-      [](const ShaderBinding& binding) {
-        return binding.kind==ShaderResourceKind::UniformBuffer &&
-               binding.name=="PbrMaterial" && binding.slot==5;
-      });
-  const bool textured = std::any_of(desc.layout.bindings.begin(), desc.layout.bindings.end(),
-      [](const ShaderBinding& binding) {
-        return binding.kind==ShaderResourceKind::SampledTexture &&
-               binding.name=="AlbedoTexture" && binding.slot==3;
-      });
-  if(desc.alpha_blend && (!desc.depth_test || desc.depth_write || !pbr || instanced))
-    throw std::invalid_argument("OpenGL alpha blending requires noninstanced PBR and depth test");
-  if (textured && !object && !instanced)
-    throw std::invalid_argument("textured pipeline requires Object or InstanceData");
-  if(pbr && (!textured || wildfire))
-    throw std::invalid_argument("PBR requires textured object pipeline");
-  if(instanced && (!textured || object || wildfire))
-    throw std::invalid_argument("instancing requires textured geometry and no per-object UBO");
-  if (object && wildfire)
-    throw std::invalid_argument("object and fire shaders are separate pipelines");
-  for (const auto& binding : desc.layout.bindings)
-    if (binding.kind != ShaderResourceKind::UniformBuffer &&
-        !(textured && binding.kind == ShaderResourceKind::SampledTexture &&
-          binding.name=="AlbedoTexture") &&
-        !(pbr && binding.kind==ShaderResourceKind::SampledTexture &&
-          (binding.name=="MetallicRoughnessTexture" ||
-           binding.name=="NormalTexture" ||
-           binding.name=="OcclusionTexture" ||
-           binding.name=="EmissiveTexture")) &&
-        !(instanced && binding.kind==ShaderResourceKind::StorageBuffer &&
-          binding.name=="InstanceData" && binding.slot==4) &&
-        !(wildfire && binding.kind == ShaderResourceKind::StorageBuffer &&
-          binding.name == "FireState"))
-      throw std::invalid_argument("unsupported OpenGL shader resource");
+  validate_pipeline_desc(desc,false);
+  const char* vertex_source=nullptr;
+  const char* fragment_source=nullptr;
+  switch(desc.program) {
+    case ShaderProgramId::Terrain:vertex_source=kVertexShader;fragment_source=kFragmentShader;break;
+    case ShaderProgramId::Wildfire:vertex_source=kFireVertexShader;fragment_source=kFireFragmentShader;break;
+    case ShaderProgramId::Object:vertex_source=kObjectVertexShader;fragment_source=kObjectFragmentShader;break;
+    case ShaderProgramId::TexturedObject:vertex_source=kTexturedVertexShader;fragment_source=kTexturedFragmentShader;break;
+    case ShaderProgramId::InstancedTexturedObject:vertex_source=kInstancedTexturedVertexShader;fragment_source=kTexturedFragmentShader;break;
+    case ShaderProgramId::PbrObject:vertex_source=kPbrTexturedVertexShader;fragment_source=kPbrFragmentShader;break;
+    case ShaderProgramId::PbrInstanced:vertex_source=kPbrInstancedVertexShader;fragment_source=kPbrFragmentShader;break;
+    default:throw std::invalid_argument("unsupported OpenGL shader program identity");
+  }
 
   GLuint vertex = 0, fragment = 0, program = 0, vao = 0;
   try {
-    vertex = compile_shader(impl_->gl, GL_VERTEX_SHADER,
-                            wildfire ? kFireVertexShader :
-                            pbr && instanced ? kPbrInstancedVertexShader :
-                            pbr ? kPbrTexturedVertexShader :
-                            instanced ? kInstancedTexturedVertexShader :
-                            textured ? kTexturedVertexShader :
-                            object ? kObjectVertexShader : kVertexShader);
-    fragment = compile_shader(impl_->gl, GL_FRAGMENT_SHADER,
-                              wildfire ? kFireFragmentShader :
-                              pbr ? kPbrFragmentShader :
-                              textured ? kTexturedFragmentShader :
-                              object ? kObjectFragmentShader : kFragmentShader);
+    vertex = compile_shader(impl_->gl,GL_VERTEX_SHADER,vertex_source);
+    fragment = compile_shader(impl_->gl,GL_FRAGMENT_SHADER,fragment_source);
     program = impl_->gl.CreateProgram();
     if (!program) throw std::runtime_error("glCreateProgram failed");
     impl_->gl.AttachShader(program, vertex);

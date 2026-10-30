@@ -69,12 +69,21 @@ struct PipelineHandle {
   constexpr bool operator==(const PipelineHandle&) const = default;
 };
 
+enum class ShaderProgramId : std::uint8_t {
+  Unspecified, ContractOnly, Terrain, Wildfire, Object, TexturedObject,
+  InstancedTexturedObject, PbrObject, PbrInstanced
+};
 struct PipelineDesc {
+  ShaderProgramId program=ShaderProgramId::Unspecified;
   ShaderLayout layout;
   bool depth_test = true;
   bool alpha_blend = false;
   bool depth_write = true;
 };
+
+// Built-in engine identity is explicit; layout validation never selects a shader.
+ShaderLayout shader_program_layout(ShaderProgramId program);
+void validate_pipeline_desc(const PipelineDesc& desc,bool allow_contract_only=true);
 
 struct UniformBufferBinding {
   std::uint32_t slot = 0;

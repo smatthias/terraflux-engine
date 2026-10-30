@@ -4,6 +4,7 @@
 #include <terraflux/terrain_mesh.hpp>
 #include <terraflux/graphics/mesh_upload.hpp>
 #include <array>
+#include <algorithm>
 
 #include <cmath>
 #include <cstddef>
@@ -99,7 +100,7 @@ void test_create_draw_destroy() {
   const auto index_bytes = std::as_bytes(std::span(upload.indices));
   const auto vb = device.create_buffer({BufferUsage::Vertex, vertex_bytes.size()}, vertex_bytes);
   const auto ib = device.create_buffer({BufferUsage::Index, index_bytes.size()}, index_bytes);
-  const auto pipeline = device.create_pipeline({terrain_shader_layout(), true});
+  const auto pipeline = device.create_pipeline({terraflux::graphics::ShaderProgramId::Terrain,terrain_shader_layout(), true});
   device.draw_indexed({pipeline, vb, ib, 0, 6, {}, {}});
   device.draw_indexed({pipeline, vb, ib, 3, 3, {}, {}});
   require(device.draw_count() == 2, "valid indexed draws must be recorded");
@@ -122,7 +123,7 @@ void test_draw_range_checks() {
   const auto vb = device.create_buffer({BufferUsage::Vertex, vertex_bytes.size()}, vertex_bytes);
   auto index_bytes = std::as_bytes(std::span(upload.indices));
   const auto ib = device.create_buffer({BufferUsage::Index, index_bytes.size()}, index_bytes);
-  const auto pipeline = device.create_pipeline({terrain_shader_layout(), true});
+  const auto pipeline = device.create_pipeline({terraflux::graphics::ShaderProgramId::Terrain,terrain_shader_layout(), true});
   must_throw([&] { device.draw_indexed({pipeline, vb, ib, 3, 6, {}, {}}); },
              "out of range index count must be rejected");
   must_throw([&] { device.draw_indexed({pipeline, vb, ib, 0, 4, {}, {}}); },
@@ -161,7 +162,7 @@ void test_uniform_buffer_updates() {
   const auto ib_bytes = std::as_bytes(std::span(upload.indices));
   const auto vb = device.create_buffer({BufferUsage::Vertex, vb_bytes.size()}, vb_bytes);
   const auto ib = device.create_buffer({BufferUsage::Index, ib_bytes.size()}, ib_bytes);
-  const auto pipeline = device.create_pipeline({terrain_shader_layout(), true});
+  const auto pipeline = device.create_pipeline({terraflux::graphics::ShaderProgramId::Terrain,terrain_shader_layout(), true});
   device.draw_indexed({pipeline, vb, ib, 0, 6, {{0, uniform}}, {}});
   require(device.draw_count() == 1, "camera buffer draw must validate");
   must_throw([&] { device.draw_indexed({pipeline, vb, ib, 0, 6, {{1, uniform}}, {}}); },
@@ -186,7 +187,7 @@ void test_storage_buffer_validation() {
   const auto ib = device.create_buffer(
       {BufferUsage::Index, std::as_bytes(std::span(upload.indices)).size()},
       std::as_bytes(std::span(upload.indices)));
-  const auto pipeline = device.create_pipeline({layout, true});
+  const auto pipeline = device.create_pipeline({ShaderProgramId::ContractOnly,layout, true});
   device.draw_indexed({pipeline, vb, ib, 0, 6, {}, {{1, field}}});
   must_throw([&] { device.draw_indexed({pipeline, vb, ib, 0, 6, {}, {}}); },
              "missing field storage buffer must be rejected");
@@ -205,7 +206,7 @@ void test_object_uniform_bindings() {
   const auto indices = std::as_bytes(std::span(terrain.indices));
   const auto vb = device.create_buffer({BufferUsage::Vertex, vertices.size()}, vertices);
   const auto ib = device.create_buffer({BufferUsage::Index, indices.size()}, indices);
-  const auto pipeline = device.create_pipeline({layout, true});
+  const auto pipeline = device.create_pipeline({ShaderProgramId::Object,layout, true});
   std::array<float, 16> camera{};
   std::array<float, 36> object_data{};
   const auto camera_bytes = std::as_bytes(std::span(camera));
@@ -234,7 +235,7 @@ void test_texture_resources() {
   const auto ibBytes=std::as_bytes(std::span(upload.indices));
   auto vb=device.create_buffer({BufferUsage::Vertex,vbBytes.size()},vbBytes);
   auto ib=device.create_buffer({BufferUsage::Index,ibBytes.size()},ibBytes);
-  auto pipeline=device.create_pipeline({textured_object_shader_layout(),true});
+  auto pipeline=device.create_pipeline({terraflux::graphics::ShaderProgramId::TexturedObject,textured_object_shader_layout(),true});
   must_throw([&]{device.draw_indexed({pipeline,vb,ib,0,6,{}, {}, {}});},
              "must bind textured material");
   device.draw_indexed({pipeline,vb,ib,0,6,{}, {}, {{3,texture}}});
@@ -340,6 +341,46 @@ void test_resource_telemetry() {
   require(!device.resource_telemetry().budget_rejections,"validation error is not a budget rejection");
 }
 
+void test_explicit_shader_identity() {
+  ValidatingRenderDevice device;
+  const std::array programs{ShaderProgramId::Terrain,ShaderProgramId::Wildfire,ShaderProgramId::Object,
+      ShaderProgramId::TexturedObject,ShaderProgramId::InstancedTexturedObject,
+      ShaderProgramId::PbrObject,ShaderProgramId::PbrInstanced};
+  for(const auto program:programs) {
+    auto layout=shader_program_layout(program);
+    // Reflection/metadata order must not determine identity or validity.
+    std::reverse(layout.attributes.begin(),layout.attributes.end());
+    std::reverse(layout.bindings.begin(),layout.bindings.end());
+    const auto pipeline=device.create_pipeline({program,layout,true});
+    device.destroy_pipeline(pipeline);
+  }
+  require(!device.live_pipeline_count(),"all explicit built-in families validate and release");
+  const auto layout=terrain_shader_layout();
+  must_throw([&]{(void)device.create_pipeline({ShaderProgramId::Unspecified,layout});},
+             "unspecified identity has no automatic layout fallback");
+  must_throw([&]{(void)device.create_pipeline({static_cast<ShaderProgramId>(255),layout});},
+             "unknown shader identity rejected");
+  must_throw([&]{(void)device.create_pipeline({ShaderProgramId::PbrObject,layout});},
+             "declared identity and incompatible layout rejected");
+  auto changed=layout;changed.bindings[0].slot=7;
+  must_throw([&]{(void)device.create_pipeline({ShaderProgramId::Terrain,changed});},
+             "resource names do not silently redirect shader family");
+  changed=layout;changed.attributes[0].offset_bytes=4;
+  must_throw([&]{(void)device.create_pipeline({ShaderProgramId::Terrain,changed});},
+             "built-in vertex packing must match its declared contract");
+  const auto contract=device.create_pipeline({ShaderProgramId::ContractOnly,layout});
+  device.destroy_pipeline(contract);
+  must_throw([&]{validate_pipeline_desc({ShaderProgramId::ContractOnly,layout},false);},
+             "contract-only identity rejected at GPU boundary");
+  must_throw([&]{(void)device.create_pipeline({ShaderProgramId::PbrInstanced,
+      shader_program_layout(ShaderProgramId::PbrInstanced),true,true,false});},
+      "transparent instancing is outside the explicit program contract");
+  const auto alpha=device.create_pipeline({ShaderProgramId::PbrObject,
+      shader_program_layout(ShaderProgramId::PbrObject),true,true,false});
+  device.destroy_pipeline(alpha);
+  require(!device.live_pipeline_count(),"identity failures cannot leak pipeline handles");
+}
+
 }  // namespace
 
 int main() {
@@ -358,7 +399,8 @@ int main() {
     test_texture_resources();
     test_resource_bytes();
     test_resource_telemetry();
-    std::cout << "TerraFlux graphics contracts: 14 tests passed\n";
+    test_explicit_shader_identity();
+    std::cout << "TerraFlux graphics contracts: 15 tests passed\n";
   } catch (const std::exception& error) {
     std::cerr << "TerraFlux graphics test failed: " << error.what() << '\n';
     return 1;

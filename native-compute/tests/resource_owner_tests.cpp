@@ -27,7 +27,7 @@ void creates_and_cleans(){
     const auto selected=resources.create_buffer({BufferUsage::Vertex,data.size()},data);
     resources.create_buffer({BufferUsage::Uniform,data.size()},data);
     resources.create_texture2d({2,2},std::span(data).first(16));
-    resources.create_pipeline({terraflux::graphics::terrain_shader_layout(),true});
+    resources.create_pipeline({terraflux::graphics::ShaderProgramId::Terrain,terraflux::graphics::terrain_shader_layout(),true});
     check(resources.tracked_buffer_count()==2 &&
           resources.tracked_texture_count()==1 &&
           resources.tracked_pipeline_count()==1,"tracks each GPU resource kind");
@@ -55,7 +55,7 @@ void exception_cleanup(){
     RenderResourceOwner resources(backend);
     resources.create_buffer({BufferUsage::Vertex,data.size()},data);
     resources.create_texture2d({2,2},std::span(data).first(16));
-    resources.create_pipeline({terraflux::graphics::terrain_shader_layout(),true});
+    resources.create_pipeline({terraflux::graphics::ShaderProgramId::Terrain,terraflux::graphics::terrain_shader_layout(),true});
     // Validation backend fails before creating a new GPU resource.
     resources.create_texture2d({2,2},std::span(data).first(8));
   }catch(const std::invalid_argument&){caught=true;}
@@ -82,7 +82,7 @@ void dynamic_asset_lifetime() {
     asset->vertex=asset->resources.create_buffer({BufferUsage::Vertex,bytes.size()},bytes);
     asset->resources.create_buffer({BufferUsage::Index,bytes.size()},bytes);
     asset->resources.create_texture2d({2,2},std::span(bytes).first(16));
-    asset->resources.create_pipeline({terrain_shader_layout(),true});
+    asset->resources.create_pipeline({terraflux::graphics::ShaderProgramId::Terrain,terrain_shader_layout(),true});
     asset->ring=std::make_unique<OpaqueRenderQueue::InstanceBufferRing>(backend);
     asset->ring->begin_frame();
     (void)asset->ring->acquire(2);
