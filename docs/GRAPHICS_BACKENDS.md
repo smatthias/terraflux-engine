@@ -435,5 +435,8 @@ Terrain tiling groundwork is now available in the compute library; see
 [Terrain tile geometry contract](TERRAIN_TILES.md) for copied boundary normals,
 source mappings, bounds and aggregate budgets. The viewer now has optional tile uploads/frustum culling and exact monolithic
 reference pixel checks in smoke mode; see that contract for CLI flags, diagnostics
-and eager-residency limits. Selective terrain residency is next. Physical GPU
-validation remains outstanding.
+and eager-residency limits. Selective terrain GPU residency now stages visible-set changes transactionally
+and releases hidden buffer pairs; retained CPU recipes support cold readmission.
+See the terrain contract for final-set count limits, transient byte admission,
+complete-surface preflight and recovery tests. Residency hysteresis is next.
+Physical GPU validation remains outstanding.

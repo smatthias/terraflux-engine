@@ -3,8 +3,8 @@
 `terraflux/terrain_tiles.hpp` provides `tile_terrain_mesh(source, options)` in the
 compute library. This is a CPU geometry partition of the existing full-resolution
 TerrainMesh. The viewer defaults to the original monolithic upload and offers
-an optional tiled upload/frustum path described below. LOD, selective GPU tile
-residency, decimation, skirts and on-demand source meshing remain future work.
+an optional tiled upload/frustum path described below. LOD, decimation, skirts and on-demand source meshing remain future work. Selective
+GPU residency is described below.
 
 ## Geometry and ownership
 
@@ -80,8 +80,8 @@ and the source map, verifies exact multiplicity/winding, checks inclusive AABBs,
 and compares packed GPU positions/normals with the original upload.
 
 The optional viewer integration below adds rendered-output checks against the
-monolithic path. LOD and on-demand residency still require additional seam,
-transition and lifetime work. Physical GPU performance remains unmeasured.
+monolithic path. LOD and on-demand source meshing still require additional seam
+and transition work. Physical GPU performance remains unmeasured.
 
 
 ## Optional viewer tile uploads and culling
@@ -90,8 +90,9 @@ transition and lifetime work. Physical GPU performance remains unmeasured.
 `--terrain-tile-quads N` also enables tiled mode and selects 1..256 quads per side.
 The CPU partition's default aggregate caps still apply: a very small tile size
 can exceed the 4096-tile cap and reject startup. Source geometry and simulation
-rules are unchanged. All tiles are uploaded eagerly and remain GPU resident.
-There is no residency eviction or LOD selection in this increment.
+rules are unchanged. The default tiled mode uploads all tiles eagerly. The
+additional --terrain-residency mode below selects GPU residents per frame. LOD
+selection remains unimplemented.
 
 TerrainTileRenderer owns one vertex/index buffer pair per nonempty tile through
 RenderResourceOwner. Partial construction releases every buffer already created.
@@ -99,8 +100,9 @@ Successful draws share the existing terrain/wildfire pipeline, Camera uniform
 and optional FireState SSBO. The wildfire lookup uses the same coordinates and
 original dense fire-field mapping. Tile GPU buffers are independent of imported
 asset lifetimes and included in the viewer's unload baseline and shared byte cap.
-Temporary CPU tile/upload arrays are released after construction; the viewer
-still retains its full source mesh.
+Temporary double-precision tile meshes are released after construction. Packed
+TerrainUpload recipes are now retained in both tiled modes for rehydration; the
+viewer also retains its full source mesh.
 
 Normal tiled mode creates no monolithic GPU geometry buffers. Tiled smoke mode
 additionally creates and renders the monolithic reference, so its allocation and
@@ -114,7 +116,7 @@ all six inward-facing planes using each plane's positive support vertex. Bounds
 must be finite and ordered. Plane touches and a scale-aware float rounding margin
 are retained conservatively; some invisible tiles may therefore still draw. The
 margin is 64 float epsilons times the larger of the coordinate scale (at least 1)
-and plane-distance magnitude. Culling skips submissions, not allocations. It is
+and plane-distance magnitude. In eager mode culling skips submissions while retaining allocations. It is
 frustum culling, not occlusion culling. `--no-culling` disables it for both tiles
 and assets; the flag is accepted in smoke/profile/benchmark modes.
 
@@ -134,7 +136,73 @@ through offscreen composition, and disabled culling. The native tile suite check
 six-plane AABB rejection/touches, expected visible and fully hidden submissions,
 byte accounting, cleanup and partial-construction budget rejection.
 
-Next: selective tile GPU residency with explicit lifetimes and budget tests.
+Selective GPU residency and budget tests are described below.
 More tile draws can increase CPU/submission overhead; these correctness tests do
 not demonstrate a speedup. Compare repeated benchmarks on actual GPU hardware
 before making performance claims.
+
+
+## Selective GPU tile residency
+
+`--terrain-residency` implies tiled mode and creates TerrainTileRenderer with
+initially_resident=false. It retains all packed CPU recipes but creates no tile
+GPU buffers until the first visible-set synchronization. Before each terrain
+pass the viewer calls synchronize_visible using the same frustum/culling policy
+as draw. Hidden buffers are released, common residents keep their handles, and
+returning tiles are re-uploaded synchronously on the context thread. Eager tiled
+mode remains available. No loading threads or simulation changes are introduced.
+
+The public API also supports explicit set_resident_tiles(span<tile ID>),
+resident_tiles, resident_tile_count, resident_bytes and a diagnostic
+resident_vertex_buffer query. IDs are stable indices in the coordinate-sorted
+tile list. Invalid or duplicate IDs reject. set_residency_limit controls the
+committed set count; --max-resident-terrain-tiles accepts 0..4096 and enables
+selective viewer mode. Lowering a limit preserves existing residents and prevents
+future sets larger than the new limit. Geometry recipe count budgets remain
+independent of the resident count limit.
+
+Residency changes require ended render passes. A transition first validates the
+requested set/count, then stages every missing buffer pair with per-tile RAII
+owners. It publishes those residents and evicts unwanted old tiles only after
+all candidates succeed. Failure frees staged buffers and preserves the previous
+set, live handles and bytes. Peaks/admission history may still reflect candidates.
+The global resource byte cap includes old plus staged storage. The count limit
+applies to the final committed set, not transient staging. No automatic LRU,
+early eviction to make room, or capacity-guaranteed streaming is implied.
+
+Draw preflights every visible tile's residency before submitting any terrain
+triangle. A missing visible tile rejects rather than rendering an incomplete
+surface. The viewer reports visible-set admission failures through its existing
+error handler and exits. An API caller can raise a cap, shrink a requested set or
+release other resources and retry. Existing valid resident sets remain usable.
+With culling disabled synchronization requests all tiles.
+
+TERRAIN_JSON adds resident_tiles, resident_geometry_bytes, resident_tile_limit,
+admitted and evicted. geometry_bytes still describes all retained packed recipes
+and the fully resident geometry payload. Residents have two GPU buffers each;
+shared camera/fire buffers are excluded from these per-terrain byte totals.
+Diagnostics emit on residency changes when --residency-report is enabled, with
+periodic/smoke records as before. BENCHMARK_JSON adds terrain_residency,
+terrain_resident_tiles, terrain_resident_geometry_bytes, terrain_admitted_per_frame
+and terrain_evicted_per_frame. Viewer asset-unload baselines account for the
+current tile residents dynamically.
+
+This trades GPU storage for CPU retention: every packed vertex/index recipe stays
+available in both tiled modes. Recipes are bounded by partition element counts,
+but are outside the imported-asset CPU recipe budget. Ordinary selective mode has
+no monolithic GPU copy; smoke mode still retains that extra reference allocation.
+No performance gain is established by these functional checks.
+
+The five-frame --terrain-residency-test uses demo terrain, tiled residency smoke
+mode, culling and default budgets, without other scripted tests. It verifies a
+smaller resident set in a close view, rejects readmission under a fixed byte cap,
+checks preserved counts/bytes, raises the cap, recovers the original set with cold
+handles, fully evicts, then rehydrates. Every rendered frame matches monolithic
+pixels. CI runs direct/offscreen variants plus wildfire, mixed-scene lifecycle,
+disabled culling and a zero resident-count rejection. Native tests additionally
+exercise overlapping set handle reuse, duplicate/invalid IDs, lowered count caps,
+partial multi-tile staging failure, fail-before-partial-draw behavior and cleanup.
+
+Next: residency hysteresis to reduce camera-boundary eviction/re-upload churn.
+Physical GPU measurements, LOD, source-mesh streaming and CPU recipe eviction
+remain outstanding.

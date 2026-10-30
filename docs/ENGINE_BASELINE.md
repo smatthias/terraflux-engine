@@ -155,6 +155,7 @@ normal/position copies, source mappings and geometry bounds, with a new native
 CTest suite (15 total on the branch). See [Terrain tile geometry contract](TERRAIN_TILES.md).
 The viewer also offers eager tile uploads and conservative AABB frustum submission,
 with monolithic pixel-reference checks across orbit views, wildfire and asset
-lifecycle paths. Selective GPU tile residency is next. The pinned snapshot remains
-unchanged. LOD, broader attachment formats/effects and physical GPU evidence remain
-outstanding.
+lifecycle paths. Selective GPU tile residency is implemented with retained recipes,
+transactional set transitions and budget/rehydration checks. Residency hysteresis
+is next. The pinned snapshot remains unchanged. LOD, broader attachment
+formats/effects and physical GPU evidence remain outstanding.

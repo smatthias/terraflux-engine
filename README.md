@@ -240,8 +240,8 @@ computed positions/normals, including after GPU packing; holes and winding are
 preserved. Aggregate tile/vertex/index limits reject over-budget candidates.
 `--terrain-tiles` enables eager tile uploads and camera-frustum culling;
 `--terrain-tile-quads 8` also enables that mode with smaller tiles. Monolithic
-rendering remains the default. All tiles remain resident: LOD and selective
-residency are future work. See the [API and limits](docs/TERRAIN_TILES.md).
+rendering remains the default. `--terrain-residency` additionally releases hidden tiles and admits the visible set
+before each frame. LOD remains future work. See the [API and limits](docs/TERRAIN_TILES.md).
 
 ```bash
 ./build-gl/terraflux-terrain-viewer --terrain-tiles --scene examples/mixed_asset_scene.json
@@ -257,6 +257,31 @@ both terrain and asset culling and can be used in smoke/profile/benchmark runs.
 TERRAIN_JSON reports tile counts, draws, triangles and tile buffer bytes. Benchmark
 JSON also identifies tiled mode and reports terrain draws/culled tiles per frame.
 These functional checks do not establish a hardware speedup.
+
+```bash
+./build-gl/terraflux-terrain-viewer --terrain-residency --terrain-tile-quads 16 \
+  --scene examples/mixed_asset_scene.json --residency-report
+LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a -s "-screen 0 1280x800x24" \
+  ./build-gl/terraflux-terrain-viewer --terrain-residency --terrain-tile-quads 8 \
+  --terrain-residency-test --smoke-test
+```
+
+Selective mode retains packed CPU recipes, starts without tile GPU buffers and
+synchronizes residency with the conservative visible set between passes. An
+unchanged resident tile keeps its handles. Missing buffers are staged before any
+old resident is evicted; a failed upload preserves the previous set and bytes.
+Global byte admission therefore needs old plus staged storage temporarily.
+`--max-resident-terrain-tiles 0..4096` also enables selective mode and limits the
+committed set. Lowering an API limit retains existing storage but blocks oversized
+future sets. A visible-set admission failure reports an error and stops the viewer;
+it never silently renders terrain holes. API callers can raise a cap or request a
+smaller set and retry. Disabled culling requires every tile to be resident.
+
+CPU terrain recipes remain eager and retained in both tiled modes; the imported
+asset CPU recipe budget does not include terrain recipes. TERRAIN_JSON distinguishes
+all-tile geometry_bytes from resident_tiles/resident_geometry_bytes and reports
+admissions/evictions. The five-frame residency smoke test forces rejection and
+recovery, then full eviction and cold readmission, with monolithic pixel checks.
 
 ### Optional offscreen viewer rendering
 
@@ -588,19 +613,19 @@ hours or release-readiness guarantees. The PS4 backend is unimplemented.
 
 | Desktop engine — Phases 1–9 | Full roadmap including PS4 |
 | --- | --- |
-| **~90%** (previously ~89%) | **~61%** (previously ~60%) |
+| **~91%** (previously ~90%) | **~62%** (previously ~61%) |
 
 | Phase | Component | Estimated completion |
 | --- | --- | ---: |
 | 1 | Core extraction | 100% |
 | 2 | Rendering abstraction | ~89% (previously ~88%) |
 | 3 | OpenGL backend | ~91% (previously ~90%) |
-| 4 | 3D terrain renderer | ~85% (previously ~80%) |
+| 4 | 3D terrain renderer | ~88% (previously ~85%) |
 | 5 | Simulation visualization | 65% |
 | 6 | Shader system | ~82% (previously ~80%) |
 | 7 | Scene and asset system | ~90% (previously 86%) |
-| 8 | Engine runtime | ~89% (previously ~88%) |
-| 9 | Performance | ~78% (previously ~75%) |
+| 8 | Engine runtime | ~90% (previously ~89%) |
+| 9 | Performance | ~82% (previously ~78%) |
 | 10 | PS4 backend | 0% |
 
 Latest milestones: selective node reattachment and on-demand GPU mesh residency,
@@ -646,8 +671,10 @@ Tiles preserve global positions/normals, holes and exact triangle coverage, with
 configurable aggregate count budgets. The viewer now optionally uploads these tiles and culls their packed-geometry
 bounds against the camera frustum. Tiled smoke renders match monolithic reference
 pixels, including fire-grid lookup, offscreen composition and asset lifecycle.
-LOD and on-demand residency remain future work. See [terrain tile geometry](docs/TERRAIN_TILES.md).
-Next planned implementation: selective terrain tile GPU residency.
+Optional `--terrain-residency` now evicts hidden tile buffers, stages missing
+visible tiles transactionally and preserves the old set on admission failure.
+CPU recipes remain retained; LOD is future work. See [terrain tile geometry](docs/TERRAIN_TILES.md).
+Next planned implementation: terrain residency hysteresis to reduce camera-boundary churn.
 See the [prioritized gaps and acceptance criteria](docs/ENGINE_BASELINE.md#remaining-renderer-work-in-priority-order). GPU meshes are created on demand; CPU model data
 and decoded image recipes remain eager and retained for reattachment. Asynchronous streaming, skeletal animation
 and full glTF/IBL support remain future work.

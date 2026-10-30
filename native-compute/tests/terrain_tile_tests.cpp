@@ -193,6 +193,72 @@ void gpu_uploads_and_culling() {
           "failed multi-tile upload retires all partially created buffers");
 }
 
+void selective_gpu_residency() {
+  using namespace graphics;
+  ValidatingRenderDevice device;RenderResourceOwner shared(device);
+  const std::array<float,16> identity{1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
+  const auto camera=shared.create_buffer({BufferUsage::Uniform,sizeof(identity)},std::as_bytes(std::span(identity)));
+  const auto pipeline=shared.create_pipeline({ShaderProgramId::Terrain,terrain_shader_layout()});
+  const auto baseline=device.live_resource_bytes();const auto base_count=device.live_buffer_count();
+  std::vector<compute::GridCell> cells;
+  for(int y=0;y<5;++y)for(int x=0;x<5;++x)cells.push_back(cell(x,y,0));
+  const auto source=build_terrain_mesh(compute::Grid(cells),1);
+  const auto frustum=Frustum::from_view_projection(math::Mat4::identity());
+  {
+    TerrainTileRenderer tiles(device,source,{1},false);
+    require(!tiles.resident_tile_count() && tiles.geometry_bytes()==16*136 && device.live_resource_bytes()==baseline,
+            "inactive construction retains CPU recipes without GPU admission");
+    const std::array<std::size_t,2> initial{0,1};
+    auto change=tiles.set_resident_tiles(initial);
+    const auto shared_vertex=tiles.resident_vertex_buffer(1),old_vertex=tiles.resident_vertex_buffer(0);
+    require(change.admitted==2 && !change.evicted && tiles.resident_bytes()==272,"selective admission counts payload");
+    const std::array<std::size_t,2> replacement{1,2};change=tiles.set_resident_tiles(replacement);
+    require(change.admitted==1 && change.evicted==1 && tiles.resident_vertex_buffer(1)==shared_vertex &&
+            !tiles.resident_vertex_buffer(0),"overlap preserves resident handles and retires hidden geometry");
+    rejects([&]{device.destroy_buffer(old_vertex);});
+    const std::array<std::size_t,2> duplicate{1,1};
+    rejects([&]{tiles.set_resident_tiles(duplicate);});
+    const std::array<std::size_t,1> unknown{16};rejects([&]{tiles.set_resident_tiles(unknown);});
+    tiles.set_residency_limit(1);
+    require(tiles.resident_tile_count()==2,"lower count limit preserves existing storage");
+    rejects<std::length_error>([&]{tiles.set_resident_tiles(replacement);});
+    const std::array<std::size_t,1> one{1};tiles.set_resident_tiles(one);
+    tiles.set_residency_limit(16);
+    const auto before=device.live_resource_bytes();const auto before_count=device.live_buffer_count();
+    device.set_resource_byte_budget(before.total()+160); // Stage one tile, fail on the next.
+    const std::array<std::size_t,3> expanded{1,2,3};
+    rejects<std::length_error>([&]{tiles.set_resident_tiles(expanded);});
+    require(tiles.resident_tiles()==std::vector<std::size_t>{1} && tiles.resident_vertex_buffer(1)==shared_vertex &&
+            device.live_resource_bytes()==before && device.live_buffer_count()==before_count,
+            "failed staged set preserves all current handles/bytes and releases candidates");
+    device.set_resource_byte_budget(std::numeric_limits<std::uint64_t>::max());
+    change=tiles.set_resident_tiles(expanded);
+    require(change.admitted==2 && !change.evicted && tiles.resident_tile_count()==3,"same set recovers after cap increase");
+    tiles.set_resident_tiles({});
+    require(!tiles.resident_bytes() && device.live_resource_bytes()==baseline,"full eviction keeps CPU recipe only");
+    tiles.set_resident_tiles(std::array<std::size_t,1>{0});
+    const auto current=tiles.resident_vertex_buffer(0);
+    change=tiles.set_resident_tiles(std::array<std::size_t,1>{0});
+    require(!change.admitted && !change.evicted && tiles.resident_vertex_buffer(0)==current,"unchanged residency reuses handles");
+    {
+      RenderPassScope pass(device,{{64,64}});const auto draws=device.draw_count();
+      rejects<std::logic_error>([&]{tiles.draw(pipeline,camera,{},frustum);});
+      require(device.draw_count()==draws,"missing visible geometry rejects before any partial draw");
+      rejects<std::logic_error>([&]{tiles.set_resident_tiles({});});
+    }
+    change=tiles.synchronize_visible(frustum);
+    require(tiles.resident_tile_count()==4 && change.admitted==3,"visible set cold-loads only required tiles");
+    {RenderPassScope pass(device,{{64,64}});require(tiles.draw(pipeline,camera,{},frustum).draws==4,"rehydrated visible set draws");}
+    const auto absent=Frustum::from_view_projection(math::Mat4::translation({100,100,100}));
+    tiles.synchronize_visible(absent);
+    require(!tiles.resident_tile_count() && device.live_resource_bytes()==baseline,"fully hidden view releases all tile GPU storage");
+    tiles.synchronize_visible(frustum,false);
+    require(tiles.resident_tile_count()==16,"disabled culling requires all tiles resident");
+  }
+  require(device.live_resource_bytes()==baseline && device.live_buffer_count()==base_count,
+          "resident renderer destruction returns shared resource baseline");
+}
+
 void integer_edges_and_maximum_tile() {
   const auto high=std::numeric_limits<std::int32_t>::max();
   const auto mesh=build_terrain_mesh(compute::Grid({cell(high-1,high-1,1),cell(high,high-1,1),
@@ -213,7 +279,7 @@ void integer_edges_and_maximum_tile() {
 int main() {
   try {
     dense_coverage_and_seams();stable_under_permutation();sparse_holes_and_islands();
-    count_budgets();malformed_inputs();integer_edges_and_maximum_tile();gpu_uploads_and_culling();
-    std::cout<<"Terrain tiles: 7 test groups passed\n";
+    count_budgets();malformed_inputs();integer_edges_and_maximum_tile();gpu_uploads_and_culling();selective_gpu_residency();
+    std::cout<<"Terrain tiles: 8 test groups passed\n";
   }catch(const std::exception& error){std::cerr<<"Terrain tile test failed: "<<error.what()<<'\n';return 1;}
 }

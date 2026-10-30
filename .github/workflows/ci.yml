@@ -133,6 +133,31 @@ jobs:
           xvfb-run -a -s "-screen 0 1280x800x24" \
             ./build-gl/terraflux-terrain-viewer --terrain-tile-quads 16 --smoke-test --no-culling
 
+      - name: Verify selective terrain GPU residency
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --terrain-residency --terrain-tile-quads 8 \
+            --terrain-residency-test --smoke-test | tee /tmp/terraflux-terrain-residency.log
+          grep -q "Terrain residency passed" /tmp/terraflux-terrain-residency.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --terrain-residency --terrain-tile-quads 8 \
+            --terrain-residency-test --smoke-test --offscreen
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --terrain-residency --terrain-tile-quads 8 --smoke-test \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --terrain-residency --terrain-tile-quads 16 --smoke-test \
+            --offscreen --asset-lifecycle-test --scene examples/mixed_asset_scene.json
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --terrain-residency --terrain-tile-quads 16 --smoke-test --no-culling
+          if xvfb-run -a ./build-gl/terraflux-terrain-viewer --terrain-residency \
+            --max-resident-terrain-tiles 0 --smoke-test > /tmp/terraflux-terrain-limit.log 2>&1; then
+            echo "Expected terrain resident count limit to reject visible tiles"; exit 1
+          fi
+          grep -q "terrain resident tile count limit exceeded" /tmp/terraflux-terrain-limit.log
+
       - name: Verify viewer offscreen composition and resize recovery
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
