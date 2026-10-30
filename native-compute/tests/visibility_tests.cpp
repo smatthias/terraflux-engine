@@ -48,6 +48,7 @@ void frustum_and_scaled_bounds(){
 }
 void batch_order_and_draw_validation(){
   graphics::ValidatingRenderDevice device;
+  device.begin_render_pass({{640,480}});
   graphics::RenderResourceOwner owner(device);
   std::array<std::byte,48*3> vertices{};
   std::array<std::byte,6*4> indices{};
@@ -84,6 +85,7 @@ void batch_order_and_draw_validation(){
 
 void hardware_instance_batching() {
   graphics::ValidatingRenderDevice device;
+  device.begin_render_pass({{640,480}});
   graphics::RenderResourceOwner owner(device);
   std::array<std::byte,48*3> vertices{};
   std::array<std::byte,6*4> indices{};
@@ -131,6 +133,7 @@ void hardware_instance_batching() {
 
 void streaming_instance_ring() {
   graphics::ValidatingRenderDevice device;
+  device.begin_render_pass({{640,480}});
   graphics::RenderResourceOwner owner(device);
   std::array<std::byte,48*3> vertices{};
   std::array<std::byte,6*4> indices{};
@@ -186,6 +189,7 @@ void streaming_instance_ring() {
 }
 void transparent_sorting_and_pipeline() {
   graphics::ValidatingRenderDevice device;
+  device.begin_render_pass({{640,480}});
   rejected([&]{
     (void)device.create_pipeline(
         {terraflux::graphics::ShaderProgramId::PbrObject,graphics::pbr_textured_object_shader_layout(false),true,true,true});

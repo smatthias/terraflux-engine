@@ -96,6 +96,7 @@ void test_terrain_upload() {
 void test_create_draw_destroy() {
   const auto upload = quad_upload();
   ValidatingRenderDevice device;
+  device.begin_render_pass({{640,480}});
   const auto vertex_bytes = std::as_bytes(std::span(upload.vertices));
   const auto index_bytes = std::as_bytes(std::span(upload.indices));
   const auto vb = device.create_buffer({BufferUsage::Vertex, vertex_bytes.size()}, vertex_bytes);
@@ -119,6 +120,7 @@ void test_create_draw_destroy() {
 void test_draw_range_checks() {
   auto upload = quad_upload();
   ValidatingRenderDevice device;
+  device.begin_render_pass({{640,480}});
   auto vertex_bytes = std::as_bytes(std::span(upload.vertices));
   const auto vb = device.create_buffer({BufferUsage::Vertex, vertex_bytes.size()}, vertex_bytes);
   auto index_bytes = std::as_bytes(std::span(upload.indices));
@@ -139,6 +141,7 @@ void test_draw_range_checks() {
 
 void test_reject_incomplete_buffers() {
   ValidatingRenderDevice device;
+  device.begin_render_pass({{640,480}});
   const std::uint32_t index = 0;
   auto bytes = std::as_bytes(std::span(&index, 1));
   must_throw([&] { (void)device.create_buffer({BufferUsage::Index, 0}, bytes); },
@@ -149,6 +152,7 @@ void test_reject_incomplete_buffers() {
 
 void test_uniform_buffer_updates() {
   ValidatingRenderDevice device;
+  device.begin_render_pass({{640,480}});
   const std::uint32_t values[] = {11, 22, 33, 44};
   const auto initial = std::as_bytes(std::span(values));
   const auto uniform = device.create_buffer({BufferUsage::Uniform, initial.size()}, initial);
@@ -175,6 +179,7 @@ void test_uniform_buffer_updates() {
 
 void test_storage_buffer_validation() {
   ValidatingRenderDevice device;
+  device.begin_render_pass({{640,480}});
   auto layout = wildfire_shader_layout();
   validate_shader_layout(layout);
   const std::uint32_t empty[4] = {0,0,0,0};
@@ -199,6 +204,7 @@ void test_storage_buffer_validation() {
 }
 void test_object_uniform_bindings() {
   ValidatingRenderDevice device;
+  device.begin_render_pass({{640,480}});
   const auto layout = object_shader_layout();
   validate_shader_layout(layout);
   const auto terrain = quad_upload();
@@ -223,6 +229,7 @@ void test_object_uniform_bindings() {
 
 void test_texture_resources() {
   ValidatingRenderDevice device;
+  device.begin_render_pass({{640,480}});
   std::array<std::byte,16> pixels{};
   auto texture=device.create_texture2d({2,2},pixels);
   require(device.live_texture_count()==1,"texture allocated");
@@ -264,6 +271,7 @@ void test_bad_mesh_upload() {
 
 void test_resource_bytes() {
   ValidatingRenderDevice device;
+  device.begin_render_pass({{640,480}});
   std::array<std::byte,32> buffer{};
   std::array<std::byte,60> pixels{};
   TextureDesc desc{3,5};
@@ -301,6 +309,7 @@ void test_resource_bytes() {
 
 void test_resource_telemetry() {
   ValidatingRenderDevice device;
+  device.begin_render_pass({{640,480}});
   std::array<std::byte,32> bytes{};
   device.set_resource_byte_budget(64);
   const auto first=device.create_buffer({BufferUsage::Storage,bytes.size()},bytes);
@@ -341,8 +350,63 @@ void test_resource_telemetry() {
   require(!device.resource_telemetry().budget_rejections,"validation error is not a budget rejection");
 }
 
+void test_render_pass_contract() {
+  ValidatingRenderDevice device;
+  const auto upload=quad_upload();
+  const auto vertices=std::as_bytes(std::span(upload.vertices));
+  const auto indices=std::as_bytes(std::span(upload.indices));
+  const auto vb=device.create_buffer({BufferUsage::Vertex,vertices.size()},vertices);
+  const auto ib=device.create_buffer({BufferUsage::Index,indices.size()},indices);
+  const auto pipeline=device.create_pipeline({ShaderProgramId::Terrain,terrain_shader_layout()});
+  const DrawIndexed draw{pipeline,vb,ib,0,6,{}, {}};
+  const auto before=device.live_resource_bytes();
+  must_throw([&]{device.draw_indexed(draw);},"draw before begin rejected");
+  must_throw([&]{device.end_render_pass();},"end without begin rejected");
+  const RenderPassDesc valid{{640,480}};
+  auto bad=valid;
+  bad.target.width=0;
+  must_throw([&]{device.begin_render_pass(bad);},"zero width rejected");
+  bad=valid;bad.target.height=0;
+  must_throw([&]{device.begin_render_pass(bad);},"zero height rejected");
+  bad=valid;bad.target.width=std::numeric_limits<std::uint32_t>::max();
+  must_throw([&]{device.begin_render_pass(bad);},"extent overflow rejected");
+  bad=valid;bad.target.kind=static_cast<RenderTargetKind>(255);
+  must_throw([&]{device.begin_render_pass(bad);},"unknown target rejected");
+  bad=valid;bad.color_load=static_cast<AttachmentLoadOp>(255);
+  must_throw([&]{device.begin_render_pass(bad);},"unknown color load rejected");
+  bad=valid;bad.depth_load=static_cast<AttachmentLoadOp>(255);
+  must_throw([&]{device.begin_render_pass(bad);},"unknown depth load rejected");
+  for(const auto value:{-0.1f,1.1f,std::numeric_limits<float>::infinity(),
+                        std::numeric_limits<float>::quiet_NaN()}) {
+    bad=valid;bad.clear_depth=value;
+    must_throw([&]{device.begin_render_pass(bad);},"invalid depth rejected");
+    for(std::size_t i=0;i<4;++i) {
+      bad=valid;bad.clear_color[i]=value;
+      must_throw([&]{device.begin_render_pass(bad);},"invalid color channel rejected");
+    }
+  }
+  must_throw([&]{device.end_render_pass();},"failed begins leave pass inactive");
+  auto clear=valid;clear.clear_color={0,1,0,1};clear.clear_depth=0;
+  device.begin_render_pass(clear);
+  must_throw([&]{device.begin_render_pass(valid);},"nested begin rejected");
+  device.draw_indexed(draw); // Failed nesting must preserve the active pass.
+  device.end_render_pass();
+  must_throw([&]{device.draw_indexed(draw);},"draw after end rejected");
+  must_throw([&]{device.end_render_pass();},"double end rejected");
+  for(const auto color:{AttachmentLoadOp::Load,AttachmentLoadOp::Clear})
+    for(const auto depth:{AttachmentLoadOp::Load,AttachmentLoadOp::Clear}) {
+      device.begin_render_pass({{800,600},color,depth});
+      device.draw_indexed(draw);
+      device.end_render_pass();
+    }
+  require(device.draw_count()==5,"only draws inside valid passes counted");
+  require(device.live_resource_bytes()==before,"borrowed target allocates no API storage");
+  device.destroy_pipeline(pipeline);device.destroy_buffer(ib);device.destroy_buffer(vb);
+}
+
 void test_explicit_shader_identity() {
   ValidatingRenderDevice device;
+  device.begin_render_pass({{640,480}});
   const std::array programs{ShaderProgramId::Terrain,ShaderProgramId::Wildfire,ShaderProgramId::Object,
       ShaderProgramId::TexturedObject,ShaderProgramId::InstancedTexturedObject,
       ShaderProgramId::PbrObject,ShaderProgramId::PbrInstanced};
@@ -400,7 +464,8 @@ int main() {
     test_resource_bytes();
     test_resource_telemetry();
     test_explicit_shader_identity();
-    std::cout << "TerraFlux graphics contracts: 15 tests passed\n";
+    test_render_pass_contract();
+    std::cout << "TerraFlux graphics contracts: 16 tests passed\n";
   } catch (const std::exception& error) {
     std::cerr << "TerraFlux graphics test failed: " << error.what() << '\n';
     return 1;

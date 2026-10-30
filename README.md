@@ -508,12 +508,12 @@ hours or release-readiness guarantees. The PS4 backend is unimplemented.
 
 | Desktop engine — Phases 1–9 | Full roadmap including PS4 |
 | --- | --- |
-| **~84%** (previously ~83%) | **~55%** (previously ~54%) |
+| **~85%** (previously ~84%) | **~56%** (previously ~55%) |
 
 | Phase | Component | Estimated completion |
 | --- | --- | ---: |
 | 1 | Core extraction | 100% |
-| 2 | Rendering abstraction | ~72% (previously 65%) |
+| 2 | Rendering abstraction | ~78% (previously ~72%) |
 | 3 | OpenGL backend | 85% |
 | 4 | 3D terrain renderer | 75% |
 | 5 | Simulation visualization | 65% |
@@ -534,8 +534,14 @@ OBJ, glTF, GLB, transparent materials and repeated model references. Native test
 CTest suites and 71 simulation parity fixtures; CI also exercises the viewer
 under Mesa/Xvfb. See the branch's CI results for validation of each commit.
 
-Latest abstraction increment: explicit shader/pipeline identities with shared layout validation.
-Next planned implementation: backend-neutral render-target and pass descriptions.
+Latest abstraction increment: backend-neutral window render-target/pass descriptions,
+explicit begin/end ordering and independent color/depth clear or load operations.
+Terrain and object rendering now use separate passes; Mesa smoke tests verify
+that a load pass preserves terrain color. The target is borrowed from the window;
+it creates no engine resource allocation and presentation remains GLFW-owned.
+Native tests validate descriptors and reject nested passes and draws outside a pass.
+The earlier explicit shader/pipeline identities retain shared layout validation.
+Next planned implementation: owned offscreen color/depth attachments and framebuffer lifetimes.
 See the [prioritized gaps and acceptance criteria](docs/ENGINE_BASELINE.md#remaining-renderer-work-in-priority-order). GPU meshes are created on demand; CPU model data
 and decoded image recipes remain eager and retained for reattachment. Asynchronous streaming, skeletal animation
 and full glTF/IBL support remain future work.

@@ -170,6 +170,51 @@ PipelineDesc; there is deliberately no automatic layout-based fallback.
 
 This increment replaces the checkpoint's implicit shader-selection gap. It does
 not add runtime shader compilation inputs, file hot reload, arbitrary shader
-modules, render targets/passes or PS4/PSSL support. Native tests cover all built-in
+modules, offscreen render targets or PS4/PSSL support. Native tests cover all built-in
 identities, invalid/missing IDs, layout mismatch, metadata ordering and contract-only
 boundaries; existing Mesa paths exercise actual compile/link/reflection and draws.
+
+
+## Window render targets and render passes
+
+`RenderDevice::begin_render_pass(RenderPassDesc)` and `end_render_pass()` now
+bound every draw submission. `RenderTargetDesc` identifies a borrowed window
+framebuffer and its pixel width/height. It owns no storage; the caller supplies
+the current actual framebuffer extent, skips minimized/zero-sized frames, and
+presents through the platform after ending all passes. Resizes are reflected in
+the next pass descriptor. The window context must provide color and depth buffers.
+
+`AttachmentLoadOp::Clear` and `Load` independently control color and depth.
+Clear uses normalized finite RGBA/depth values (depth defaults to 1); Load keeps
+the attachment contents from earlier work in the same framebuffer. Every pass
+preserves its results at end. Loading a newly created or swapped window buffer
+has no defined initial contents; begin the frame with Clear. No discard/store
+selection, subpasses, stencil, MSAA, custom viewport or offscreen attachment
+handles are exposed in this increment.
+
+Both backends reject invalid target kinds, zero or greater-than-INT32_MAX extents,
+unknown load operations, invalid clear values, nested begins, unmatched ends and
+draws outside an active pass. Descriptor/order validation happens before OpenGL
+state changes; rejected begins leave the previous pass state intact. Resource
+creation, updates and destruction remain legal between or within passes; the
+existing resource/draw validation rules still apply.
+
+The OpenGL backend binds framebuffer zero, sets the full-target viewport, applies
+only the requested clears, and restores writable depth before a depth clear,
+keeping its depth-write cache synchronized after transparent rendering. It owns
+GL state within the viewer context. End does not flush, swap or allocate. The
+old OpenGL-only `clear_frame()` entry point is removed; callers now construct a
+pass descriptor. GPU timing remains an independent diagnostic around the passes.
+
+The viewer clears/draws terrain in the first pass, then loads both attachments
+for opaque and transparent objects in the second pass. PBR/lifecycle smoke paths
+compare terrain pixels before and immediately after the Load begin, in addition
+to their existing final rendering checks. Native tests cover pass ordering,
+recovery after rejected begins, every clear/load combination, extent/value
+validation and unchanged resource bytes. The CPU backend validates contracts;
+it does not emulate attachment pixels.
+
+Next: owned offscreen color/depth attachment resources with bounded allocations,
+framebuffer completeness checks and explicit destruction. These are prerequisites
+for general post-processing or shadow passes. Physical GPU validation and PS4/PSSL
+remain outstanding.

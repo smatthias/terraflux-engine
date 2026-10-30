@@ -31,6 +31,8 @@ class OpenGLRenderDevice final : public RenderDevice {
   void destroy_texture(TextureHandle handle) override;
   PipelineHandle create_pipeline(PipelineDesc desc) override;
   void destroy_pipeline(PipelineHandle handle) override;
+  void begin_render_pass(const RenderPassDesc& desc) override;
+  void end_render_pass() override;
   void draw_indexed(const DrawIndexed& command) override;
 
   struct ResourceCounts {
@@ -53,7 +55,6 @@ class OpenGLRenderDevice final : public RenderDevice {
   void end_gpu_timing();
   GpuTimingSummary gpu_timing_summary(bool drain=false);
 
-  void clear_frame(int framebuffer_width, int framebuffer_height);
   // Smoke-test diagnostic; inspect the back buffer before swapping it.
   // Counts bright red/orange pixels in the current render target.
   std::size_t count_fire_pixels(int framebuffer_width, int framebuffer_height);

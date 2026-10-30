@@ -1113,7 +1113,9 @@ int main(int argc, char** argv) {
                     cell_size, fire_field ? fire_field->width : 1,
                     fire_field ? fire_field->height : 1, engine_time);
       if(record_gpu)device.begin_gpu_timing();
-      device.clear_frame(width, height);
+      const RenderTargetDesc window_target{static_cast<std::uint32_t>(width),
+                                           static_cast<std::uint32_t>(height)};
+      device.begin_render_pass({window_target});
       DrawIndexed command{pipeline, vb, ib, 0,
           static_cast<std::uint32_t>(upload.indices.size()), {{0, camera}}, {}};
       if (fire_buffer) command.storage_buffers.push_back({1, *fire_buffer});
@@ -1127,6 +1129,12 @@ int main(int argc, char** argv) {
         else if(lifecycle_terrain!=terrain_snapshot)
           throw std::runtime_error("terrain framebuffer changed during asset lifecycle");
       }
+      device.end_render_pass();
+      // Preserve terrain color and depth for opaque/transparent object draws.
+      device.begin_render_pass({window_target,AttachmentLoadOp::Load,AttachmentLoadOp::Load});
+      if(options.smoke_test && !terrain_snapshot.empty() &&
+         device.capture_rgba(width,height)!=terrain_snapshot)
+        throw std::runtime_error("load pass changed preserved terrain color");
       OpaqueRenderQueue draw_queue;
       TransparentRenderQueue transparent_queue;
       std::size_t visible_instances=0,culled_instances=0;
@@ -1264,6 +1272,7 @@ int main(int argc, char** argv) {
                   << queue_stats.state_groups << " state groups, "
                   << transparent_draws << " transparent draws\n";
       }
+      device.end_render_pass();
       if(record_gpu)device.end_gpu_timing();
       if(options.smoke_test && imported &&
          (!imported->uses_scene_file || !imported->scene_instances.empty())) {

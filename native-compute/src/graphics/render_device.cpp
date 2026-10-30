@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <cmath>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -11,6 +12,36 @@
 #include <utility>
 
 namespace terraflux::graphics {
+
+void validate_render_pass_desc(const RenderPassDesc& desc) {
+  if(desc.target.kind!=RenderTargetKind::Window)
+    throw std::invalid_argument("unsupported render target kind");
+  constexpr auto max_extent=static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max());
+  if(!desc.target.width || !desc.target.height ||
+     desc.target.width>max_extent || desc.target.height>max_extent)
+    throw std::invalid_argument("render target extents must be 1..INT32_MAX");
+  const auto valid_load=[](AttachmentLoadOp op) {
+    return op==AttachmentLoadOp::Load || op==AttachmentLoadOp::Clear;
+  };
+  if(!valid_load(desc.color_load) || !valid_load(desc.depth_load))
+    throw std::invalid_argument("unsupported attachment load operation");
+  for(const auto channel:desc.clear_color)
+    if(!std::isfinite(channel) || channel<0 || channel>1)
+      throw std::invalid_argument("clear color must be finite and normalized");
+  if(!std::isfinite(desc.clear_depth) || desc.clear_depth<0 || desc.clear_depth>1)
+    throw std::invalid_argument("clear depth must be finite and normalized");
+}
+
+void ValidatingRenderDevice::begin_render_pass(const RenderPassDesc& desc) {
+  if(pass_active_)throw std::logic_error("render passes cannot nest");
+  validate_render_pass_desc(desc);
+  pass_active_=true;
+}
+
+void ValidatingRenderDevice::end_render_pass() {
+  if(!pass_active_)throw std::logic_error("no active render pass");
+  pass_active_=false;
+}
 
 std::uint32_t vertex_format_bytes(VertexFormat format) {
   switch (format) {
@@ -230,6 +261,7 @@ void ValidatingRenderDevice::destroy_pipeline(PipelineHandle handle) {
 }
 
 void ValidatingRenderDevice::draw_indexed(const DrawIndexed& command) {
+  if(!pass_active_)throw std::logic_error("drawing requires an active render pass");
   const auto pipeline = pipelines_.find(command.pipeline.id);
   const auto vb = buffers_.find(command.vertex_buffer.id);
   const auto ib = buffers_.find(command.index_buffer.id);

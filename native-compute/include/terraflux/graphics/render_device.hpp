@@ -1,6 +1,7 @@
 #pragma once
 
 #include <terraflux/texture_sampling.hpp>
+#include <array>
 #include <cstddef>
 #include <limits>
 #include <optional>
@@ -85,6 +86,23 @@ struct PipelineDesc {
 ShaderLayout shader_program_layout(ShaderProgramId program);
 void validate_pipeline_desc(const PipelineDesc& desc,bool allow_contract_only=true);
 
+// Borrowed window framebuffer; the platform owns its storage and presentation.
+// Offscreen attachments/formats and multisampling are not implemented yet.
+enum class RenderTargetKind : std::uint8_t { Window };
+struct RenderTargetDesc {
+  std::uint32_t width=0,height=0;
+  RenderTargetKind kind=RenderTargetKind::Window;
+};
+enum class AttachmentLoadOp : std::uint8_t { Load, Clear };
+struct RenderPassDesc {
+  RenderTargetDesc target;
+  AttachmentLoadOp color_load=AttachmentLoadOp::Clear;
+  AttachmentLoadOp depth_load=AttachmentLoadOp::Clear;
+  std::array<float,4> clear_color{0.065f,0.095f,0.13f,1.0f};
+  float clear_depth=1.0f;
+};
+void validate_render_pass_desc(const RenderPassDesc& desc);
+
 struct UniformBufferBinding {
   std::uint32_t slot = 0;
   BufferHandle buffer;
@@ -151,6 +169,10 @@ class RenderDevice {
   virtual void destroy_texture(TextureHandle handle) = 0;
   virtual PipelineHandle create_pipeline(PipelineDesc desc) = 0;
   virtual void destroy_pipeline(PipelineHandle handle) = 0;
+  // Passes cannot nest; drawing requires an active pass. End preserves window
+  // attachments; swapping/presentation remains the platform's responsibility.
+  virtual void begin_render_pass(const RenderPassDesc& desc) = 0;
+  virtual void end_render_pass() = 0;
   virtual void draw_indexed(const DrawIndexed& command) = 0;
 };
 
@@ -168,6 +190,8 @@ class ValidatingRenderDevice final : public RenderDevice {
   void destroy_texture(TextureHandle handle) override;
   PipelineHandle create_pipeline(PipelineDesc desc) override;
   void destroy_pipeline(PipelineHandle handle) override;
+  void begin_render_pass(const RenderPassDesc& desc) override;
+  void end_render_pass() override;
   void draw_indexed(const DrawIndexed& command) override;
   ResourceBytes live_resource_bytes() const override;
   ResourceTelemetry resource_telemetry() const override;
@@ -183,6 +207,7 @@ class ValidatingRenderDevice final : public RenderDevice {
     BufferDesc desc;
     std::vector<std::byte> bytes;
   };
+  bool pass_active_=false;
   ResourceTelemetry telemetry_;
   void admit_bytes(std::uint64_t bytes);
   void record_allocation();

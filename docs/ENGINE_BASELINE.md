@@ -138,5 +138,8 @@ from this checkpoint; no release or deployment is implied.
 The feature branch now implements the P0 explicit shader/pipeline identity
 increment. The pinned code above intentionally remains unchanged as a reproducible
 baseline. See [Explicit shader program identities](GRAPHICS_BACKENDS.md#explicit-shader-program-identities)
-for the migrated descriptor contract. The next abstraction increment is general
-render-target/pass descriptions; physical GPU evidence is still outstanding.
+for the migrated descriptor contract. A subsequent increment adds explicit window
+render-target/pass descriptions, independent color/depth clear/load operations,
+and begin/end validation. See [Window render targets and render passes](GRAPHICS_BACKENDS.md#window-render-targets-and-render-passes).
+The pinned P1 render-target gap is partially addressed: owned offscreen attachments,
+formats and framebuffer lifetimes remain next. Physical GPU evidence is still outstanding.

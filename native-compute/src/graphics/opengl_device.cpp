@@ -71,6 +71,8 @@ struct GL {
   PFNGLBLENDFUNCPROC BlendFunc = get_proc<PFNGLBLENDFUNCPROC>("glBlendFunc");
   PFNGLDEPTHMASKPROC DepthMask = get_proc<PFNGLDEPTHMASKPROC>("glDepthMask");
   PFNGLCLEARCOLORPROC ClearColor = get_proc<PFNGLCLEARCOLORPROC>("glClearColor");
+  PFNGLCLEARDEPTHPROC ClearDepth = get_proc<PFNGLCLEARDEPTHPROC>("glClearDepth");
+  PFNGLBINDFRAMEBUFFERPROC BindFramebuffer = get_proc<PFNGLBINDFRAMEBUFFERPROC>("glBindFramebuffer");
   PFNGLCLEARPROC Clear = get_proc<PFNGLCLEARPROC>("glClear");
   PFNGLVIEWPORTPROC Viewport = get_proc<PFNGLVIEWPORTPROC>("glViewport");
   PFNGLREADPIXELSPROC ReadPixels = get_proc<PFNGLREADPIXELSPROC>("glReadPixels");
@@ -976,18 +978,33 @@ void OpenGLRenderDevice::draw_indexed(const DrawIndexed& command) {
   }
 }
 
-void OpenGLRenderDevice::clear_frame(int framebuffer_width, int framebuffer_height) {
-  if (framebuffer_width <= 0 || framebuffer_height <= 0) return;
-  // glClear(GL_DEPTH_BUFFER_BIT) respects DepthMask: a BLEND draw from the
-  // previous frame may have disabled depth writes. Restore writable depth
-  // before clearing, and keep the cached draw-state value synchronized.
-  if(!impl_->depth_write_state || !*impl_->depth_write_state) {
-    impl_->gl.DepthMask(GL_TRUE);
-    impl_->depth_write_state=true;
+void OpenGLRenderDevice::begin_render_pass(const RenderPassDesc& desc) {
+  // Validate the full descriptor/order before changing any OpenGL state.
+  impl_->validator.begin_render_pass(desc);
+  impl_->gl.BindFramebuffer(GL_FRAMEBUFFER,0);
+  impl_->gl.Viewport(0,0,static_cast<GLsizei>(desc.target.width),
+                          static_cast<GLsizei>(desc.target.height));
+  GLbitfield mask=0;
+  if(desc.color_load==AttachmentLoadOp::Clear) {
+    const auto& c=desc.clear_color;
+    impl_->gl.ClearColor(c[0],c[1],c[2],c[3]);
+    mask|=GL_COLOR_BUFFER_BIT;
   }
-  impl_->gl.Viewport(0, 0, framebuffer_width, framebuffer_height);
-  impl_->gl.ClearColor(0.065f, 0.095f, 0.13f, 1.0f);
-  impl_->gl.Clear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+  if(desc.depth_load==AttachmentLoadOp::Clear) {
+    // A previous transparent draw may have disabled depth writes. glClear
+    // respects DepthMask; restore it and synchronize the draw-state cache.
+    if(!impl_->depth_write_state || !*impl_->depth_write_state) {
+      impl_->gl.DepthMask(GL_TRUE);
+      impl_->depth_write_state=true;
+    }
+    impl_->gl.ClearDepth(desc.clear_depth);
+    mask|=GL_DEPTH_BUFFER_BIT;
+  }
+  if(mask)impl_->gl.Clear(mask);
+}
+
+void OpenGLRenderDevice::end_render_pass() {
+  impl_->validator.end_render_pass();
 }
 
 std::size_t OpenGLRenderDevice::count_fire_pixels(int width, int height) {
