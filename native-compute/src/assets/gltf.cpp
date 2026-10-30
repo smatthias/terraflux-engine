@@ -498,8 +498,15 @@ GltfModel import_gltf(const std::string& json_text,
          m.metallic_factor<0 || m.metallic_factor>1 ||
          m.roughness_factor<0 || m.roughness_factor>1)
         throw std::invalid_argument("glTF PBR factors must be in [0,1]");
-      if(optional(po,"metallicRoughnessTexture"))
-        throw std::invalid_argument("metallicRoughnessTexture not yet shaded");
+      if(const auto* texture=optional(po,"metallicRoughnessTexture")) {
+        const auto& info=object(*texture);
+        const auto index=uint(field(info,"index"),"metallicRoughnessTexture index");
+        if(index>=image_for_texture.size() || integer(info,"texCoord")!=0 ||
+           optional(info,"extensions"))
+          throw std::invalid_argument("metallicRoughnessTexture requires valid TEXCOORD_0");
+        m.metallic_roughness_map=image_for_texture[index];
+        m.metallic_roughness_sampling=sampling_for_texture[index];
+      }
       if(const auto* texture=optional(po,"baseColorTexture")){
         const auto& info=object(*texture);
         const auto index=uint(field(info,"index"),"baseColorTexture index");
@@ -523,7 +530,20 @@ GltfModel import_gltf(const std::string& json_text,
         m.base_color={rgba[0],rgba[1],rgba[2]};
       }
     }
-    if(optional(o,"normalTexture") || optional(o,"occlusionTexture") ||
+    if(const auto* normal=optional(o,"normalTexture")) {
+      const auto& info=object(*normal);
+      const auto index=uint(field(info,"index"),"normalTexture index");
+      if(index>=image_for_texture.size() || integer(info,"texCoord")!=0 ||
+         optional(info,"extensions"))
+        throw std::invalid_argument("normalTexture requires valid TEXCOORD_0");
+      m.normal_map=image_for_texture[index];
+      m.normal_sampling=sampling_for_texture[index];
+      if(const auto* scale=optional(info,"scale"))
+        m.normal_scale=number(*scale);
+      if(!std::isfinite(m.normal_scale) || m.normal_scale<0 || m.normal_scale>10)
+        throw std::invalid_argument("normalTexture scale must be within [0,10]");
+    }
+    if(optional(o,"occlusionTexture") ||
        optional(o,"emissiveTexture") || optional(o,"extensions"))
       throw std::invalid_argument("unsupported glTF material texture or extension");
     if(const auto* alpha=optional(o,"alphaMode");alpha && string(*alpha)!="OPAQUE")

@@ -16,6 +16,9 @@ struct Material {
   math::Vec3 base_color{1.0,1.0,1.0};
   std::string albedo_map;
   TextureSampling albedo_sampling{};
+  std::string metallic_roughness_map,normal_map;
+  TextureSampling metallic_roughness_sampling{},normal_sampling{};
+  double normal_scale=1.0;
   // Imported glTF PBR factors; current OpenGL renderer draws base color
   // only. These are preserved for a future metallic/roughness shader.
   double metallic_factor=1.0;

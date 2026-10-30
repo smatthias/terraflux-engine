@@ -288,6 +288,8 @@ in vec3 surfaceTint;
 in vec2 textureUv;
 in vec3 worldPosition;
 layout(binding=3) uniform sampler2D AlbedoTexture;
+layout(binding=6) uniform sampler2D MetallicRoughnessTexture;
+layout(binding=7) uniform sampler2D NormalTexture;
 layout(std140,binding=5) uniform PbrMaterial {
   vec4 factors;
   vec4 eye;
@@ -308,11 +310,26 @@ float smithG1(float nd,float roughness){
 }
 void main(){
   vec3 N=normalize(surfaceNormal);
+  // Reconstruct a tangent frame from world-space derivatives and UVs.
+  // glTF normal texture is linear tangent-space RGB.
+  vec3 dpdx=dFdx(worldPosition),dpdy=dFdy(worldPosition);
+  vec2 dudx=dFdx(textureUv),dudy=dFdy(textureUv);
+  float det=dudx.x*dudy.y-dudx.y*dudy.x;
+  vec3 sampled=texture(NormalTexture,textureUv).xyz*2.0-1.0;
+  sampled.xy*=factors.z;
+  if(abs(det)>1e-8){
+    vec3 T=(dpdx*dudy.y-dpdy*dudx.y)/det;
+    T=normalize(T-N*dot(N,T));
+    vec3 B=normalize(cross(N,T))*sign(det);
+    N=normalize(mat3(T,B,N)*sampled);
+  }
   vec3 V=normalize(eye.xyz-worldPosition);
   vec3 L=normalize(vec3(0.45,0.85,0.25));
   vec3 H=normalize(V+L);
-  float metallic=clamp(factors.x,0.0,1.0);
-  float roughness=clamp(factors.y,0.045,1.0);
+  // glTF metallic-roughness packing: G=roughness, B=metallic.
+  vec3 mr=texture(MetallicRoughnessTexture,textureUv).rgb;
+  float metallic=clamp(factors.x*mr.b,0.0,1.0);
+  float roughness=clamp(factors.y*mr.g,0.045,1.0);
   // Base-color texture and baseColorFactor use sRGB, light in linear RGB.
   vec3 base=pow(max(texture(AlbedoTexture,textureUv).rgb,vec3(0.0)),vec3(2.2));
   base*=pow(max(surfaceTint,vec3(0.0)),vec3(2.2));
@@ -754,6 +771,8 @@ PipelineHandle OpenGLRenderDevice::create_pipeline(PipelineDesc desc) {
     if (binding.kind != ShaderResourceKind::UniformBuffer &&
         !(textured && binding.kind == ShaderResourceKind::SampledTexture &&
           binding.name=="AlbedoTexture") &&
+        !(pbr && binding.kind==ShaderResourceKind::SampledTexture &&
+          (binding.name=="MetallicRoughnessTexture" || binding.name=="NormalTexture")) &&
         !(instanced && binding.kind==ShaderResourceKind::StorageBuffer &&
           binding.name=="InstanceData" && binding.slot==4) &&
         !(wildfire && binding.kind == ShaderResourceKind::StorageBuffer &&

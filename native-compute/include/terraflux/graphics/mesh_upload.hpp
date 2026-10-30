@@ -38,7 +38,7 @@ ShaderLayout instanced_textured_object_shader_layout();
 ShaderLayout pbr_textured_object_shader_layout(bool instanced);
 // std140 fragment UBO slot 5, one per material section.
 struct PbrMaterialUniform {
-  std::array<float,4> factors{}; // metallic, roughness
+  std::array<float,4> factors{}; // metallic, roughness, normalScale, unused
   std::array<float,4> eye{};     // world-space camera position
 };
 static_assert(sizeof(PbrMaterialUniform)==32);

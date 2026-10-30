@@ -124,6 +124,8 @@ ShaderLayout pbr_textured_object_shader_layout(bool instanced) {
   auto layout=instanced?instanced_textured_object_shader_layout():
                        textured_object_shader_layout();
   layout.bindings.push_back({"PbrMaterial",ShaderResourceKind::UniformBuffer,5,kFragmentStage});
+  layout.bindings.push_back({"MetallicRoughnessTexture",ShaderResourceKind::SampledTexture,6,kFragmentStage});
+  layout.bindings.push_back({"NormalTexture",ShaderResourceKind::SampledTexture,7,kFragmentStage});
   validate_shader_layout(layout);
   return layout;
 }

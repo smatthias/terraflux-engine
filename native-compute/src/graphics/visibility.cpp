@@ -15,10 +15,15 @@ bool finite(math::Vec3 p) {
 }
 using Key=std::tuple<std::uint32_t,std::uint32_t,std::uint32_t,
                      std::uint32_t,std::uint32_t,std::uint32_t,std::uint32_t,
-                     std::uint32_t>;
+                     std::uint32_t,std::uint32_t,std::uint32_t>;
 Key key(const PreparedDraw& item) {
   const auto& cmd=item.command;
-  const auto texture=cmd.textures.empty()?0:cmd.textures.front().texture.id;
+  const auto find_texture=[&](std::uint32_t slot) {
+    const auto it=std::find_if(cmd.textures.begin(),cmd.textures.end(),
+        [&](const TextureBinding& binding){return binding.slot==slot;});
+    return it==cmd.textures.end()?0:it->texture.id;
+  };
+  const auto texture=find_texture(3);
   const auto camera=std::find_if(cmd.uniform_buffers.begin(),cmd.uniform_buffers.end(),
       [](const UniformBufferBinding& b){return b.slot==0;});
   const auto pbr=std::find_if(cmd.uniform_buffers.begin(),cmd.uniform_buffers.end(),
@@ -26,7 +31,8 @@ Key key(const PreparedDraw& item) {
   return {cmd.pipeline.id,cmd.vertex_buffer.id,cmd.index_buffer.id,texture,
           cmd.first_index,cmd.index_count,
           camera==cmd.uniform_buffers.end()?0:camera->buffer.id,
-          pbr==cmd.uniform_buffers.end()?0:pbr->buffer.id};
+          pbr==cmd.uniform_buffers.end()?0:pbr->buffer.id,
+          find_texture(6),find_texture(7)};
 }
 }
 BoundingSphere mesh_bounds(const assets::Mesh& mesh) {
@@ -133,7 +139,7 @@ QueueStats OpaqueRenderQueue::submit_instanced(RenderDevice& device,
   // Validate the whole batch before any draw or writes.
   for(const auto& item:pending_){
     if(!item.object_uniform || (item.command.uniform_buffers.size()!=2 && item.command.uniform_buffers.size()!=3) ||
-       !item.command.storage_buffers.empty() || item.command.textures.size()!=1 ||
+       !item.command.storage_buffers.empty() || (item.command.textures.size()!=1 && item.command.textures.size()!=3) ||
        item.command.instance_count!=1)
       throw std::invalid_argument("instanced queue requires ordinary textured object draws");
     const auto& bindings=item.command.uniform_buffers;
@@ -228,7 +234,7 @@ QueueStats OpaqueRenderQueue::submit_instanced_streamed(RenderDevice& device,
     throw std::invalid_argument("instancing requires a pipeline and valid capacity");
   for(const auto& item:pending_){
     if(!item.object_uniform || (item.command.uniform_buffers.size()!=2 && item.command.uniform_buffers.size()!=3) ||
-       !item.command.storage_buffers.empty() || item.command.textures.size()!=1 ||
+       !item.command.storage_buffers.empty() || (item.command.textures.size()!=1 && item.command.textures.size()!=3) ||
        item.command.instance_count!=1)
       throw std::invalid_argument("streamed queue requires ordinary textured object draws");
     const auto& bindings=item.command.uniform_buffers;
