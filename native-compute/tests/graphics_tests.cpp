@@ -1,6 +1,7 @@
 #include <terraflux/graphics/render_device.hpp>
 #include <terraflux/graphics/composite.hpp>
 #include <terraflux/graphics/render_pass.hpp>
+#include <terraflux/graphics/layer_visibility.hpp>
 #include <type_traits>
 #include <terraflux/graphics/terrain_upload.hpp>
 #include <terraflux/grid.hpp>
@@ -195,13 +196,15 @@ void test_storage_buffer_validation() {
   const auto ib = device.create_buffer(
       {BufferUsage::Index, std::as_bytes(std::span(upload.indices)).size()},
       std::as_bytes(std::span(upload.indices)));
+  const auto flags=LayerVisibility{}.uniform();
+  const auto layers=device.create_buffer({BufferUsage::Uniform,sizeof(flags)},std::as_bytes(std::span(&flags,1)));
   const auto pipeline = device.create_pipeline({ShaderProgramId::ContractOnly,layout, true});
-  device.draw_indexed({pipeline, vb, ib, 0, 6, {}, {{1, field}}});
-  must_throw([&] { device.draw_indexed({pipeline, vb, ib, 0, 6, {}, {}}); },
+  device.draw_indexed({pipeline, vb, ib, 0, 6, {{10,layers}}, {{1, field}}});
+  must_throw([&] { device.draw_indexed({pipeline, vb, ib, 0, 6, {{10,layers}}, {}}); },
              "missing field storage buffer must be rejected");
-  must_throw([&] { device.draw_indexed({pipeline, vb, ib, 0, 6, {}, {{1, vb}}}); },
+  must_throw([&] { device.draw_indexed({pipeline, vb, ib, 0, 6, {{10,layers}}, {{1, vb}}}); },
              "vertex buffer cannot be bound as shader storage");
-  must_throw([&] { device.draw_indexed({pipeline, vb, ib, 0, 6, {}, {{2, field}}}); },
+  must_throw([&] { device.draw_indexed({pipeline, vb, ib, 0, 6, {{10,layers}}, {{2, field}}}); },
              "storage binding must match shader layout");
   device.destroy_buffer(field);
 }
@@ -351,6 +354,34 @@ void test_resource_telemetry() {
   require(!device.resource_telemetry().peak_total_bytes,"empty reset clears byte peaks");
   must_throw([&]{(void)device.create_buffer({BufferUsage::Vertex,0},{});},"malformed request rejected");
   require(!device.resource_telemetry().budget_rejections,"validation error is not a budget rejection");
+}
+
+void test_layer_visibility_contract() {
+  ValidatingRenderDevice device;RenderResourceOwner owner(device);
+  const auto upload=quad_upload();
+  const auto vb=owner.create_buffer({BufferUsage::Vertex,upload.vertices.size()*sizeof(TerrainGpuVertex)},std::as_bytes(std::span(upload.vertices)));
+  const auto ib=owner.create_buffer({BufferUsage::Index,upload.indices.size()*4},std::as_bytes(std::span(upload.indices)));
+  const std::array<std::uint32_t,4> cells{2,2,0,1};
+  const auto field=owner.create_buffer({BufferUsage::Storage,sizeof(cells)},std::as_bytes(std::span(cells)));
+  const auto pipeline=owner.create_pipeline({ShaderProgramId::Wildfire,wildfire_shader_layout()});
+  auto flags=LayerVisibility{}.uniform();
+  const auto layers=owner.create_buffer({BufferUsage::Uniform,sizeof(flags)},std::as_bytes(std::span(&flags,1)));
+  const std::array<std::byte,8> small{};
+  const auto short_buffer=owner.create_buffer({BufferUsage::Uniform,small.size()},small);
+  RenderPassScope pass(device,{{64,64}});
+  DrawIndexed draw{pipeline,vb,ib,0,6,{},{{1,field}}};
+  must_throw([&]{device.draw_indexed(draw);},"wildfire layers require explicit uniform binding");
+  draw.uniform_buffers={{10,short_buffer}};
+  must_throw([&]{device.draw_indexed(draw);},"undersized layer uniform rejected");
+  draw.uniform_buffers={{10,layers}};
+  for(bool terrain:{false,true})for(bool fire:{false,true}) {
+    const LayerVisibility state{terrain,fire};flags=state.uniform();
+    require(flags.flags[0]==float(terrain) && flags.flags[1]==float(fire) &&
+            state.surface_visible(true)==(terrain||fire) && state.surface_visible(false)==terrain,
+            "layer uniform and surface routing preserve independent combinations");
+    device.update_buffer(layers,0,std::as_bytes(std::span(&flags,1)));device.draw_indexed(draw);
+  }
+  require(device.draw_count()==4,"only valid layer bindings submit");
 }
 
 void test_render_pass_scopes() {
@@ -663,7 +694,8 @@ int main() {
     test_sampled_target_composition();
     test_resize_recovery();
     test_render_pass_scopes();
-    std::cout << "TerraFlux graphics contracts: 20 tests passed\n";
+    test_layer_visibility_contract();
+    std::cout << "TerraFlux graphics contracts: 21 tests passed\n";
   } catch (const std::exception& error) {
     std::cerr << "TerraFlux graphics test failed: " << error.what() << '\n';
     return 1;

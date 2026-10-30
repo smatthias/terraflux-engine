@@ -265,5 +265,9 @@ monolithic pixel reference. CI runs direct/offscreen variants and a mixed-scene
 asset lifecycle with retention enabled. The earlier immediate-eviction test
 requires a zero window.
 
-Next: independent terrain/fire layer visibility controls. Physical GPU timing,
+Independent terrain/fire layer controls now skip surface submissions and explicitly
+release selective tile buffers when neither layer needs the surface; returning
+visibility rehydrates them. Layer-skipped tiles are reported separately from
+frustum rejections. See [Terrain/fire layer visibility](GRAPHICS_BACKENDS.md#terrainfire-layer-visibility).
+Replay speed controls are next. Physical GPU timing,
 LOD, source streaming and CPU recipe eviction remain outstanding.

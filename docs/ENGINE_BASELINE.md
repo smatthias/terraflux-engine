@@ -157,7 +157,7 @@ The viewer also offers eager tile uploads and conservative AABB frustum submissi
 with monolithic pixel-reference checks across orbit views, wildfire and asset
 lifecycle paths. Selective GPU tile residency is implemented with retained recipes,
 transactional set transitions and budget/rehydration checks. Bounded retention
-hysteresis adds count/byte pressure trimming and failure-safe ages. The next
-increment targets independent terrain/fire visibility in the pinned P1 simulation
-visualization gap. The pinned snapshot remains unchanged. LOD, broader attachment
+hysteresis adds count/byte pressure trimming and failure-safe ages. Independent terrain/fire visibility now addresses part of the pinned P1 simulation
+visualization gap, with reflected layer uniforms and deterministic image/state
+checks. Replay speed controls and timing tests are next. The pinned snapshot remains unchanged. LOD, broader attachment
 formats/effects and physical GPU evidence remain outstanding.

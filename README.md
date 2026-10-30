@@ -373,6 +373,38 @@ Viewer passes use these guards in both rendering modes. Rendering errors still
 propagate to the viewer's existing error handler; native/Mesa recovery tests also
 verify that the device can start a new pass after the failure and cleanup.
 
+### Terrain and fire layer visibility
+
+T toggles terrain shading and F toggles fire/burn marks; each key press toggles
+once. Startup flags `--hide-terrain` and `--hide-fire` select the same states.
+Both layers are visible by default. Window titles show their states and identify
+fire as unavailable in the terrain-only demo. LAYERS_JSON records requested states,
+fire availability and whether the terrain/fire surface is submitted.
+
+```bash
+./build-gl/terraflux-terrain-viewer --request /tmp/terraflux-request.json \
+  --response /tmp/terraflux-response.json --hide-terrain
+LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a -s "-screen 0 1280x800x24" \
+  ./build-gl/terraflux-terrain-viewer --request /tmp/terraflux-request.json \
+  --response /tmp/terraflux-response.json --layers-test --smoke-test
+```
+
+Terrain-only mode omits both flame and burned-area shading. Fire-only mode keeps
+active/burned footprints at their terrain elevation, discarding unaffected ground
+so it writes neither color nor depth. Hiding both skips surface draws while
+imported objects remain visible. Without replay data, fire visibility has no visual
+effect and hiding terrain skips the demo surface. Visibility changes do not pause,
+reset or edit replay or scene state. Fire-state buffers continue to receive replay
+updates while hidden. Selective tile mode releases surface buffers when neither
+layer needs them, and rehydrates on return; eager tiled mode keeps its buffers.
+
+The five-frame `--layers-test` requires replay smoke mode without assets or other
+scripted tests, with visible active fire and unaffected terrain in view. It checks
+both, terrain-only, fire-only, hidden and restored images. Shader animation time is
+fixed only for that diagnostic; engine/replay clocks continue at deterministic
+60 Hz, and the fire field/frame are checked unchanged over the short sequence.
+CI covers direct and resident/offscreen paths plus objects with both layers hidden.
+
 ### Wildfire replay and runtime checks
 
 ```bash
@@ -639,7 +671,7 @@ hours or release-readiness guarantees. The PS4 backend is unimplemented.
 
 | Desktop engine — Phases 1–9 | Full roadmap including PS4 |
 | --- | --- |
-| **~91%** (unchanged) | **~62%** (unchanged) |
+| **~92%** (previously ~91%) | **~63%** (previously ~62%) |
 
 | Phase | Component | Estimated completion |
 | --- | --- | ---: |
@@ -647,8 +679,8 @@ hours or release-readiness guarantees. The PS4 backend is unimplemented.
 | 2 | Rendering abstraction | ~89% (previously ~88%) |
 | 3 | OpenGL backend | ~91% (previously ~90%) |
 | 4 | 3D terrain renderer | ~89% (previously ~88%) |
-| 5 | Simulation visualization | 65% |
-| 6 | Shader system | ~82% (previously ~80%) |
+| 5 | Simulation visualization | ~75% (previously 65%) |
+| 6 | Shader system | ~84% (previously ~82%) |
 | 7 | Scene and asset system | ~90% (previously 86%) |
 | 8 | Engine runtime | ~90% (previously ~89%) |
 | 9 | Performance | ~83% (previously ~82%) |
@@ -703,8 +735,12 @@ CPU recipes remain retained; LOD is future work. See [terrain tile geometry](doc
 Optional `--terrain-retain-frames N` now keeps recently hidden GPU tiles for up
 to N successful visibility updates, with visible-first count/byte trimming and
 transactional age updates. A six-frame Mesa test checks reuse, expiry and exact
-monolithic pixels. Rounded overall progress estimates remain unchanged.
-Next planned implementation: independent terrain/fire layer visibility controls.
+monolithic pixels. Independent terrain/fire visibility is now available through T/F keys and
+`--hide-terrain` / `--hide-fire`. Fire-only rendering discards unaffected ground;
+hiding fire removes active/burned shading without pausing replay. The five-state
+layer test checks isolation, exact restoration, unchanged fire data and continued
+replay timing through monolithic, tiled/resident and offscreen paths.
+Next planned implementation: replay speed controls with deterministic timing tests.
 See the [prioritized gaps and acceptance criteria](docs/ENGINE_BASELINE.md#remaining-renderer-work-in-priority-order). GPU meshes are created on demand; CPU model data
 and decoded image recipes remain eager and retained for reattachment. Asynchronous streaming, skeletal animation
 and full glTF/IBL support remain future work.

@@ -370,6 +370,13 @@ void ValidatingRenderDevice::draw_indexed(const DrawIndexed& command) {
       throw std::invalid_argument("uniform buffer bound to undeclared slot");
   }
 
+  for(const auto& required:layout.bindings)if(required.kind==ShaderResourceKind::UniformBuffer && required.name=="LayerVisibility") {
+    const auto bound=std::find_if(command.uniform_buffers.begin(),command.uniform_buffers.end(),
+        [&](const auto& value){return value.slot==required.slot;});
+    if(bound==command.uniform_buffers.end() || buffers_.at(bound->buffer.id).desc.size_bytes<16)
+      throw std::invalid_argument("LayerVisibility requires a bound 16-byte uniform buffer");
+  }
+
   std::unordered_set<std::uint32_t> storage_slots;
   for (const auto& bound : command.storage_buffers) {
     if (!storage_slots.insert(bound.slot).second)

@@ -151,7 +151,7 @@ auto pipeline = device.create_pipeline({
 | Identity | Contract |
 | --- | --- |
 | Terrain | Terrain vertex layout and camera uniform |
-| Wildfire | Terrain upload stride, camera and FireState storage |
+| Wildfire | Terrain upload stride, camera, FireState storage and LayerVisibility uniform |
 | Object | Local untextured geometry and object uniform |
 | TexturedObject | Textured local geometry, object uniform and albedo sampler |
 | InstancedTexturedObject | Textured geometry with InstanceData storage |
@@ -441,5 +441,59 @@ See the terrain contract for final-set count limits, transient byte admission,
 complete-surface preflight and recovery tests. Bounded hidden-tile retention now
 reduces re-upload churn on brief returns, with visible-first pressure trimming and
 transactional ages. Native/Mesa checks cover handle reuse, expiry and pixel parity.
-Independent terrain/fire layer visibility controls are next.
+Independent terrain/fire controls now isolate shading through a reflected layer
+uniform and preserve replay state; see the contract below.
 Physical GPU validation remains outstanding.
+
+
+## Terrain/fire layer visibility
+
+`layer_visibility.hpp` defines LayerVisibility with independent terrain/fire flags
+and a 16-byte, 16-aligned LayerVisibilityUniform containing one float4. X enables
+ground shading, Y enables active/burned fire visualization, and Z/W are reserved
+zero. surface_visible(has_fire_field) routes the CPU draw: ground needs geometry,
+and a fire-only surface needs geometry only when a replay fire field exists.
+
+The Wildfire shader contract adds a required fragment UBO named LayerVisibility
+at slot 10. Camera remains 80 bytes and FireState remains storage slot 1. The
+shared validator rejects missing/undersized layer uniforms; OpenGL reflects the
+block name, binding and 16-byte size before publication. Like PbrMaterial, this
+known fragment-only block uses the backend's fragment-stage reflection fallback
+for Mesa's inconsistent block-stage reporting. Existing Wildfire API callers must
+bind the layer UBO; TerrainTileRenderer::draw accepts it as the final optional
+argument. Other shader families do not declare this binding.
+
+With both flags enabled, existing wildfire ground/flame/burn shading is preserved.
+Disabling fire returns clean terrain shading. Fire-only mode discards fragments
+outside active/burned footprints (a 0.001 contribution cutoff), then draws those
+patches without the underlying ground shading. Discarded fragments write no depth,
+so imported objects behind unaffected hidden ground remain visible. This is a
+surface visualization, not volumetric flame geometry or a new simulation model.
+The CPU skips the surface entirely when neither enabled layer has data to draw.
+
+Viewer T/F controls are edge-triggered; --hide-terrain and --hide-fire set initial
+states. Replay application, fire SSBO updates, independent scene/engine clocks and
+asset visibility remain separate. The shared geometry/camera/fire-grid origin is
+unchanged. In selective residency mode an entirely hidden surface explicitly
+releases all tile buffer pairs (bypassing retention), while keeping CPU recipes
+and fire data. Returning layers rehydrate before drawing. Eager residency stays
+allocated. Empty terrain passes still clear their target; object/composite passes
+continue normally.
+
+LAYERS_JSON reports terrain/fire requests, fire_available and surface_visible.
+TERRAIN_JSON adds surface_visible and layer_skipped: a surface skipped by visibility
+is not counted as a frustum rejection. Benchmark JSON records terrain_visible and
+fire_visible, and counts actual terrain submissions. Layer state is session-only
+and is not added to the scene/residency sidecar in this increment.
+
+Native graphics tests cover the uniform contract and all CPU routing combinations.
+The five-frame Mesa replay test checks both layers, clean ground, fire-only patches,
+uniform sky with both hidden, and exact restoration. It freezes shader animation
+only for this comparison, while checking a 60 Hz engine/replay accumulator, a
+stable selected replay frame and unchanged fire-state cells. Monolithic and
+resident/tiled/offscreen paths are exercised; the latter rehydrates after full
+layer hiding. Separate smoke checks verify objects with both surface layers hidden.
+The diagnostic requires visible active fire plus unaffected ground in view.
+
+Next: replay speed controls with deterministic timing tests. Physical GPU
+validation remains outstanding.

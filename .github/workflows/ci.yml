@@ -173,6 +173,26 @@ jobs:
             ./build-gl/terraflux-terrain-viewer --terrain-retain-frames 2 --terrain-tile-quads 16 \
             --smoke-test --offscreen --asset-lifecycle-test --scene examples/mixed_asset_scene.json
 
+      - name: Verify independent terrain and fire visibility
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --layers-test --smoke-test \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json \
+            | tee /tmp/terraflux-layers.log
+          grep -q "Layer visibility passed" /tmp/terraflux-layers.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --layers-test --smoke-test --offscreen \
+            --terrain-retain-frames 2 --terrain-tile-quads 8 \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --hide-terrain --hide-fire \
+            --terrain-residency --offscreen --scene examples/mixed_asset_scene.json
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --hide-fire \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json
+
       - name: Verify viewer offscreen composition and resize recovery
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"

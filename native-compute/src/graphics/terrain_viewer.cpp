@@ -3,6 +3,7 @@
 #include <terraflux/graphics/render_pass.hpp>
 #include <terraflux/graphics/terrain_upload.hpp>
 #include <terraflux/graphics/terrain_tiles.hpp>
+#include <terraflux/graphics/layer_visibility.hpp>
 #include <terraflux/graphics/mesh_upload.hpp>
 #include <terraflux/graphics/resource_owner.hpp>
 #include <terraflux/graphics/asset_slot.hpp>
@@ -81,6 +82,7 @@ struct Options {
   bool asset_lifecycle_test=false,scene_controls_test=false,scene_detach_test=false,scene_residency_test=false;
   bool residency_report=false,start_inactive=false,resource_recovery_test=false;
   bool offscreen=false,offscreen_resize_test=false;
+  bool hide_terrain=false,hide_fire=false,layers_test=false;
   bool terrain_tiles=false,terrain_tile_test=false,terrain_residency=false,terrain_residency_test=false,terrain_retention_test=false;
   std::uint32_t max_resident_terrain_tiles=4096,terrain_retention_frames=0;
   std::uint32_t terrain_tile_quads=32;
@@ -97,6 +99,9 @@ Options parse_args(int argc, char** argv) {
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
     if (arg == "--smoke-test") options.smoke_test = true;
+    else if(arg=="--hide-terrain")options.hide_terrain=true;
+    else if(arg=="--hide-fire")options.hide_fire=true;
+    else if(arg=="--layers-test")options.layers_test=true;
     else if(arg=="--terrain-residency"){options.terrain_residency=true;options.terrain_tiles=true;}
     else if(arg=="--terrain-retention-test")options.terrain_retention_test=true;
     else if(arg=="--terrain-retain-frames" && i+1<argc) {
@@ -179,8 +184,14 @@ Options parse_args(int argc, char** argv) {
     else if (arg == "--save-state" && i+1<argc)options.save_state=argv[++i];
     else if (arg == "--scene" && i + 1 < argc) options.scene_file = argv[++i];
     else throw std::invalid_argument(
-        "usage: terraflux-terrain-viewer [--request request.json --response response.json] [--obj model.obj | --gltf model.gltf] [--texture texture.ppm] [--scene scene.json (legacy scenes require --obj)] [--terrain-tiles] [--terrain-residency] [--terrain-retain-frames 30] [--terrain-retention-test with --smoke-test --terrain-retain-frames 2] [--max-resident-terrain-tiles 4096] [--terrain-residency-test with --smoke-test --terrain-residency] [--terrain-tile-quads 32] [--terrain-tile-test with --smoke-test --terrain-tiles] [--offscreen] [--offscreen-resize-test with --offscreen --smoke-test] [--profile] [--no-culling] [--no-instancing] [--asset-preview with --gltf] [--benchmark-frames 60] [--smoke-test] [--asset-lifecycle-test with --smoke-test]");
+        "usage: terraflux-terrain-viewer [--request request.json --response response.json] [--obj model.obj | --gltf model.gltf] [--texture texture.ppm] [--scene scene.json (legacy scenes require --obj)] [--hide-terrain] [--hide-fire] [--layers-test with replay --smoke-test] [--terrain-tiles] [--terrain-residency] [--terrain-retain-frames 30] [--terrain-retention-test with --smoke-test --terrain-retain-frames 2] [--max-resident-terrain-tiles 4096] [--terrain-residency-test with --smoke-test --terrain-residency] [--terrain-tile-quads 32] [--terrain-tile-test with --smoke-test --terrain-tiles] [--offscreen] [--offscreen-resize-test with --offscreen --smoke-test] [--profile] [--no-culling] [--no-instancing] [--asset-preview with --gltf] [--benchmark-frames 60] [--smoke-test] [--asset-lifecycle-test with --smoke-test]");
   }
+  if(options.layers_test && (!options.smoke_test || options.request_file.empty() ||
+      !options.scene_file.empty() || !options.obj_file.empty() || !options.gltf_file.empty() ||
+      options.hide_terrain || options.hide_fire || options.offscreen_resize_test || options.asset_lifecycle_test ||
+      options.scene_controls_test || options.scene_detach_test || options.scene_residency_test ||
+      options.terrain_tile_test || options.terrain_residency_test || options.terrain_retention_test))
+    throw std::invalid_argument("--layers-test requires replay smoke mode without assets, initial hidden layers or another scripted test");
   if(options.terrain_retention_test && (!options.terrain_residency || !options.smoke_test ||
       options.terrain_retention_frames!=2 || !options.request_file.empty() || !options.scene_file.empty() ||
       !options.obj_file.empty() || !options.gltf_file.empty() || options.offscreen_resize_test ||
@@ -378,6 +389,16 @@ int main(int argc, char** argv) {
       vb=owned.create_buffer({BufferUsage::Vertex,vertices.size()},vertices);
       ib=owned.create_buffer({BufferUsage::Index,indices.size()},indices);
     }
+    LayerVisibility layer_visibility{!options.hide_terrain,!options.hide_fire};
+    std::optional<BufferHandle> layer_buffer;
+    if(playback) {
+      const auto flags=layer_visibility.uniform();
+      layer_buffer=owned.create_buffer({BufferUsage::Uniform,sizeof(flags)},std::as_bytes(std::span(&flags,1)));
+    }
+    const auto layer_title=[&] {
+      return std::string(" | T terrain ")+(layer_visibility.terrain?"on":"off")+
+             " | F fire "+(playback?(layer_visibility.fire?"on":"off"):"unavailable");
+    };
     std::optional<BufferHandle> fire_buffer;
     if (fire_field) {
       const auto fire_bytes = std::as_bytes(std::span(fire_field->states));
@@ -1007,7 +1028,13 @@ int main(int argc, char** argv) {
     double previous_time = glfwGetTime();
     terraflux::runtime::FixedStepScheduler scheduler(1.0/60.0,0.25,8);
     terraflux::runtime::ScenePlayback scene_playback;
-    bool previous_pause=false,previous_step=false;
+    bool previous_pause=false,previous_step=false,previous_terrain_key=false,previous_fire_key=false;
+    std::vector<std::uint8_t> layers_both,layers_ground,layers_fire;
+    std::vector<std::uint32_t> layers_field_snapshot;
+    std::size_t layers_frame_snapshot=0;
+    glfwSetWindowTitle(window.get(),(std::string("TerraFlux")+layer_title()).c_str());
+    if(!options.smoke_test && !options.benchmark_frames)
+      std::cout<<"Layer controls: T terrain | F fire (visibility only; replay continues)\n";
     std::string last_scene_title;
     std::optional<terraflux::scene::Scene> expected_controls_scene;
     if(options.scene_controls_test) {
@@ -1078,7 +1105,7 @@ int main(int argc, char** argv) {
       previous_unload=unload;previous_reload=reload;
       const double now = glfwGetTime();
       const double profile_update_start = glfwGetTime();
-      const double elapsed = (options.benchmark_frames || options.scene_controls_test)?
+      const double elapsed = (options.benchmark_frames || options.scene_controls_test || options.layers_test)?
                              (1.0/60.0):std::max(0.0,now-previous_time);
       const double delta = std::clamp(elapsed, 0.0, 0.1);
       previous_time = now;
@@ -1125,6 +1152,17 @@ int main(int argc, char** argv) {
           throw std::runtime_error("scene clock pause/step affected independent engine time");
       }
 
+      const bool terrain_key=glfwGetKey(window.get(),GLFW_KEY_T)==GLFW_PRESS;
+      const bool fire_key=glfwGetKey(window.get(),GLFW_KEY_F)==GLFW_PRESS;
+      const bool layer_changed=(terrain_key && !previous_terrain_key) || (fire_key && !previous_fire_key);
+      if(terrain_key && !previous_terrain_key)layer_visibility.terrain=!layer_visibility.terrain;
+      if(fire_key && !previous_fire_key)layer_visibility.fire=!layer_visibility.fire;
+      previous_terrain_key=terrain_key;previous_fire_key=fire_key;
+      if(options.layers_test) {
+        constexpr std::array<LayerVisibility,5> states{{{true,true},{true,false},{false,true},{false,false},{true,true}}};
+        layer_visibility=states.at(rendered_frames);
+      }
+      if(layer_changed)glfwSetWindowTitle(window.get(),(std::string("TerraFlux")+layer_title()).c_str());
       const bool space = glfwGetKey(window.get(), GLFW_KEY_SPACE) == GLFW_PRESS;
       const bool home = glfwGetKey(window.get(), GLFW_KEY_HOME) == GLFW_PRESS;
       const bool back = glfwGetKey(window.get(), GLFW_KEY_COMMA) == GLFW_PRESS;
@@ -1161,7 +1199,7 @@ int main(int argc, char** argv) {
               std::to_string(playback->frames.size()) +
               " | active " + std::to_string(current.active.size()) +
               " | burned " + std::to_string(current.burned.size()) +
-              " | Space pause | Home reset | , . step | arrows orbit | +/- zoom";
+              " | Space pause | Home reset | , . step | arrows orbit | +/- zoom"+layer_title();
           glfwSetWindowTitle(window.get(), title.c_str());
         }
       }
@@ -1178,6 +1216,7 @@ int main(int argc, char** argv) {
         }
         if(playback)title+=" | Fire "+std::to_string(playback_frame+1)+"/"+
             std::to_string(playback->frames.size())+" | Space pause fire";
+        title+=layer_title();
         if(title!=last_scene_title) {
           glfwSetWindowTitle(window.get(),title.c_str());
           last_scene_title=std::move(title);
@@ -1253,14 +1292,25 @@ int main(int argc, char** argv) {
         distance=scene_camera.starting_distance*0.2;
         yaw=rendered_frames==1?0.45:1.95;pitch=0.55;
       }
+      const bool draw_surface=layer_visibility.surface_visible(playback.has_value());
+      if(layer_buffer) {
+        const auto flags=layer_visibility.uniform();
+        device.update_buffer(*layer_buffer,0,std::as_bytes(std::span(&flags,1)));
+      }
+      if(options.smoke_test || layer_changed)
+        std::cout<<"LAYERS_JSON={\"terrain\":"<<(layer_visibility.terrain?"true":"false")
+                 <<",\"fire\":"<<(layer_visibility.fire?"true":"false")
+                 <<",\"fire_available\":"<<(playback?"true":"false")
+                 <<",\"surface_visible\":"<<(draw_surface?"true":"false")<<"}\n";
       const auto camera_vp=update_camera(device, camera, scene_width, scene_height, scene_camera,
                     yaw, pitch, distance,
                     cell_size, fire_field ? fire_field->width : 1,
-                    fire_field ? fire_field->height : 1, engine_time);
+                    fire_field ? fire_field->height : 1, options.layers_test?0.0:engine_time);
       const auto terrain_frustum=Frustum::from_view_projection(camera_vp);
       TerrainResidencyChange terrain_residency_change;
       if(options.terrain_residency) {
-        terrain_residency_change=tiled_terrain->synchronize_visible(terrain_frustum,!options.no_culling);
+        terrain_residency_change=draw_surface?tiled_terrain->synchronize_visible(terrain_frustum,!options.no_culling):
+            tiled_terrain->set_resident_tiles({});
         if(terrain_residency_change.evicted)terrain_saw_eviction=true;
         if(rendered_frames>0 && terrain_residency_change.admitted)terrain_saw_readmission=true;
         if(options.residency_report && (terrain_residency_change.admitted || terrain_residency_change.evicted))
@@ -1269,16 +1319,18 @@ int main(int argc, char** argv) {
       if(record_gpu)device.begin_gpu_timing();
       DrawIndexed command{pipeline,vb,ib,0,static_cast<std::uint32_t>(upload.indices.size()),{{0,camera}}, {}};
       if(fire_buffer)command.storage_buffers.push_back({1,*fire_buffer});
+      if(layer_buffer)command.uniform_buffers.push_back({10,*layer_buffer});
       std::vector<std::uint8_t> terrain_reference;
       if(tiled_terrain && options.smoke_test) {
         RenderPassScope reference_pass(device,{scene_target});
-        device.draw_indexed(command);++frame_draws;
+        if(draw_surface){device.draw_indexed(command);++frame_draws;}
         terrain_reference=device.capture_rgba(scene_width,scene_height);
       }
       RenderPassScope terrain_pass(device,{scene_target});
       TerrainTileDrawStats terrain_stats;
       if(tiled_terrain) {
-        terrain_stats=tiled_terrain->draw(pipeline,camera,fire_buffer,terrain_frustum,!options.no_culling);
+        if(draw_surface)terrain_stats=tiled_terrain->draw(pipeline,camera,fire_buffer,terrain_frustum,!options.no_culling,layer_buffer);
+        else terrain_stats.total=tiled_terrain->tile_count();
         frame_draws+=static_cast<std::uint32_t>(terrain_stats.draws);
         if(options.smoke_test && device.capture_rgba(scene_width,scene_height)!=terrain_reference)
           throw std::runtime_error("tiled terrain differs from monolithic reference pixels");
@@ -1288,6 +1340,8 @@ int main(int argc, char** argv) {
           std::cout<<"TERRAIN_JSON={\"tiles\":"<<terrain_stats.total<<",\"visible\":"<<terrain_stats.visible
                    <<",\"culled\":"<<terrain_stats.culled<<",\"draws\":"<<terrain_stats.draws
                    <<",\"triangles\":"<<terrain_stats.triangles
+                   <<",\"surface_visible\":"<<(draw_surface?"true":"false")
+                   <<",\"layer_skipped\":"<<(draw_surface?0:terrain_stats.total)
                    <<",\"geometry_bytes\":"<<tiled_terrain->geometry_bytes()
                    <<",\"resident_tiles\":"<<tiled_terrain->resident_tile_count()
                    <<",\"resident_geometry_bytes\":"<<tiled_terrain->resident_bytes()
@@ -1297,7 +1351,41 @@ int main(int argc, char** argv) {
                    <<",\"retention_frames\":"<<tiled_terrain->retention_frames()
                    <<",\"retained_hidden\":"<<terrain_residency_change.retained
                    <<",\"pressure_trimmed\":"<<terrain_residency_change.trimmed<<"}\n";
-      } else {device.draw_indexed(command);++frame_draws;}
+      } else if(draw_surface){device.draw_indexed(command);++frame_draws;}
+      if(options.layers_test) {
+        const auto pixels=device.capture_rgba(scene_width,scene_height);
+        if(rendered_frames==0) {
+          layers_both=pixels;layers_field_snapshot=fire_field->states;layers_frame_snapshot=playback_frame;
+          if(!device.count_fire_pixels(scene_width,scene_height))throw std::runtime_error("layer test has no initial visible fire");
+        } else if(rendered_frames==1) {
+          layers_ground=pixels;
+          if(pixels==layers_both || device.count_fire_pixels(scene_width,scene_height))
+            throw std::runtime_error("hidden fire did not restore clean terrain shading");
+        } else if(rendered_frames==2) {
+          layers_fire=pixels;
+          if(pixels==layers_both || !device.count_fire_pixels(scene_width,scene_height))
+            throw std::runtime_error("fire-only layer did not retain visible fire");
+        } else if(rendered_frames==3) {
+          bool removed_ground=false,has_fire=false,has_ground=false;
+          for(std::size_t i=0;i<pixels.size();i+=4) {
+            bool fire_is_sky=true,ground_is_sky=true;
+            for(std::size_t c=0;c<4;++c) {
+              if(pixels[i+c]!=pixels[c])throw std::runtime_error("hidden layers wrote surface pixels");
+              fire_is_sky=fire_is_sky && layers_fire[i+c]==pixels[i+c];
+              ground_is_sky=ground_is_sky && layers_ground[i+c]==pixels[i+c];
+            }
+            removed_ground=removed_ground || (fire_is_sky && !ground_is_sky);
+            has_fire=has_fire || !fire_is_sky;has_ground=has_ground || !ground_is_sky;
+          }
+          if(!removed_ground || !has_fire || !has_ground || terrain_stats.draws)
+            throw std::runtime_error("layer isolation failed sky/ground/fire assertions");
+        } else if(rendered_frames==4 && pixels!=layers_both)
+          throw std::runtime_error("restoring layer visibility changed reference pixels");
+        if(fire_field->states!=layers_field_snapshot || playback_frame!=layers_frame_snapshot ||
+           std::abs(engine_time-(rendered_frames+1)/60.0)>1e-9 || !playing ||
+           std::abs(playback_accumulator-engine_time)>1e-9)
+          throw std::runtime_error("layer visibility changed replay data or engine clock");
+      }
       const auto terrain_snapshot=(options.smoke_test &&
           (options.asset_lifecycle_test || (imported && imported->uses_pbr)))?
           device.capture_rgba(scene_width,scene_height):std::vector<std::uint8_t>{};
@@ -1473,7 +1561,7 @@ int main(int argc, char** argv) {
           std::cout<<"Visible OBJ pixels: "<<visible_asset<<'\n';
         }
       }
-      if (options.smoke_test && playback && !playback->frames[playback_frame].active.empty()) {
+      if (options.smoke_test && playback && layer_visibility.fire && !playback->frames[playback_frame].active.empty()) {
         const auto visible_fire = device.count_fire_pixels(scene_width, scene_height);
         if (visible_fire == 0)
           throw std::runtime_error("smoke test found no visible fire pixels");
@@ -1508,7 +1596,7 @@ int main(int argc, char** argv) {
         benchmark_cpu_update+=profile_render_start-profile_update_start;
         benchmark_cpu_render+=profile_render_end-profile_render_start;
         benchmark_draws+=frame_draws;
-        benchmark_terrain_draws+=tiled_terrain?terrain_stats.draws:1;
+        benchmark_terrain_draws+=tiled_terrain?terrain_stats.draws:(draw_surface?1:0);
         benchmark_terrain_culled+=terrain_stats.culled;
         benchmark_terrain_uploads+=terrain_residency_change.admitted;
         benchmark_terrain_evictions+=terrain_residency_change.evicted;
@@ -1532,7 +1620,12 @@ int main(int argc, char** argv) {
       }
       glfwSwapBuffers(window.get());
       ++rendered_frames;
-      if(options.terrain_retention_test) {
+      if(options.layers_test) {
+        if(rendered_frames==5) {
+          std::cout<<"Layer visibility passed: both, terrain, fire, hidden, restore; replay data and clock preserved\n";
+          break;
+        }
+      }else if(options.terrain_retention_test) {
         if(rendered_frames==1) {
           terrain_initial_residents=tiled_terrain->resident_tiles();
           for(const auto id:terrain_initial_residents)terrain_initial_handles.push_back(tiled_terrain->resident_vertex_buffer(id));
@@ -1749,6 +1842,8 @@ int main(int argc, char** argv) {
                 <<",\"culling\":"<<(options.no_culling?"false":"true")
                 <<",\"instancing\":"<<(options.no_instancing?"false":"true")
                 <<",\"offscreen\":"<<(options.offscreen?"true":"false")
+                <<",\"terrain_visible\":"<<(layer_visibility.terrain?"true":"false")
+                <<",\"fire_visible\":"<<(layer_visibility.fire?"true":"false")
                 <<",\"terrain_tiled\":"<<(options.terrain_tiles?"true":"false")
                 <<",\"terrain_tiles\":"<<(tiled_terrain?tiled_terrain->tile_count():0)
                 <<",\"terrain_residency\":"<<(options.terrain_residency?"true":"false")

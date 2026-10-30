@@ -173,6 +173,7 @@ layout(std140, binding = 0) uniform Camera {
   vec4 fireGrid; // x = cell size, y = width, z = height, w = animation seconds
 };
 layout(std430, binding = 1) readonly buffer FireState { uint fireStates[]; };
+layout(std140,binding=10) uniform LayerVisibility {vec4 layerFlags;};
 out vec4 fragColor;
 
 void main() {
@@ -181,6 +182,10 @@ void main() {
   vec3 ground = mix(vec3(0.11, 0.33, 0.20), vec3(0.60, 0.55, 0.42),
                     clamp(elevation / 140.0, 0.0, 1.0)) * light;
 
+  if(layerFlags.y<0.5) {
+    if(layerFlags.x<0.5)discard;
+    fragColor=vec4(ground,1.0);return;
+  }
   // Each cell contributes a rounded radial footprint, not a square block.
   // Look up neighboring cell centers so adjacent active fires merge smoothly.
   // Out-of-grid centers and holes never contribute; rasterization is already
@@ -208,7 +213,10 @@ void main() {
         burn = max(burn, 1.0 - smoothstep(0.55, 0.86, radius));
     }
   }
-  ground = mix(ground, vec3(0.13, 0.12, 0.13), 0.93 * burn);
+  if(layerFlags.x<0.5) {
+    if(max(burn,flame)<=0.001)discard; // Hidden ground writes neither color nor depth.
+    ground=vec3(0.13,0.12,0.13);
+  } else ground = mix(ground, vec3(0.13, 0.12, 0.13), 0.93 * burn);
   float pulse = 0.86 + 0.14 * sin(5.0 * fireGrid.w + gridPos.x * 1.3);
   vec3 fireColor = mix(vec3(0.79, 0.075, 0.01),
                        vec3(1.0, 0.46, 0.025), clamp(flame, 0.0, 1.0));
@@ -533,16 +541,18 @@ ShaderLayout reflect_program(const GL& gl, GLuint program, const ShaderLayout& e
         });
     if (name == "Camera" && values[4] != (is_fire ? 80 : 64))
       throw std::runtime_error("Camera UBO does not match expected std140 size");
+    if(name=="LayerVisibility" && values[4]!=16)
+      throw std::runtime_error("LayerVisibility UBO must contain one vec4");
     if (name == "PbrMaterial" && values[4] != 64)
       throw std::runtime_error("PbrMaterial UBO must have four vec4s");
     if (name == "Object" && values[4] != 144)
       throw std::runtime_error("Object UBO must contain model, normalMatrix and tint");
-    // PbrMaterial exists only in the fragment shader. Some Mesa drivers
+    // Material/layer blocks exist only in the fragment shader. Some Mesa drivers
     // return inconsistent GL_REFERENCED_BY_* flags for active UBOs; the
     // binding index and std140 block size are validated independently.
     std::uint32_t stages=(values[2]?kVertexStage:0U) |
                          (values[3]?kFragmentStage:0U);
-    if(name=="PbrMaterial")stages=kFragmentStage;
+    if(name=="PbrMaterial" || name=="LayerVisibility")stages=kFragmentStage;
     actual.bindings.push_back({name,ShaderResourceKind::UniformBuffer,
                               static_cast<std::uint32_t>(values[1]),stages});
   }

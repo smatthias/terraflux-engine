@@ -40,7 +40,8 @@ class TerrainTileRenderer {
   std::uint64_t resident_bytes() const;
   BufferHandle resident_vertex_buffer(std::size_t id) const;
   TerrainTileDrawStats draw(PipelineHandle pipeline,BufferHandle camera,
-      std::optional<BufferHandle> fire,const Frustum& frustum,bool cull=true);
+      std::optional<BufferHandle> fire,const Frustum& frustum,bool cull=true,
+      std::optional<BufferHandle> layers={});
   std::size_t tile_count() const {return tiles_.size();}
   std::uint64_t geometry_bytes() const {return geometry_bytes_;} // All CPU recipes / fully resident payload.
  private:
