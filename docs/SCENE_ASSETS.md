@@ -686,3 +686,23 @@ image recipes remain eager. This is admission control, not byte accounting,
 physical VRAM measurement, automatic victim selection or asynchronous loading.
 CI verifies the mixed scene at its exact 7-mesh/17-instance limits and rejects
 a 6-mesh limit, while headless tests cover reattachment rejection before callbacks.
+
+
+## Explicit selection and budget-aware activation
+
+SceneResidency exposes sorted/deduplicated `nodes`, `selected`, `select` and
+bidirectional wrapping `cycle`. Active and detached bindings are selectable;
+root/nonbinding IDs are rejected and empty scenes return no selection. Expanded
+glTF instances do not create duplicate selectable nodes. The viewer uses bracket
+keys to select, D to detach, and A to activate the selected binding. The title
+shows ID/name/activity; diagnostics include `selected_node` or null.
+
+`--start-inactive` preserves all authored binding recipes before initial GPU
+admission, enabling budgets smaller than the complete scene. `--select-node ID`
+sets the initial selection; `--activate-node ID` selects and activates once at
+startup. Admission preflight still counts the full expanded selected model.
+CPU parsing remains eager and the 1024 expanded-instance format bound still
+applies. R reload reapplies inactive startup but not one-time activation.
+Headless tests cover selection cycles and detach persistence; CI verifies a
+single OBJ node from a mixed scene at a one-mesh/one-instance budget and rejects
+a selected multi-mesh glTF model under a one-mesh limit.

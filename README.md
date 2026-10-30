@@ -82,8 +82,9 @@ approximated as nonmetallic. Pure OBJ scenes retain the original diffuse path. L
 | Arrow keys / + / - | Orbit camera / zoom |
 | P | Pause/resume OBJ demo or scene Spin/Motion; camera and fire replay continue |
 | N | Advance one 1/60-second scene tick and remain paused |
-| D | Detach the first remaining drawable scene node and evict its unused mesh resources |
-| A | Reattach the detached node with the lowest ID, restoring evicted GPU meshes on demand |
+| [ / ] | Select the previous / next scene binding, including inactive nodes |
+| D | Detach the selected scene node and evict its unused mesh resources |
+| A | Activate the selected inactive node if residency budgets permit |
 | U | Unload the imported asset/scene; retain terrain and wildfire playback |
 | R | Reload the original asset/scene; failed loads preserve the current asset |
 | Space | Pause/resume wildfire replay |
@@ -113,6 +114,21 @@ These budgets apply to scene-file GPU residency, not CPU data, texture bytes,
 physical VRAM or automatic LRU eviction. Initial admission and reattachment
 reject over-budget draw sets before GPU preparation; existing state remains
 available if an interactive reattachment/reload is rejected.
+
+To open a scene inactive and activate only one node within a smaller budget:
+
+```bash
+./build-gl/terraflux-terrain-viewer --scene examples/mixed_asset_scene.json \
+  --start-inactive --activate-node 2 --max-resident-meshes 1 \
+  --max-scene-instances 1 --residency-report
+```
+
+`--select-node ID` selects without activating. The title shows node ID, name,
+and active/inactive state; brackets cycle through sorted binding IDs. Selection
+survives detachment. A rejected activation preserves current bindings and
+resources; no automatic victim eviction occurs. Inactive startup retains CPU
+recipes but uploads no drawable geometry. `--activate-node` applies once at
+startup; R reload reapplies inactive-start settings without auto-activation.
 
 ### Wildfire replay and runtime checks
 
@@ -380,7 +396,7 @@ hours or release-readiness guarantees. The PS4 backend is unimplemented.
 
 | Desktop engine — Phases 1–9 | Full roadmap including PS4 |
 | --- | --- |
-| **~78%** (previously ~77%) | **~51%** (previously ~50%) |
+| **~79%** (previously ~78%) | **~51%** |
 
 | Phase | Component | Estimated completion |
 | --- | --- | ---: |
@@ -391,7 +407,7 @@ hours or release-readiness guarantees. The PS4 backend is unimplemented.
 | 5 | Simulation visualization | 65% |
 | 6 | Shader system | 76% |
 | 7 | Scene and asset system | ~90% (previously 86%) |
-| 8 | Engine runtime | ~78% (previously ~75%) |
+| 8 | Engine runtime | ~82% (previously ~78%) |
 | 9 | Performance | ~58% (previously 55%) |
 | 10 | PS4 backend | 0% |
 
@@ -406,7 +422,7 @@ OBJ, glTF, GLB, transparent materials and repeated model references. Native test
 CTest suites and 71 simulation parity fixtures; CI also exercises the viewer
 under Mesa/Xvfb. See the branch's CI results for validation of each commit.
 
-Next planned work: explicit residency selection and budget-aware model activation. GPU meshes are created on demand; CPU model data
+Next planned work: scene-state persistence for selected and inactive bindings. GPU meshes are created on demand; CPU model data
 and decoded image recipes remain eager and retained for reattachment. Asynchronous streaming, skeletal animation
 and full glTF/IBL support remain future work.
 This desktop-engine breakdown is separate from the earlier simulation-focused

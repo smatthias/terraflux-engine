@@ -74,7 +74,8 @@ std::filesystem::path asset_path(const std::filesystem::path& directory,
 struct Options {
   bool smoke_test=false, profile=false, no_culling=false, no_instancing=false,asset_preview=false;
   bool asset_lifecycle_test=false,scene_controls_test=false,scene_detach_test=false,scene_residency_test=false;
-  bool residency_report=false;
+  bool residency_report=false,start_inactive=false;
+  std::optional<terraflux::scene::NodeId> selected_node,activate_node;
   std::uint32_t max_resident_meshes=512,max_scene_instances=1024;
   std::uint32_t benchmark_frames=0;
   std::string request_file, response_file, obj_file, gltf_file, texture_file, scene_file;
@@ -89,6 +90,15 @@ Options parse_args(int argc, char** argv) {
     else if (arg == "--scene-detach-test") options.scene_detach_test=true;
     else if (arg == "--scene-controls-test") options.scene_controls_test=true;
     else if (arg == "--asset-lifecycle-test") options.asset_lifecycle_test=true;
+    else if(arg=="--start-inactive")options.start_inactive=true;
+    else if((arg=="--select-node" || arg=="--activate-node") && i+1<argc) {
+      const std::string value=argv[++i];std::uint32_t node=0;
+      const auto parsed=std::from_chars(value.data(),value.data()+value.size(),node);
+      if(parsed.ec!=std::errc{} || parsed.ptr!=value.data()+value.size() || !node)
+        throw std::invalid_argument("node ID must be a positive integer");
+      options.selected_node=node;
+      if(arg=="--activate-node")options.activate_node=node;
+    }
     else if(arg=="--residency-report")options.residency_report=true;
     else if((arg=="--max-resident-meshes" || arg=="--max-scene-instances") && i+1<argc) {
       const std::string value=argv[++i];std::uint32_t limit=0;
@@ -150,6 +160,11 @@ Options parse_args(int argc, char** argv) {
   if(options.scene_residency_test && (!options.smoke_test || options.scene_file.empty() ||
       options.scene_detach_test || options.scene_controls_test || options.asset_lifecycle_test))
     throw std::invalid_argument("--scene-residency-test requires --smoke-test and --scene, exclusively");
+  if((options.start_inactive || options.selected_node || options.activate_node) && options.scene_file.empty())
+    throw std::invalid_argument("node selection and inactive loading require --scene");
+  if(options.start_inactive && (options.scene_controls_test || options.scene_detach_test ||
+                               options.scene_residency_test || options.asset_lifecycle_test))
+    throw std::invalid_argument("inactive loading cannot be combined with scripted lifecycle tests");
   return options;
 }
 
@@ -516,6 +531,12 @@ int main(int argc, char** argv) {
           if(obj.scene_instances.empty() || obj.scene_instances.size()>1024)
             throw std::invalid_argument("scene requires 1..1024 mesh instances");
           obj.residency.set_budget({options.max_resident_meshes,options.max_scene_instances});
+          if(options.start_inactive) {
+            while(!obj.scene_instances.empty())
+              obj.residency.detach(obj.scene,obj.scene_instances,obj.scene_instances.front().node,
+                  [](auto& instance){instance.uniform={};instance.uniform_owner.reset();},[]{},[]{});
+          }
+          if(options.selected_node)obj.residency.select(obj.scene_instances,*options.selected_node);
           obj.residency.check_budget(obj.scene_instances);
         }else if(!use_gltf) {
           const auto anchor = obj.scene.create_node("Terrain anchor");
@@ -732,15 +753,17 @@ int main(int argc, char** argv) {
       std::cout<<"Asset unloaded; terrain resources preserved\n";
     };
     if(has_asset && !options.smoke_test && !options.benchmark_frames)
-      std::cout<<"Asset controls: U unload | R reload | D detach | A reattach | P pause scene | N single tick (failed reload preserves current asset)\n";
+      std::cout<<"Asset controls: U unload | R reload | [ ] select | D detach selected | A activate selected | P pause scene | N single tick (failed reload preserves current asset)\n";
 
     const auto report_residency=[&] {
       if(!(options.residency_report || options.profile) || !imported || !imported->uses_scene_file)return;
       const auto stats=imported->residency.statistics(imported->scene_instances);
       const auto budget=imported->residency.budget();
+      const auto selected=imported->residency.selected(imported->scene_instances);
       const auto resources=device.live_resource_counts();
       std::cout<<"RESIDENCY_JSON={\"instances\":"<<stats.instances
           <<",\"referenced_meshes\":"<<stats.referenced_meshes
+          <<",\"selected_node\":"<<(selected?std::to_string(*selected):"null")
           <<",\"detached_nodes\":"<<stats.detached_nodes
           <<",\"saved_instances\":"<<stats.saved_instances
           <<",\"max_meshes\":"<<budget.max_meshes<<",\"max_instances\":"<<budget.max_instances
@@ -793,6 +816,8 @@ int main(int argc, char** argv) {
       report_residency();
     };
 
+    if(options.activate_node)reattach_node(*options.activate_node);
+
     double yaw = 0.45, pitch = options.asset_preview?0.42:0.75;
     double distance=scene_camera.starting_distance*(options.asset_preview?0.75:1.0);
     double previous_time = glfwGetTime();
@@ -809,7 +834,7 @@ int main(int argc, char** argv) {
     std::size_t playback_frame = 0;
     std::size_t uploaded_frame = static_cast<std::size_t>(-1);
     bool playing = playback.has_value();
-    bool previous_unload=false,previous_reload=false,previous_detach=false,previous_attach=false;
+    bool previous_unload=false,previous_reload=false,previous_detach=false,previous_attach=false,previous_prev_node=false,previous_next_node=false;
     bool previous_space = false, previous_home = false, previous_back = false, previous_forward = false;
     unsigned rendered_frames = 0;
     std::vector<std::uint8_t> lifecycle_terrain;
@@ -845,16 +870,24 @@ int main(int argc, char** argv) {
           previous_time=glfwGetTime(); // disk/shader loading isn't simulated time
         }
       }
+      const bool prev_node=glfwGetKey(window.get(),GLFW_KEY_LEFT_BRACKET)==GLFW_PRESS;
+      const bool next_node=glfwGetKey(window.get(),GLFW_KEY_RIGHT_BRACKET)==GLFW_PRESS;
+      if(imported && imported->uses_scene_file && !options.smoke_test && !options.benchmark_frames) {
+        if(prev_node && !previous_prev_node)imported->residency.cycle(imported->scene_instances,false);
+        if(next_node && !previous_next_node)imported->residency.cycle(imported->scene_instances,true);
+        if((prev_node && !previous_prev_node) || (next_node && !previous_next_node))report_residency();
+      }
+      previous_prev_node=prev_node;previous_next_node=next_node;
       const bool detach=glfwGetKey(window.get(),GLFW_KEY_D)==GLFW_PRESS;
-      if(detach && !previous_detach && !options.smoke_test && !options.benchmark_frames &&
-         imported && imported->uses_scene_file && !imported->scene_instances.empty())
-        detach_node(imported->scene_instances.front().node);
       const bool attach=glfwGetKey(window.get(),GLFW_KEY_A)==GLFW_PRESS;
-      if(attach && !previous_attach && !options.smoke_test && !options.benchmark_frames &&
-         imported && !imported->residency.detached().empty()) {
-        try{reattach_node(imported->residency.detached().begin()->first);}
-        catch(const std::exception& error){std::cerr<<"Node reattachment failed: "<<error.what()<<'\n';}
-        previous_time=glfwGetTime();
+      if(imported && imported->uses_scene_file && !options.smoke_test && !options.benchmark_frames) {
+        const auto selected=imported->residency.selected(imported->scene_instances);
+        if(selected && detach && !previous_detach)detach_node(*selected);
+        if(selected && attach && !previous_attach) {
+          try{reattach_node(*selected);}
+          catch(const std::exception& error){std::cerr<<"Node activation rejected; state preserved: "<<error.what()<<'\n';}
+          previous_time=glfwGetTime();
+        }
       }
       previous_attach=attach;
       previous_detach=detach;
@@ -954,6 +987,11 @@ int main(int argc, char** argv) {
       if(imported && !imported->is_gltf && !options.smoke_test && !options.benchmark_frames) {
         std::string title=std::string("TerraFlux | Scene ")+
             (scene_playback.paused()?"paused":"playing")+" | P pause/resume | N tick | D detach | A reattach | U unload | R reload";
+        if(imported->uses_scene_file) {
+          const auto selected=imported->residency.selected(imported->scene_instances);
+          if(selected)title+=" | Node "+std::to_string(*selected)+": "+imported->scene.get(*selected).name+
+              (imported->residency.detached().contains(*selected)?" (inactive)":" (active)")+" | [ ] select";
+        }
         if(playback)title+=" | Fire "+std::to_string(playback_frame+1)+"/"+
             std::to_string(playback->frames.size())+" | Space pause fire";
         if(title!=last_scene_title) {

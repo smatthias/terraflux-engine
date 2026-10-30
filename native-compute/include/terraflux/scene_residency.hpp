@@ -19,6 +19,32 @@ struct ResidencyStatistics {
 };
 template<class Instance>class SceneResidency {
  public:
+  std::vector<scene::NodeId> nodes(const std::vector<Instance>& live) const {
+    std::set<scene::NodeId> ids;
+    for(const auto& instance:live)ids.insert(instance.node);
+    for(const auto& [node,saved]:detached_)ids.insert(node);
+    return {ids.begin(),ids.end()};
+  }
+  std::optional<scene::NodeId> selected(const std::vector<Instance>& live) const {
+    const auto ids=nodes(live);
+    if(ids.empty())return std::nullopt;
+    if(selected_ && std::binary_search(ids.begin(),ids.end(),*selected_))return selected_;
+    return ids.front();
+  }
+  void select(const std::vector<Instance>& live,scene::NodeId node) {
+    const auto ids=nodes(live);
+    if(!std::binary_search(ids.begin(),ids.end(),node))
+      throw std::invalid_argument("node is not a selectable residency binding");
+    selected_=node;
+  }
+  std::optional<scene::NodeId> cycle(const std::vector<Instance>& live,bool forward=true) {
+    const auto ids=nodes(live);
+    if(ids.empty()){selected_.reset();return std::nullopt;}
+    const auto current=selected(live);
+    const auto index=static_cast<std::size_t>(std::lower_bound(ids.begin(),ids.end(),*current)-ids.begin());
+    selected_=ids[(index+(forward?1:ids.size()-1))%ids.size()];
+    return selected_;
+  }
   void set_budget(ResidencyBudget budget) {budget_=budget;}
   ResidencyBudget budget() const {return budget_;}
   ResidencyStatistics statistics(const std::vector<Instance>& live) const {
@@ -88,6 +114,7 @@ template<class Instance>class SceneResidency {
     return true;
   }
  private:
+  std::optional<scene::NodeId> selected_;
   ResidencyBudget budget_;
   std::map<scene::NodeId,SavedNode> detached_;
 };

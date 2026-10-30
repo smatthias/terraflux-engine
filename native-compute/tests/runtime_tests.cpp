@@ -265,6 +265,15 @@ void scene_residency_api() {
                             {first,1,std::make_shared<int>(2)},
                             {second,0,std::make_shared<int>(3)}};
   Residency residency;
+  check(residency.nodes(live)==std::vector<terraflux::scene::NodeId>{first,second},
+        "selection candidates deduplicate expanded mesh instances");
+  check(residency.selected(live)==first && residency.cycle(live)==second &&
+        residency.cycle(live)==first && residency.cycle(live,false)==second,
+        "selection wraps in both directions");
+  residency.select(live,first);
+  rejects([&]{residency.select(live,0);},"nonbinding root cannot be selected");
+  Residency empty_selection;
+  check(!empty_selection.selected({}) && !empty_selection.cycle({}),"empty selection is safe");
   std::vector<bool> resident{true,true};
   int retirements=0;
   const auto evict=[&]{
@@ -273,6 +282,8 @@ void scene_residency_api() {
   };
   const auto strip=[](Instance& instance){instance.resource.reset();};
   check(residency.detach(graph,live,first,strip,[&]{++retirements;},evict),"runtime API detaches node");
+  check(residency.selected(live)==first && residency.nodes(live).size()==2,
+        "detached nodes stay selected and available for activation");
   check(live.size()==1 && resident[0] && !resident[1] && retirements==1,
         "shared mesh survives while unused mesh evicts");
   check(!graph.get(first).mesh_instance && graph.get(second).parent==first &&

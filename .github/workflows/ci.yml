@@ -157,6 +157,27 @@ jobs:
             echo "Expected over-budget scene to fail"; exit 1
           fi
           grep -q "scene residency budget exceeded" /tmp/terraflux-over-budget.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --residency-report \
+            --start-inactive --max-resident-meshes 1 --max-scene-instances 1 \
+            --activate-node 2 --scene examples/mixed_asset_scene.json \
+            | tee /tmp/terraflux-selected-node.log
+          python3 - <<'PYSELECT'
+          import json
+          from pathlib import Path
+          records=[json.loads(s.split("=",1)[1]) for s in Path("/tmp/terraflux-selected-node.log").read_text().splitlines()
+                   if s.startswith("RESIDENCY_JSON=")]
+          assert records[0]["instances"]==0 and records[0]["detached_nodes"]==5
+          assert records[-1]["instances"]==1 and records[-1]["referenced_meshes"]==1
+          assert records[-1]["selected_node"]==2 and records[-1]["detached_nodes"]==4
+          PYSELECT
+          if xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --start-inactive \
+            --max-resident-meshes 1 --activate-node 3 --scene examples/mixed_asset_scene.json \
+            > /tmp/terraflux-activation-rejected.log 2>&1; then
+            echo "Expected selected model activation to exceed mesh budget"; exit 1
+          fi
+          grep -q "scene residency budget exceeded" /tmp/terraflux-activation-rejected.log
           for source in "--scene examples/asset_scene.json" \
                         "--scene examples/mixed_asset_scene.json" \
                         "--obj examples/assets/pyramid.obj --scene examples/scenes/twin_pyramids.json"; do
