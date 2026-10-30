@@ -26,7 +26,7 @@ struct Material {
   TextureSampling occlusion_sampling{},emissive_sampling{};
   double occlusion_strength=1.0;
   math::Vec3 emissive_factor{0.0,0.0,0.0};
-  enum class AlphaMode { Opaque, Mask };
+  enum class AlphaMode { Opaque, Mask, Blend };
   AlphaMode alpha_mode=AlphaMode::Opaque;
   double alpha_factor=1.0,alpha_cutoff=0.5;
 };

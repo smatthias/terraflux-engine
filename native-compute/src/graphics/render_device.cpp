@@ -136,6 +136,8 @@ void ValidatingRenderDevice::destroy_texture(TextureHandle handle) {
 }
 
 PipelineHandle ValidatingRenderDevice::create_pipeline(PipelineDesc desc) {
+  if(desc.alpha_blend && (!desc.depth_test || desc.depth_write))
+    throw std::invalid_argument("transparent pipeline requires depth test and disabled depth writes");
   validate_shader_layout(desc.layout);
   const auto id = allocate_id();
   pipelines_.emplace(id, std::move(desc));

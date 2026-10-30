@@ -579,8 +579,9 @@ GltfModel import_gltf(const std::string& json_text,
     if(const auto* alpha=optional(o,"alphaMode")){
       const auto mode=string(*alpha);
       if(mode=="MASK")m.alpha_mode=Material::AlphaMode::Mask;
+      else if(mode=="BLEND")m.alpha_mode=Material::AlphaMode::Blend;
       else if(mode!="OPAQUE")
-        throw std::invalid_argument("glTF alpha BLEND mode unsupported");
+        throw std::invalid_argument("unsupported glTF alpha mode");
     }
     if(const auto* cutoff=optional(o,"alphaCutoff")){
       m.alpha_cutoff=number(*cutoff);

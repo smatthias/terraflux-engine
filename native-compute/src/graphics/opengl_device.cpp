@@ -68,6 +68,8 @@ struct GL {
       get_proc<PFNGLDRAWELEMENTSINSTANCEDPROC>("glDrawElementsInstanced");
   PFNGLENABLEPROC Enable = get_proc<PFNGLENABLEPROC>("glEnable");
   PFNGLDISABLEPROC Disable = get_proc<PFNGLDISABLEPROC>("glDisable");
+  PFNGLBLENDFUNCPROC BlendFunc = get_proc<PFNGLBLENDFUNCPROC>("glBlendFunc");
+  PFNGLDEPTHMASKPROC DepthMask = get_proc<PFNGLDEPTHMASKPROC>("glDepthMask");
   PFNGLCLEARCOLORPROC ClearColor = get_proc<PFNGLCLEARCOLORPROC>("glClearColor");
   PFNGLCLEARPROC Clear = get_proc<PFNGLCLEARPROC>("glClear");
   PFNGLVIEWPORTPROC Viewport = get_proc<PFNGLVIEWPORTPROC>("glViewport");
@@ -314,7 +316,7 @@ float smithG1(float nd,float roughness){
 }
 void main(){
   vec4 albedo=texture(AlbedoTexture,textureUv);
-  if(options.y>0.5 && albedo.a*options.x<emissive.w)discard;
+  if(options.y>0.5 && options.y<1.5 && albedo.a*options.x<emissive.w)discard;
   vec3 N=normalize(surfaceNormal);
   // Reconstruct a tangent frame from world-space derivatives and UVs.
   // glTF normal texture is linear tangent-space RGB.
@@ -355,7 +357,8 @@ void main(){
              base*vec3(0.055)*(1.0-metallic)*occlusion+glow;
   // ACES approximation plus display conversion.
   color=(color*(2.51*color+0.03))/(color*(2.43*color+0.59)+0.14);
-  fragColor=vec4(pow(clamp(color,0.0,1.0),vec3(1.0/2.2)),1.0);
+  fragColor=vec4(pow(clamp(color,0.0,1.0),vec3(1.0/2.2)),
+                 options.y>1.5?clamp(albedo.a*options.x,0.0,1.0):1.0);
 }
 )GLSL";
 
@@ -542,7 +545,7 @@ struct OpenGLRenderDevice::Impl {
   GLuint current_program=0,current_vao=0;
   std::uint32_t attribute_pipeline=0,attribute_vertex=0,attribute_index=0;
   std::unordered_map<std::uint32_t,GLuint> texture_units;
-  std::optional<bool> depth_test_state;
+  std::optional<bool> depth_test_state,depth_write_state,alpha_blend_state;
 
   static constexpr std::size_t kGpuQuerySlots=8;
   std::array<GLuint,kGpuQuerySlots> gpu_queries{};
@@ -770,6 +773,8 @@ PipelineHandle OpenGLRenderDevice::create_pipeline(PipelineDesc desc) {
         return binding.kind==ShaderResourceKind::SampledTexture &&
                binding.name=="AlbedoTexture" && binding.slot==3;
       });
+  if(desc.alpha_blend && (!desc.depth_test || desc.depth_write || !pbr || instanced))
+    throw std::invalid_argument("OpenGL alpha blending requires noninstanced PBR and depth test");
   if (textured && !object && !instanced)
     throw std::invalid_argument("textured pipeline requires Object or InstanceData");
   if(pbr && (!textured || wildfire))
@@ -905,6 +910,17 @@ void OpenGLRenderDevice::draw_indexed(const DrawIndexed& command) {
     if(pipeline.desc.depth_test) impl_->gl.Enable(GL_DEPTH_TEST);
     else impl_->gl.Disable(GL_DEPTH_TEST);
     impl_->depth_test_state=pipeline.desc.depth_test;
+  }
+  if(!impl_->alpha_blend_state || *impl_->alpha_blend_state!=pipeline.desc.alpha_blend) {
+    if(pipeline.desc.alpha_blend) {
+      impl_->gl.Enable(GL_BLEND);
+      impl_->gl.BlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
+    }else impl_->gl.Disable(GL_BLEND);
+    impl_->alpha_blend_state=pipeline.desc.alpha_blend;
+  }
+  if(!impl_->depth_write_state || *impl_->depth_write_state!=pipeline.desc.depth_write) {
+    impl_->gl.DepthMask(pipeline.desc.depth_write?GL_TRUE:GL_FALSE);
+    impl_->depth_write_state=pipeline.desc.depth_write;
   }
   const auto offset=reinterpret_cast<const void*>(
       static_cast<std::uintptr_t>(command.first_index)*sizeof(std::uint32_t));

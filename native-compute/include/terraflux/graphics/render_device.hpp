@@ -70,6 +70,8 @@ struct PipelineHandle {
 struct PipelineDesc {
   ShaderLayout layout;
   bool depth_test = true;
+  bool alpha_blend = false;
+  bool depth_write = true;
 };
 
 struct UniformBufferBinding {
