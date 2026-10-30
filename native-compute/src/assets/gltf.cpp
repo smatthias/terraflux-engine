@@ -335,6 +335,28 @@ void import_nodes(const Json::Object& doc,GltfModel& result) {
   }
   if(result.instances.empty())throw std::invalid_argument("selected glTF scene contains no mesh");
 }
+TextureMinFilter texture_min(std::size_t value){
+  switch(value){
+    case 9728:return TextureMinFilter::Nearest;
+    case 9729:return TextureMinFilter::Linear;
+    case 9984:return TextureMinFilter::NearestMipNearest;
+    case 9985:return TextureMinFilter::LinearMipNearest;
+    case 9986:return TextureMinFilter::NearestMipLinear;
+    case 9987:return TextureMinFilter::LinearMipLinear;
+    default:throw std::invalid_argument("unsupported glTF minFilter");
+  }
+}
+TextureMagFilter texture_mag(std::size_t value){
+  if(value==9728)return TextureMagFilter::Nearest;
+  if(value==9729)return TextureMagFilter::Linear;
+  throw std::invalid_argument("unsupported glTF magFilter");
+}
+TextureWrap texture_wrap(std::size_t value){
+  if(value==10497)return TextureWrap::Repeat;
+  if(value==33071)return TextureWrap::ClampToEdge;
+  if(value==33648)return TextureWrap::MirroredRepeat;
+  throw std::invalid_argument("unsupported glTF texture wrapping");
+}
 } // namespace
 
 GltfModel import_gltf(const std::string& json_text,
@@ -419,28 +441,6 @@ GltfModel import_gltf(const std::string& json_text,
     const auto key="gltf-image-"+std::to_string(i);
     result.images.emplace(key,decode_image(encoded,mime));
   }
-TextureMinFilter texture_min(std::size_t value){
-  switch(value){
-    case 9728:return TextureMinFilter::Nearest;
-    case 9729:return TextureMinFilter::Linear;
-    case 9984:return TextureMinFilter::NearestMipNearest;
-    case 9985:return TextureMinFilter::LinearMipNearest;
-    case 9986:return TextureMinFilter::NearestMipLinear;
-    case 9987:return TextureMinFilter::LinearMipLinear;
-    default:throw std::invalid_argument("unsupported glTF minFilter");
-  }
-}
-TextureMagFilter texture_mag(std::size_t value){
-  if(value==9728)return TextureMagFilter::Nearest;
-  if(value==9729)return TextureMagFilter::Linear;
-  throw std::invalid_argument("unsupported glTF magFilter");
-}
-TextureWrap texture_wrap(std::size_t value){
-  if(value==10497)return TextureWrap::Repeat;
-  if(value==33071)return TextureWrap::ClampToEdge;
-  if(value==33648)return TextureWrap::MirroredRepeat;
-  throw std::invalid_argument("unsupported glTF texture wrapping");
-}
   // Images are decoded by shared image index; texture objects can alias
   // the same source. Sampler overrides are limited to repeat/no-mip modes.
   std::vector<std::string> image_for_texture;
