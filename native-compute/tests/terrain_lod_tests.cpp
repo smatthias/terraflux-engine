@@ -3,6 +3,9 @@
 #include <algorithm>
 #include <iostream>
 #include <limits>
+#include <map>
+#include <set>
+#include <array>
 #include <stdexcept>
 
 using namespace terraflux;
@@ -128,8 +131,96 @@ void patch_eligibility() {
   TerrainTileOptions cap;cap.max_tiles=0;
   rejects<std::length_error>([&]{analyze_terrain_lod_patches(full,cap);});
 }
+using Edge=std::pair<std::uint32_t,std::uint32_t>;
+std::set<Edge> boundary(const TerrainTile& t) {
+  std::map<Edge,int> counts;
+  for(std::size_t i=0;i<t.mesh.indices.size();i+=3)for(int j=0;j<3;++j) {
+    const auto a=t.source_vertex_indices[t.mesh.indices[i+j]];
+    const auto b=t.source_vertex_indices[t.mesh.indices[i+(j+1)%3]];
+    ++counts[std::minmax(a,b)];
+  }
+  std::set<Edge> result;
+  for(auto [e,n]:counts) {require(n<=2,"manifold triangulation");if(n==1)result.insert(e);}
+  return result;
+}
+double projected_area(const TerrainTile& t) {
+  double area=0;
+  for(std::size_t i=0;i<t.mesh.indices.size();i+=3) {
+    const auto a=t.mesh.vertices[t.mesh.indices[i]].position;
+    const auto b=t.mesh.vertices[t.mesh.indices[i+1]].position;
+    const auto c=t.mesh.vertices[t.mesh.indices[i+2]].position;
+    const auto y=(b-a).cross(c-a).y;
+    require(y>0,"strict positive projected winding");area+=y/2;
+  }
+  return area;
+}
+void simplification() {
+  TerrainLodOptions o;o.enable_level1=true;
+  const auto source=patch_mesh();const auto original=source;
+  const auto result=build_terrain_lods(source,o);
+  require(result.tiles.size()==1 && result.tiles[0].level1.has_value(),"coarse variant exists");
+  const auto& fine=result.tiles[0].level0;const auto& coarse=*result.tiles[0].level1;
+  require(fine.mesh.indices.size()==96 && coarse.mesh.indices.size()==48,"32 to 16 triangles");
+  require(coarse.mesh.vertices.size()==17,"center plus full perimeter compacted");
+  require(boundary(fine)==boundary(coarse),"exact boundary segments");
+  require(projected_area(fine)==projected_area(coarse),"same projected coverage");
+  require(!result.tiles[0].max_vertical_error,"error not invented");
+  for(std::size_t i=0;i<coarse.mesh.vertices.size();++i) {
+    const auto& v=coarse.mesh.vertices[i];const auto& expected=source.vertices[coarse.source_vertex_indices[i]];
+    require(equal(v.position,expected.position) && equal(v.normal,expected.normal) &&
+            v.grid_x==expected.grid_x && v.grid_y==expected.grid_y,"verbatim source attributes");
+  }
+  require(equal(fine.bounds_min,coarse.bounds_min) && equal(fine.bounds_max,coarse.bounds_max),"conservative source bounds");
+  same_mesh(source,original);
+  auto reordered=source;
+  for(std::size_t i=0;i<source.indices.size()/2;i+=3)
+    for(std::size_t j=0;j<3;++j)
+      std::swap(reordered.indices[i+j],reordered.indices[source.indices.size()-i-3+j]);
+  const auto stable=build_terrain_lods(reordered,o);
+  same_mesh(coarse.mesh,stable.tiles[0].level1->mesh);
+  require(coarse.source_vertex_indices==stable.tiles[0].level1->source_vertex_indices,"stable simplified source mapping");
+  o.max_recipe_bytes=result.recipe_bytes;
+  require(build_terrain_lods(source,o).recipe_bytes==result.recipe_bytes,"exact combined byte cap");
+  --o.max_recipe_bytes;
+  rejects<std::length_error>([&]{build_terrain_lods(source,o);});
+  o.max_recipe_bytes=std::numeric_limits<std::size_t>::max();
+  o.tiles.max_total_vertices=fine.mesh.vertices.size()+coarse.mesh.vertices.size()-1;
+  rejects<std::length_error>([&]{build_terrain_lods(source,o);});
+  o.tiles.max_total_vertices=4'000'000;
+  o.tiles.max_total_indices=fine.mesh.indices.size()+coarse.mesh.indices.size()-1;
+  rejects<std::length_error>([&]{build_terrain_lods(source,o);});
+  o.tiles.max_total_indices=24'000'000;
+  auto mixed=patch_mesh(9,5);std::vector<std::uint32_t> kept;
+  for(std::size_t i=0;i<mixed.indices.size();i+=3)
+    if(mixed.indices[i]!=20 && mixed.indices[i+1]!=20 && mixed.indices[i+2]!=20)
+      kept.insert(kept.end(),mixed.indices.begin()+i,mixed.indices.begin()+i+3);
+  mixed.indices=kept;
+  const auto m=build_terrain_lods(mixed,o);
+  require(m.tiles[0].level1.has_value(),"independent eligible patch simplified beside hole");
+  require(m.tiles[0].level1->mesh.indices.size()+48==mixed.indices.size(),"only one patch simplified");
+  require(boundary(m.tiles[0].level0)==boundary(*m.tiles[0].level1),"hole and exterior boundaries retained");
+  require(projected_area(m.tiles[0].level0)==projected_area(*m.tiles[0].level1),"hole coverage retained");
+  const auto fallback=build_terrain_lods(patch_mesh(4,4),o);
+  require(!fallback.tiles[0].level1,"all fallback aliases fine without allocation");
+  auto reversed=source;std::swap(reversed.indices[0],reversed.indices[1]);
+  require(!build_terrain_lods(reversed,o).tiles[0].level1,"unsupported winding not simplified");
+  o.tiles.quads_per_side=4;
+  const auto adjacent=build_terrain_lods(patch_mesh(9,5),o);
+  require(adjacent.tiles.size()==2,"adjacent tile variants");
+  for(const auto& t:adjacent.tiles) {
+    require(t.level1.has_value() && boundary(t.level0)==boundary(*t.level1),"tile seam segmentation preserved");
+    const auto packed=graphics::prepare_terrain_upload(t.level1->mesh);
+    const auto full=graphics::prepare_terrain_upload(patch_mesh(9,5));
+    for(std::size_t i=0;i<packed.vertices.size();++i)for(int a=0;a<3;++a)
+      require(packed.vertices[i].position[a]==full.vertices[t.level1->source_vertex_indices[i]].position[a] &&
+              packed.vertices[i].normal[a]==full.vertices[t.level1->source_vertex_indices[i]].normal[a],"packed attributes exact");
+  }
+  for(const auto offset:{std::numeric_limits<std::int32_t>::min(),std::numeric_limits<std::int32_t>::max()-4})
+    require(build_terrain_lods(patch_mesh(5,5,offset),o).tiles[0].level1.has_value(),"extreme coordinate fan");
+}
 void run() {
   patch_eligibility();
+  simplification();
   std::vector<compute::GridCell> cells;
   for(int y=0;y<7;++y)for(int x=0;x<8;++x) {
     if(x==3 && y==3)continue;
@@ -154,6 +245,6 @@ void run() {
 }
 }
 int main() {
-  try {run();std::cout<<"Terrain LOD level-0 tests passed\n";return 0;}
+  try {run();std::cout<<"Terrain LOD tests passed\n";return 0;}
   catch(const std::exception& e) {std::cerr<<e.what()<<'\n';return 1;}
 }
