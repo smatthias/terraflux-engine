@@ -1,27 +1,11 @@
 #include <terraflux/assets/scene_assets.hpp>
+#include <terraflux/assets/resource_resolution.hpp>
 #include <fstream>
 #include <iterator>
 #include <stdexcept>
 
 namespace terraflux::assets {
 namespace {
-std::filesystem::path beneath(const std::filesystem::path& directory,const std::string& reference) {
-  const std::filesystem::path relative(reference);
-  if(reference.empty() || reference.find('\0')!=std::string::npos ||
-     reference.find('\\')!=std::string::npos || reference.find(':')!=std::string::npos ||
-     relative.has_root_path())throw std::invalid_argument("asset resource must be a relative path");
-  for(const auto& part:relative)
-    if(part=="..")throw std::invalid_argument("asset resource parent traversal forbidden");
-  const auto source=std::filesystem::canonical(directory/relative);
-  const auto within=source.lexically_relative(directory);
-  if(within.empty() || within.has_root_path())
-    throw std::invalid_argument("cannot resolve asset beneath its directory");
-  for(const auto& part:within)
-    if(part=="..")throw std::invalid_argument("asset resource symlink escapes directory");
-  if(!std::filesystem::is_regular_file(source) || std::filesystem::file_size(source)>64'000'000)
-    throw std::invalid_argument("asset resource must be a file no larger than 64MB");
-  return source;
-}
 std::string read(const std::filesystem::path& source) {
   std::ifstream input(source,std::ios::binary);
   if(!input)throw std::runtime_error("cannot read scene asset: "+source.string());
@@ -33,7 +17,7 @@ SceneModelAssets load_scene_assets(const scene::Scene& scene,const std::filesyst
   const auto directory=std::filesystem::canonical(std::filesystem::absolute(scene_file).parent_path());
   std::map<std::filesystem::path,std::uint32_t> loaded;
   for(const auto& [name,reference]:scene.mesh_assets()) {
-    const auto source=beneath(directory,reference);
+    const auto source=resolve_asset_path(directory,reference);
     if(const auto it=loaded.find(source);it!=loaded.end()) {
       result.model_indices.emplace(name,it->second);
       result.mesh_indices.emplace(name,result.model_instances.at(it->second).front().mesh_index);
@@ -53,7 +37,7 @@ SceneModelAssets load_scene_assets(const scene::Scene& scene,const std::filesyst
     }else{
       result.has_gltf=true;
       const auto resolver=[&](const std::string& uri) {
-        const auto contents=read(beneath(source.parent_path(),uri));
+        const auto contents=read(resolve_asset_path(source.parent_path(),uri));
         return std::vector<std::uint8_t>(contents.begin(),contents.end());
       };
       const auto contents=read(source);

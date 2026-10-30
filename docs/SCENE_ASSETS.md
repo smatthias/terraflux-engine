@@ -564,3 +564,22 @@ python3 examples/pack_gltf_fixture.py \
 entry point remains for callers explicitly requiring OBJ-only scenes. Scene
 JSON version 1 compatibility is retained. GPU resources remain shared within
 one imported scope; per-model eviction and asynchronous streaming are pending.
+
+
+## Reusable material and texture resolution
+
+`assets/resource_resolution.hpp` exposes CPU-only helpers shared by the
+scene loader and desktop viewer: `resolve_asset_path`, `load_obj_materials`,
+`texture_cache_key` and `resolve_texture_image`. They require no graphics
+context. MTL libraries keep their source directory and optionally scope
+material names; failed library loads leave mesh section names unchanged.
+Texture resolution handles PPM/PNG/JPEG, embedded glTF images and neutral
+fallbacks, while cache keys include sampler state. GPU allocation and cache
+ownership remain in the viewer's imported asset scope.
+
+Relative file resolution applies canonical containment checks, rejecting
+parent/symlink escapes and oversized resources. Explicit CLI texture overrides
+can still select a local file directly. Tests cover material scoping, duplicate
+libraries, failure preservation, sampler keys, fallback/embedded images,
+material-relative decoding and file bounds. Existing mixed-scene rendering,
+controls and reload/unload checks cover the shared helpers under Mesa.

@@ -8,6 +8,7 @@
 #include <terraflux/assets/scene_assets.hpp>
 #include <terraflux/assets/gltf.hpp>
 #include <terraflux/assets/material.hpp>
+#include <terraflux/assets/resource_resolution.hpp>
 #include <terraflux/scene.hpp>
 #include <terraflux/scene_io.hpp>
 #include <terraflux/runtime.hpp>
@@ -332,11 +333,8 @@ int main(int argc, char** argv) {
         const auto source_file=use_gltf?options.gltf_file:
             asset_scene?scene_assets.sources.front().string():options.obj_file;
         const auto source_folder=std::filesystem::path(source_file).parent_path();
-        struct LocatedMaterial {
-          terraflux::assets::Material material;
-          std::filesystem::path folder;
-        };
-        std::map<std::string,LocatedMaterial> material_files;
+        using terraflux::assets::LocatedMaterial;
+        terraflux::assets::LocatedMaterials material_files;
         terraflux::assets::Mesh object;
         std::map<std::string,terraflux::assets::ImageRgba8> gltf_images;
         std::vector<terraflux::assets::Mesh> extra_meshes;
@@ -376,20 +374,9 @@ int main(int argc, char** argv) {
           for(std::size_t i=0;i<scene_assets.meshes.size();++i) {
             if(scene_assets.gltf_meshes[i])continue;
             auto& mesh=scene_assets.meshes[i];
-            const auto prefix="scene/"+std::to_string(i)+"/";
-            for(auto& section:mesh.sections)
-              if(!section.material_name.empty())section.material_name=prefix+section.material_name;
-            for(const auto& reference:mesh.material_libraries) {
-              const auto path=asset_path(scene_assets.sources[i].parent_path(),reference);
-              std::ifstream file(path);
-              if(!file)throw std::runtime_error("cannot open material library: "+path.string());
-              for(auto [name,material]:terraflux::assets::parse_mtl(file)) {
-                // OBJ has no metallic factor: approximate diffuse MTL in mixed PBR scenes.
-                material.metallic_factor=0;
-                if(!material_files.emplace(prefix+name,LocatedMaterial{material,path.parent_path()}).second)
-                  throw std::invalid_argument("duplicate material in scene asset: "+name);
-              }
-            }
+            auto materials=terraflux::assets::load_obj_materials(mesh,
+                scene_assets.sources[i].parent_path(),"scene/"+std::to_string(i)+"/",true);
+            material_files.merge(materials);
           }
           object=std::move(scene_assets.meshes.front());
           for(std::size_t i=1;i<scene_assets.meshes.size();++i)
@@ -410,15 +397,7 @@ int main(int argc, char** argv) {
           std::ifstream model_file(options.obj_file);
           if (!model_file) throw std::runtime_error("cannot open OBJ "+options.obj_file);
           object=terraflux::assets::import_obj(model_file);
-          for(const auto& reference:object.material_libraries) {
-            const auto path=asset_path(source_folder,reference);
-            std::ifstream file(path);
-            if(!file) throw std::runtime_error("cannot open material library: "+path.string());
-            const auto parsed=terraflux::assets::parse_mtl(file);
-            for(const auto& [name,material]:parsed)
-              if(!material_files.emplace(name,LocatedMaterial{material,path.parent_path()}).second)
-                throw std::invalid_argument("duplicate material in libraries: "+name);
-          }
+          material_files=terraflux::assets::load_obj_materials(object,source_folder);
         }
         if(object.vertices.empty())throw std::invalid_argument("imported mesh has no vertices");
         const auto get_mesh=[&](std::uint32_t id)->const terraflux::assets::Mesh& {
@@ -523,47 +502,9 @@ int main(int argc, char** argv) {
         }
         const auto cached_texture=[&](const std::filesystem::path& source,
                                        terraflux::TextureSampling sampling) {
-          const std::string path_key=source.empty()?
-               (use_pbr?"__white__":"__checkerboard__"):
-                                source.lexically_normal().generic_string();
-          // Samplers belong to texture objects: same image with different
-          // sampling settings must not alias one GL texture.
-          const auto& s=sampling;
-          const std::string key=path_key+"@"+
-              std::to_string(static_cast<int>(s.min))+":"+
-              std::to_string(static_cast<int>(s.mag))+":"+
-              std::to_string(static_cast<int>(s.wrap_s))+":"+
-              std::to_string(static_cast<int>(s.wrap_t));
-          if(const auto it=obj.textures.find(key);it!=obj.textures.end())
-            return it->second;
-          terraflux::assets::ImageRgba8 image;
-          if(source.empty())
-            image=use_pbr?terraflux::assets::ImageRgba8{1,1,{255,255,255,255}}:
-                           terraflux::assets::checkerboard_image();
-          else if(source.generic_string()=="__default_mr__")
-            image={1,1,{255,255,255,255}}; // roughness G=1, metallic B=1
-          else if(source.generic_string()=="__default_normal__")
-            image={1,1,{128,128,255,255}}; // tangent-space +Z
-          else if(source.generic_string()=="__default_occlusion__")
-            image={1,1,{255,255,255,255}}; // full ambient visibility
-          else if(source.generic_string()=="__default_emissive__")
-            image={1,1,{255,255,255,255}}; // emissive factor provides black default
-          else if(use_pbr && gltf_images.contains(source.generic_string())) {
-            image=gltf_images.at(source.generic_string());
-          } else {
-            const auto path=source.string();
-            if(std::filesystem::file_size(source)>32'000'000)
-              throw std::invalid_argument("texture image exceeds 32MB");
-            const auto encoded=read_file(path);
-            if(encoded.starts_with("P3")){
-              std::istringstream file(encoded);
-              image=terraflux::assets::read_ppm_p3(file);
-            }else{
-              const auto raw=std::span(
-                  reinterpret_cast<const std::uint8_t*>(encoded.data()),encoded.size());
-              image=terraflux::assets::decode_image(raw);
-            }
-          }
+          const auto key=terraflux::assets::texture_cache_key(source,sampling,use_pbr);
+          if(const auto it=obj.textures.find(key);it!=obj.textures.end())return it->second;
+          const auto image=terraflux::assets::resolve_texture_image(source,use_pbr,gltf_images);
           const auto bytes=std::as_bytes(std::span(image.pixels));
           const auto id=asset_owned.create_texture2d({image.width,image.height,sampling},bytes);
           obj.textures.emplace(key,id);
@@ -613,7 +554,7 @@ int main(int argc, char** argv) {
               if(!it->second.material.albedo_map.empty())
                 texture_file=(use_pbr && gltf_images.contains(it->second.material.albedo_map))?
                     std::filesystem::path(it->second.material.albedo_map):
-                    asset_path(it->second.folder,it->second.material.albedo_map);
+                    terraflux::assets::resolve_asset_path(it->second.folder,it->second.material.albedo_map,32'000'000);
             }
             if(!options.texture_file.empty())texture_file=options.texture_file;
             const auto handle=cached_texture(texture_file,sampling);

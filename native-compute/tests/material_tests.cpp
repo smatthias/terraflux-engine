@@ -1,4 +1,7 @@
 #include <terraflux/assets/material.hpp>
+#include <terraflux/assets/resource_resolution.hpp>
+#include <chrono>
+#include <fstream>
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
@@ -55,6 +58,41 @@ void checker(){
  require(img.pixels.size()==8*8*4,"checker image size");
  require(img.pixels[0]!=img.pixels[8],"checker tiles differ");
 }
+void resource_resolution(){
+ using namespace terraflux::assets;
+ const auto root=std::filesystem::temp_directory_path()/
+     ("terraflux-materials-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+ struct Cleanup {std::filesystem::path path;~Cleanup(){std::error_code e;std::filesystem::remove_all(path,e);}} cleanup{root};
+ std::filesystem::create_directories(root/"maps");
+ std::ofstream(root/"a.mtl")<<"newmtl Stone\nKd 0.2 0.4 0.6\nmap_Kd maps/tile.ppm\n";
+ std::ofstream(root/"maps/tile.ppm")<<"P3 1 1 255 10 20 30\n";
+ Mesh mesh;mesh.material_libraries={"a.mtl"};mesh.sections.push_back({0,3,"Stone"});
+ const auto library=load_obj_materials(mesh,root,"model/",true);
+ require(mesh.sections[0].material_name=="model/Stone" &&
+         library.at("model/Stone").material.metallic_factor==0,"scoped OBJ material resolution");
+ const auto texture=resolve_asset_path(library.at("model/Stone").folder,
+                                      library.at("model/Stone").material.albedo_map);
+ const auto image=resolve_texture_image(texture,false);
+ require(image.width==1 && image.pixels[0]==10 && image.pixels[2]==30,"material-relative PPM decode");
+ auto duplicate=mesh;duplicate.sections[0].material_name="Stone";duplicate.material_libraries.push_back("a.mtl");
+ rejects([&]{(void)load_obj_materials(duplicate,root,"changed/");},"duplicate library material rejected");
+ require(duplicate.sections[0].material_name=="Stone","failed library load preserves section names");
+ rejects([&]{(void)resolve_asset_path(root,"../outside.ppm");},"parent escape rejected");
+ rejects([&]{(void)resolve_asset_path(root,"missing.ppm");},"missing material resource rejected");
+ rejects([&]{(void)resolve_asset_path(root,"maps/tile.ppm",1);},"resource size bound");
+ auto sampling=terraflux::TextureSampling{};
+ const auto first=texture_cache_key("maps/./tile.ppm",sampling,true);
+ require(first==texture_cache_key("maps/tile.ppm",sampling,true),"cache key normalizes paths");
+ sampling.wrap_s=terraflux::TextureWrap::ClampToEdge;
+ require(first!=texture_cache_key("maps/tile.ppm",sampling,true),"sampler state prevents incompatible sharing");
+ require(texture_cache_key({},sampling,true)!=texture_cache_key({},sampling,false),"distinct default image identities");
+ require(resolve_texture_image({},true).pixels[0]==255,"PBR white fallback");
+ require(resolve_texture_image("__default_normal__",true).pixels[2]==255,"neutral normal fallback");
+ const std::map<std::string,ImageRgba8> embedded{{"model/image",{1,1,{1,2,3,255}}}};
+ require(resolve_texture_image("model/image",true,embedded).pixels[0]==1,"embedded namespaced texture resolution");
+ rejects([&]{(void)resolve_texture_image(root/"missing.png",true);},"missing texture rejected");
 }
-int main(){try{parse_image();invalid();checker();material_library();std::cout<<"Material tests: 4 passed\n";}
+
+}
+int main(){try{parse_image();invalid();checker();material_library();resource_resolution();std::cout<<"Material tests: 5 passed\n";}
 catch(const std::exception&e){std::cerr<<e.what()<<'\n';return 1;}}

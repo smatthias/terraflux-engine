@@ -12,6 +12,7 @@ add_library(terraflux_compute STATIC
   src/assets/obj.cpp
   src/assets/scene_assets.cpp
   src/assets/material.cpp
+  src/assets/resource_resolution.cpp
   src/assets/image.cpp
   src/assets/gltf.cpp
   src/terrain_mesh.cpp
