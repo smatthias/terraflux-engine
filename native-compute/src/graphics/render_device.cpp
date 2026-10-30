@@ -14,12 +14,15 @@
 namespace terraflux::graphics {
 
 void validate_render_pass_desc(const RenderPassDesc& desc) {
-  if(desc.target.kind!=RenderTargetKind::Window)
+  if(desc.target.kind!=RenderTargetKind::Window && desc.target.kind!=RenderTargetKind::Offscreen)
     throw std::invalid_argument("unsupported render target kind");
   constexpr auto max_extent=static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max());
   if(!desc.target.width || !desc.target.height ||
      desc.target.width>max_extent || desc.target.height>max_extent)
     throw std::invalid_argument("render target extents must be 1..INT32_MAX");
+  if((desc.target.kind==RenderTargetKind::Window && desc.target.handle) ||
+     (desc.target.kind==RenderTargetKind::Offscreen && !desc.target.handle))
+    throw std::invalid_argument("render target kind and handle disagree");
   const auto valid_load=[](AttachmentLoadOp op) {
     return op==AttachmentLoadOp::Load || op==AttachmentLoadOp::Clear;
   };
@@ -35,12 +38,20 @@ void validate_render_pass_desc(const RenderPassDesc& desc) {
 void ValidatingRenderDevice::begin_render_pass(const RenderPassDesc& desc) {
   if(pass_active_)throw std::logic_error("render passes cannot nest");
   validate_render_pass_desc(desc);
+  if(desc.target.kind==RenderTargetKind::Offscreen) {
+    const auto it=render_targets_.find(desc.target.handle.id);
+    if(it==render_targets_.end() || it->second.width!=desc.target.width ||
+       it->second.height!=desc.target.height)
+      throw std::invalid_argument("unknown render target or mismatched pass extent");
+  }
+  active_target_=desc.target.handle;
   pass_active_=true;
 }
 
 void ValidatingRenderDevice::end_render_pass() {
   if(!pass_active_)throw std::logic_error("no active render pass");
   pass_active_=false;
+  active_target_={};
 }
 
 std::uint32_t vertex_format_bytes(VertexFormat format) {
@@ -129,6 +140,28 @@ std::uint64_t rgba8_storage_bytes(TextureDesc desc) {
   }
   return bytes;
 }
+std::uint64_t offscreen_storage_bytes(OffscreenTargetDesc desc) {
+  if(!desc.width || !desc.height || desc.width>4096 || desc.height>4096 ||
+     static_cast<std::uint64_t>(desc.width)*desc.height>4'000'000 ||
+     desc.color!=ColorAttachmentFormat::Rgba8 ||
+     desc.depth!=DepthAttachmentFormat::Depth32Float)
+    throw std::invalid_argument("unsupported offscreen extent or attachment format");
+  return static_cast<std::uint64_t>(desc.width)*desc.height*8;
+}
+RenderTargetHandle ValidatingRenderDevice::create_render_target(OffscreenTargetDesc desc) {
+  admit_bytes(offscreen_storage_bytes(desc));
+  const auto id=allocate_id();
+  render_targets_.emplace(id,desc);
+  record_allocation();
+  return {id};
+}
+void ValidatingRenderDevice::destroy_render_target(RenderTargetHandle handle) {
+  if(pass_active_ && handle==active_target_)
+    throw std::logic_error("cannot destroy the active render target");
+  if(render_targets_.erase(handle.id)!=1)
+    throw std::invalid_argument("unknown or destroyed render target");
+}
+
 void check_resource_byte_budget(std::uint64_t used,std::uint64_t additional,std::uint64_t limit) {
   if(used>limit || additional>limit-used)
     throw std::length_error("resource byte budget exceeded");
@@ -137,6 +170,7 @@ ResourceBytes ValidatingRenderDevice::live_resource_bytes() const {
   ResourceBytes result;
   for(const auto& [id,buffer]:buffers_)result.buffer_bytes+=buffer.desc.size_bytes;
   for(const auto& [id,texture]:textures_)result.texture_bytes+=rgba8_storage_bytes(texture);
+  for(const auto& [id,target]:render_targets_)result.render_target_bytes+=offscreen_storage_bytes(target);
   return result;
 }
 
@@ -167,6 +201,7 @@ void ValidatingRenderDevice::record_allocation() {
   ++telemetry_.allocation_count;
   telemetry_.peak_bytes.buffer_bytes=std::max(telemetry_.peak_bytes.buffer_bytes,used.buffer_bytes);
   telemetry_.peak_bytes.texture_bytes=std::max(telemetry_.peak_bytes.texture_bytes,used.texture_bytes);
+  telemetry_.peak_bytes.render_target_bytes=std::max(telemetry_.peak_bytes.render_target_bytes,used.render_target_bytes);
   telemetry_.peak_total_bytes=std::max(telemetry_.peak_total_bytes,used.total());
 }
 

@@ -833,8 +833,8 @@ int main(int argc, char** argv) {
           <<",\"saved_instances\":"<<stats.saved_instances
           <<",\"max_meshes\":"<<budget.max_meshes<<",\"max_instances\":"<<budget.max_instances
           <<",\"live_buffers\":"<<resources.buffers<<",\"live_textures\":"<<resources.textures
-          <<",\"live_pipelines\":"<<resources.pipelines
-          <<",\"buffer_bytes\":"<<bytes.buffer_bytes<<",\"texture_bytes\":"<<bytes.texture_bytes
+          <<",\"live_pipelines\":"<<resources.pipelines<<",\"live_render_targets\":"<<resources.render_targets
+          <<",\"buffer_bytes\":"<<bytes.buffer_bytes<<",\"texture_bytes\":"<<bytes.texture_bytes<<",\"render_target_bytes\":"<<bytes.render_target_bytes
           <<",\"cpu_vertex_bytes\":"<<imported->cpu_payload.vertex_bytes
           <<",\"cpu_index_bytes\":"<<imported->cpu_payload.index_bytes
           <<",\"cpu_image_bytes\":"<<imported->cpu_payload.image_bytes
@@ -842,7 +842,7 @@ int main(int argc, char** argv) {
           <<",\"cpu_recipe_budget_bytes\":"<<(options.cpu_recipe_budget_bytes?std::to_string(*options.cpu_recipe_budget_bytes):"null")
           <<",\"total_resource_bytes\":"<<bytes.total()
           <<",\"peak_buffer_bytes\":"<<telemetry.peak_bytes.buffer_bytes
-          <<",\"peak_texture_bytes\":"<<telemetry.peak_bytes.texture_bytes
+          <<",\"peak_texture_bytes\":"<<telemetry.peak_bytes.texture_bytes<<",\"peak_render_target_bytes\":"<<telemetry.peak_bytes.render_target_bytes
           <<",\"peak_total_bytes\":"<<telemetry.peak_total_bytes
           <<",\"allocation_count\":"<<telemetry.allocation_count
           <<",\"budget_rejections\":"<<telemetry.budget_rejections

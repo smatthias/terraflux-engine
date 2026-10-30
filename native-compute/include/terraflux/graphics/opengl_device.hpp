@@ -29,6 +29,8 @@ class OpenGLRenderDevice final : public RenderDevice {
   void orphan_storage_buffer(BufferHandle handle) override;
   TextureHandle create_texture2d(TextureDesc desc, std::span<const std::byte> rgba8) override;
   void destroy_texture(TextureHandle handle) override;
+  RenderTargetHandle create_render_target(OffscreenTargetDesc desc) override;
+  void destroy_render_target(RenderTargetHandle handle) override;
   PipelineHandle create_pipeline(PipelineDesc desc) override;
   void destroy_pipeline(PipelineHandle handle) override;
   void begin_render_pass(const RenderPassDesc& desc) override;
@@ -36,7 +38,7 @@ class OpenGLRenderDevice final : public RenderDevice {
   void draw_indexed(const DrawIndexed& command) override;
 
   struct ResourceCounts {
-    std::size_t buffers=0,textures=0,pipelines=0;
+    std::size_t buffers=0,textures=0,pipelines=0,render_targets=0;
     bool operator==(const ResourceCounts&) const=default;
   };
   // Live API resources, including streamed instance buffers; excludes driver

@@ -73,6 +73,16 @@ struct GL {
   PFNGLCLEARCOLORPROC ClearColor = get_proc<PFNGLCLEARCOLORPROC>("glClearColor");
   PFNGLCLEARDEPTHPROC ClearDepth = get_proc<PFNGLCLEARDEPTHPROC>("glClearDepth");
   PFNGLBINDFRAMEBUFFERPROC BindFramebuffer = get_proc<PFNGLBINDFRAMEBUFFERPROC>("glBindFramebuffer");
+  PFNGLGENFRAMEBUFFERSPROC GenFramebuffers = get_proc<PFNGLGENFRAMEBUFFERSPROC>("glGenFramebuffers");
+  PFNGLDELETEFRAMEBUFFERSPROC DeleteFramebuffers = get_proc<PFNGLDELETEFRAMEBUFFERSPROC>("glDeleteFramebuffers");
+  PFNGLCHECKFRAMEBUFFERSTATUSPROC CheckFramebufferStatus = get_proc<PFNGLCHECKFRAMEBUFFERSTATUSPROC>("glCheckFramebufferStatus");
+  PFNGLGENRENDERBUFFERSPROC GenRenderbuffers = get_proc<PFNGLGENRENDERBUFFERSPROC>("glGenRenderbuffers");
+  PFNGLDELETERENDERBUFFERSPROC DeleteRenderbuffers = get_proc<PFNGLDELETERENDERBUFFERSPROC>("glDeleteRenderbuffers");
+  PFNGLBINDRENDERBUFFERPROC BindRenderbuffer = get_proc<PFNGLBINDRENDERBUFFERPROC>("glBindRenderbuffer");
+  PFNGLRENDERBUFFERSTORAGEPROC RenderbufferStorage = get_proc<PFNGLRENDERBUFFERSTORAGEPROC>("glRenderbufferStorage");
+  PFNGLFRAMEBUFFERRENDERBUFFERPROC FramebufferRenderbuffer = get_proc<PFNGLFRAMEBUFFERRENDERBUFFERPROC>("glFramebufferRenderbuffer");
+  PFNGLGETINTEGERVPROC GetIntegerv = get_proc<PFNGLGETINTEGERVPROC>("glGetIntegerv");
+  PFNGLGETERRORPROC GetError = get_proc<PFNGLGETERRORPROC>("glGetError");
   PFNGLCLEARPROC Clear = get_proc<PFNGLCLEARPROC>("glClear");
   PFNGLVIEWPORTPROC Viewport = get_proc<PFNGLVIEWPORTPROC>("glViewport");
   PFNGLREADPIXELSPROC ReadPixels = get_proc<PFNGLREADPIXELSPROC>("glReadPixels");
@@ -600,6 +610,9 @@ struct OpenGLRenderDevice::Impl {
   struct GpuTexture { GLuint name = 0; };
   struct GpuPipeline { GLuint program = 0, vao = 0; PipelineDesc desc; };
 
+  struct GpuTarget {GLuint framebuffer=0,color=0,depth=0;};
+  std::unordered_map<std::uint32_t,GpuTarget> render_targets;
+
   GL gl;
   ValidatingRenderDevice validator;
   std::unordered_map<std::uint32_t, GpuBuffer> buffers;
@@ -645,6 +658,12 @@ struct OpenGLRenderDevice::Impl {
     // Destruction requires the OpenGL context used at creation to be current.
     if(timing_enabled)gl.DeleteQueries(static_cast<GLsizei>(kGpuQuerySlots),
                                        gpu_queries.data());
+    for(const auto& [id,target]:render_targets) {
+      (void)id;
+      gl.DeleteFramebuffers(1,&target.framebuffer);
+      gl.DeleteRenderbuffers(1,&target.color);
+      gl.DeleteRenderbuffers(1,&target.depth);
+    }
     for (const auto& [id, pipeline] : pipelines) {
       (void)id;
       gl.DeleteVertexArrays(1, &pipeline.vao);
@@ -817,6 +836,65 @@ void OpenGLRenderDevice::destroy_texture(TextureHandle handle) {
   impl_->texture_units.clear();
 }
 
+RenderTargetHandle OpenGLRenderDevice::create_render_target(OffscreenTargetDesc desc) {
+  (void)offscreen_storage_bytes(desc);
+  GLint maximum=0;
+  impl_->gl.GetIntegerv(GL_MAX_RENDERBUFFER_SIZE,&maximum);
+  if(desc.width>static_cast<std::uint32_t>(maximum) ||
+     desc.height>static_cast<std::uint32_t>(maximum))
+    throw std::invalid_argument("offscreen target exceeds device extent limit");
+  const auto handle=impl_->validator.create_render_target(desc);
+  Impl::GpuTarget target;
+  GLint previous_draw=0,previous_read=0,previous_renderbuffer=0;
+  impl_->gl.GetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING,&previous_draw);
+  impl_->gl.GetIntegerv(GL_READ_FRAMEBUFFER_BINDING,&previous_read);
+  impl_->gl.GetIntegerv(GL_RENDERBUFFER_BINDING,&previous_renderbuffer);
+  const auto restore=[&] {
+    impl_->gl.BindFramebuffer(GL_DRAW_FRAMEBUFFER,static_cast<GLuint>(previous_draw));
+    impl_->gl.BindFramebuffer(GL_READ_FRAMEBUFFER,static_cast<GLuint>(previous_read));
+    impl_->gl.BindRenderbuffer(GL_RENDERBUFFER,static_cast<GLuint>(previous_renderbuffer));
+  };
+  try {
+    impl_->gl.GenFramebuffers(1,&target.framebuffer);
+    impl_->gl.GenRenderbuffers(1,&target.color);
+    impl_->gl.GenRenderbuffers(1,&target.depth);
+    if(!target.framebuffer || !target.color || !target.depth)
+      throw std::runtime_error("offscreen GL object allocation failed");
+    impl_->gl.BindFramebuffer(GL_FRAMEBUFFER,target.framebuffer);
+    const auto attach=[&](GLuint name,GLenum format,GLenum point) {
+      impl_->gl.BindRenderbuffer(GL_RENDERBUFFER,name);
+      impl_->gl.RenderbufferStorage(GL_RENDERBUFFER,format,
+          static_cast<GLsizei>(desc.width),static_cast<GLsizei>(desc.height));
+      impl_->gl.FramebufferRenderbuffer(GL_FRAMEBUFFER,point,GL_RENDERBUFFER,name);
+    };
+    attach(target.color,GL_RGBA8,GL_COLOR_ATTACHMENT0);
+    attach(target.depth,GL_DEPTH_COMPONENT32F,GL_DEPTH_ATTACHMENT);
+    const auto complete=impl_->gl.CheckFramebufferStatus(GL_FRAMEBUFFER);
+    const auto error=impl_->gl.GetError();
+    if(complete!=GL_FRAMEBUFFER_COMPLETE || error!=GL_NO_ERROR)
+      throw std::runtime_error("offscreen framebuffer storage or completeness failed");
+    impl_->render_targets.emplace(handle.id,target);
+  } catch(...) {
+    restore();
+    impl_->gl.DeleteFramebuffers(1,&target.framebuffer);
+    impl_->gl.DeleteRenderbuffers(1,&target.color);
+    impl_->gl.DeleteRenderbuffers(1,&target.depth);
+    impl_->validator.destroy_render_target(handle);
+    throw;
+  }
+  restore();
+  return handle;
+}
+
+void OpenGLRenderDevice::destroy_render_target(RenderTargetHandle handle) {
+  impl_->validator.destroy_render_target(handle);
+  const auto target=impl_->render_targets.at(handle.id);
+  impl_->gl.DeleteFramebuffers(1,&target.framebuffer);
+  impl_->gl.DeleteRenderbuffers(1,&target.color);
+  impl_->gl.DeleteRenderbuffers(1,&target.depth);
+  impl_->render_targets.erase(handle.id);
+}
+
 PipelineHandle OpenGLRenderDevice::create_pipeline(PipelineDesc desc) {
   validate_pipeline_desc(desc,false);
   const char* vertex_source=nullptr;
@@ -893,7 +971,7 @@ void OpenGLRenderDevice::set_resource_byte_budget(std::uint64_t bytes) {
 }
 
 OpenGLRenderDevice::ResourceCounts OpenGLRenderDevice::live_resource_counts() const {
-  return {impl_->buffers.size(),impl_->textures.size(),impl_->pipelines.size()};
+  return {impl_->buffers.size(),impl_->textures.size(),impl_->pipelines.size(),impl_->render_targets.size()};
 }
 
 void OpenGLRenderDevice::draw_indexed(const DrawIndexed& command) {
@@ -981,7 +1059,9 @@ void OpenGLRenderDevice::draw_indexed(const DrawIndexed& command) {
 void OpenGLRenderDevice::begin_render_pass(const RenderPassDesc& desc) {
   // Validate the full descriptor/order before changing any OpenGL state.
   impl_->validator.begin_render_pass(desc);
-  impl_->gl.BindFramebuffer(GL_FRAMEBUFFER,0);
+  const auto framebuffer=desc.target.kind==RenderTargetKind::Window?0U:
+      impl_->render_targets.at(desc.target.handle.id).framebuffer;
+  impl_->gl.BindFramebuffer(GL_FRAMEBUFFER,framebuffer);
   impl_->gl.Viewport(0,0,static_cast<GLsizei>(desc.target.width),
                           static_cast<GLsizei>(desc.target.height));
   GLbitfield mask=0;

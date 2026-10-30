@@ -86,13 +86,27 @@ struct PipelineDesc {
 ShaderLayout shader_program_layout(ShaderProgramId program);
 void validate_pipeline_desc(const PipelineDesc& desc,bool allow_contract_only=true);
 
-// Borrowed window framebuffer; the platform owns its storage and presentation.
-// Offscreen attachments/formats and multisampling are not implemented yet.
-enum class RenderTargetKind : std::uint8_t { Window };
+struct RenderTargetHandle {
+  std::uint32_t id=0;
+  constexpr explicit operator bool() const {return id!=0;}
+  constexpr bool operator==(const RenderTargetHandle&) const=default;
+};
+enum class ColorAttachmentFormat : std::uint8_t { Rgba8 };
+enum class DepthAttachmentFormat : std::uint8_t { Depth32Float };
+struct OffscreenTargetDesc {
+  std::uint32_t width=0,height=0;
+  ColorAttachmentFormat color=ColorAttachmentFormat::Rgba8;
+  DepthAttachmentFormat depth=DepthAttachmentFormat::Depth32Float;
+};
+// Window storage is borrowed. Offscreen storage is owned by a live handle;
+// pass extents must match its immutable allocation. No MSAA or sampling yet.
+enum class RenderTargetKind : std::uint8_t { Window, Offscreen };
 struct RenderTargetDesc {
   std::uint32_t width=0,height=0;
   RenderTargetKind kind=RenderTargetKind::Window;
+  RenderTargetHandle handle{};
 };
+std::uint64_t offscreen_storage_bytes(OffscreenTargetDesc desc);
 enum class AttachmentLoadOp : std::uint8_t { Load, Clear };
 struct RenderPassDesc {
   RenderTargetDesc target;
@@ -131,8 +145,8 @@ struct DrawIndexed {
 
 // Logical API storage, excluding driver overhead and deferred orphan copies.
 struct ResourceBytes {
-  std::uint64_t buffer_bytes=0,texture_bytes=0;
-  std::uint64_t total() const {return buffer_bytes+texture_bytes;}
+  std::uint64_t buffer_bytes=0,texture_bytes=0,render_target_bytes=0;
+  std::uint64_t total() const {return buffer_bytes+texture_bytes+render_target_bytes;}
   bool operator==(const ResourceBytes&) const=default;
 };
 struct BudgetRejection {
@@ -167,9 +181,11 @@ class RenderDevice {
   virtual TextureHandle create_texture2d(TextureDesc desc,
                                       std::span<const std::byte> rgba8) = 0;
   virtual void destroy_texture(TextureHandle handle) = 0;
+  virtual RenderTargetHandle create_render_target(OffscreenTargetDesc desc) = 0;
+  virtual void destroy_render_target(RenderTargetHandle handle) = 0;
   virtual PipelineHandle create_pipeline(PipelineDesc desc) = 0;
   virtual void destroy_pipeline(PipelineHandle handle) = 0;
-  // Passes cannot nest; drawing requires an active pass. End preserves window
+  // Passes cannot nest; drawing requires an active pass. End preserves target
   // attachments; swapping/presentation remains the platform's responsibility.
   virtual void begin_render_pass(const RenderPassDesc& desc) = 0;
   virtual void end_render_pass() = 0;
@@ -188,6 +204,8 @@ class ValidatingRenderDevice final : public RenderDevice {
   void orphan_storage_buffer(BufferHandle handle) override;
   TextureHandle create_texture2d(TextureDesc desc, std::span<const std::byte> rgba8) override;
   void destroy_texture(TextureHandle handle) override;
+  RenderTargetHandle create_render_target(OffscreenTargetDesc desc) override;
+  void destroy_render_target(RenderTargetHandle handle) override;
   PipelineHandle create_pipeline(PipelineDesc desc) override;
   void destroy_pipeline(PipelineHandle handle) override;
   void begin_render_pass(const RenderPassDesc& desc) override;
@@ -197,6 +215,7 @@ class ValidatingRenderDevice final : public RenderDevice {
   ResourceTelemetry resource_telemetry() const override;
   void reset_resource_telemetry() override;
   void set_resource_byte_budget(std::uint64_t bytes) override {byte_budget_=bytes;}
+  std::size_t live_render_target_count() const {return render_targets_.size();}
   std::size_t draw_count() const { return draw_count_; }
   std::size_t live_buffer_count() const { return buffers_.size(); }
   std::size_t live_pipeline_count() const { return pipelines_.size(); }
@@ -208,6 +227,8 @@ class ValidatingRenderDevice final : public RenderDevice {
     std::vector<std::byte> bytes;
   };
   bool pass_active_=false;
+  RenderTargetHandle active_target_{};
+  std::unordered_map<std::uint32_t,OffscreenTargetDesc> render_targets_;
   ResourceTelemetry telemetry_;
   void admit_bytes(std::uint64_t bytes);
   void record_allocation();

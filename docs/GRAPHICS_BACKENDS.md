@@ -189,8 +189,8 @@ Clear uses normalized finite RGBA/depth values (depth defaults to 1); Load keeps
 the attachment contents from earlier work in the same framebuffer. Every pass
 preserves its results at end. Loading a newly created or swapped window buffer
 has no defined initial contents; begin the frame with Clear. No discard/store
-selection, subpasses, stencil, MSAA, custom viewport or offscreen attachment
-handles are exposed in this increment.
+selection, subpasses, stencil, MSAA or custom viewport are exposed. The later
+offscreen increment below adds owned attachment handles.
 
 Both backends reject invalid target kinds, zero or greater-than-INT32_MAX extents,
 unknown load operations, invalid clear values, nested begins, unmatched ends and
@@ -199,7 +199,7 @@ state changes; rejected begins leave the previous pass state intact. Resource
 creation, updates and destruction remain legal between or within passes; the
 existing resource/draw validation rules still apply.
 
-The OpenGL backend binds framebuffer zero, sets the full-target viewport, applies
+For window targets the OpenGL backend binds framebuffer zero, sets the full-target viewport, applies
 only the requested clears, and restores writable depth before a depth clear,
 keeping its depth-write cache synchronized after transparent rendering. It owns
 GL state within the viewer context. End does not flush, swap or allocate. The
@@ -214,7 +214,71 @@ recovery after rejected begins, every clear/load combination, extent/value
 validation and unchanged resource bytes. The CPU backend validates contracts;
 it does not emulate attachment pixels.
 
-Next: owned offscreen color/depth attachment resources with bounded allocations,
-framebuffer completeness checks and explicit destruction. These are prerequisites
-for general post-processing or shadow passes. Physical GPU validation and PS4/PSSL
+Owned offscreen targets are described below. Physical GPU validation and PS4/PSSL
 remain outstanding.
+
+
+## Owned offscreen render targets
+
+`create_render_target(OffscreenTargetDesc)` creates immutable, single-sample
+RGBA8 color and Depth32Float depth attachments as one owned resource. Both are
+required. The initial contents are undefined: clear before loading. Allocation
+accepts positive extents no larger than 4096 per axis and 4,000,000 pixels,
+with an additional OpenGL device-limit check. Unsupported format enums reject.
+There are no stencil, HDR, mipmaps or independently shared attachments yet.
+
+```cpp
+RenderResourceOwner resources(device);
+const auto target=resources.create_render_target({640,480});
+device.begin_render_pass({{640,480,RenderTargetKind::Offscreen,target}});
+// Submit ordinary indexed draws here.
+device.end_render_pass();
+// End all passes before the owning scope is reset or destroyed.
+```
+
+A window pass carries no owned handle. An offscreen pass requires a live
+RenderTargetHandle and dimensions exactly matching the allocation. Invalid
+handles or extents reject before changing pass state or GL bindings. Destroying
+the active target rejects; end the pass first. Creation of another target during
+a pass restores the previous read/draw framebuffer and renderbuffer bindings.
+Pass end preserves the attachment storage and leaves it bound for GL diagnostic
+readback. A later window pass explicitly rebinds framebuffer zero. Destruction
+of an inactive bound framebuffer follows OpenGL's unbinding behavior.
+
+OpenGL owns one framebuffer and two renderbuffers per target. Storage allocation
+checks GL error status and framebuffer completeness before publication. Failure
+restores bindings, deletes partial objects and removes the validating mirror's
+live allocation. RenderResourceOwner tracks targets for reverse-order cleanup;
+the device also deletes any remaining target objects before context destruction.
+No attachment is exposed as a sampled TextureHandle in this increment.
+
+`ResourceBytes::render_target_bytes` accounts for width × height × 8 bytes,
+separately from sampled texture bytes. It contributes to total bytes, shared
+budget admission, category/total peaks, allocation count and headroom. One target
+is one logical admission. OpenGL's mirror admits before driver allocation, so
+failed driver creation may remain in admission/peak history even though current
+bytes return to baseline. These numbers exclude driver overhead and do not
+measure physical VRAM. Window framebuffer storage remains outside engine bytes.
+Viewer RESIDENCY_JSON adds live_render_targets, render_target_bytes and
+peak_render_target_bytes; total_resource_bytes includes the new category.
+
+Resizing means constructing a new target before releasing the old one. The
+budget must admit both while both are live; a failed candidate preserves the
+original. Target formats/extents cannot be mutated in place.
+
+Native graphics tests cover formats/extents, exact accounting, cap rejection,
+invalid and stale handles, active-destruction rejection and reallocation. Ownership
+tests cover failed construction and idempotent reset. Build the extra display test
+with `-DTERRAFLUX_WITH_OPENGL=ON` and `BUILD_TESTING=ON`, then run:
+
+```sh
+LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a ./build-gl/terraflux-offscreen-tests
+```
+
+This test is separate from CTest so the 14 native suites remain display-independent.
+It reads back color and float depth, checks independent target storage, color-only
+and depth-only clears, preserved depth occlusion, actual triangle drawing,
+creation while a pass is active, window restoration, budget rejection and repeated
+replacement/cleanup. The existing viewer continues to render directly to the
+window. Next: sampled offscreen color and a compositing pass. Physical GPU testing
+is still required before hardware performance conclusions.

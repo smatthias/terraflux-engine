@@ -152,7 +152,7 @@ that would exceed the cap fail before backend creation. Existing resources are
 not automatically evicted. Reload/activation may need extra temporary capacity;
 initialization or draw-time stream allocation can fail if the cap is too small.
 
-Diagnostics add `buffer_bytes`, `texture_bytes`, `total_resource_bytes` and
+Diagnostics add `buffer_bytes`, `texture_bytes`, `render_target_bytes`, `total_resource_bytes` and
 `resource_budget_bytes` (null when unlimited). Buffers count their capacity;
 RGBA8 textures count all generated mip levels. Shared textures count once per
 live allocation; orphaning keeps the same logical capacity. Destruction and
@@ -240,7 +240,7 @@ Layout metadata is validated against the selected contract; binding names do
 not select or redirect shader source. Missing/unknown IDs and mismatched layouts
 reject before backend compilation. `ContractOnly` exists for CPU validation tests
 and cannot render through OpenGL. See the [pipeline contract](docs/GRAPHICS_BACKENDS.md#explicit-shader-program-identities)
-for migration and remaining module/render-pass work.
+for migration and remaining shader-module work.
 
 ### Wildfire replay and runtime checks
 
@@ -508,13 +508,13 @@ hours or release-readiness guarantees. The PS4 backend is unimplemented.
 
 | Desktop engine — Phases 1–9 | Full roadmap including PS4 |
 | --- | --- |
-| **~85%** (previously ~84%) | **~56%** (previously ~55%) |
+| **~86%** (previously ~85%) | **~57%** (previously ~56%) |
 
 | Phase | Component | Estimated completion |
 | --- | --- | ---: |
 | 1 | Core extraction | 100% |
-| 2 | Rendering abstraction | ~78% (previously ~72%) |
-| 3 | OpenGL backend | 85% |
+| 2 | Rendering abstraction | ~83% (previously ~78%) |
+| 3 | OpenGL backend | ~88% (previously 85%) |
 | 4 | 3D terrain renderer | 75% |
 | 5 | Simulation visualization | 65% |
 | 6 | Shader system | ~80% (previously 76%) |
@@ -538,10 +538,16 @@ Latest abstraction increment: backend-neutral window render-target/pass descript
 explicit begin/end ordering and independent color/depth clear or load operations.
 Terrain and object rendering now use separate passes; Mesa smoke tests verify
 that a load pass preserves terrain color. The target is borrowed from the window;
-it creates no engine resource allocation and presentation remains GLFW-owned.
+window storage creates no engine resource allocation and presentation remains GLFW-owned.
 Native tests validate descriptors and reject nested passes and draws outside a pass.
 The earlier explicit shader/pipeline identities retain shared layout validation.
-Next planned implementation: owned offscreen color/depth attachments and framebuffer lifetimes.
+Owned offscreen targets now provide RGBA8 color and Depth32Float depth attachments,
+validated pass handles/extents, shared byte-budget admission, telemetry and scope
+cleanup. OpenGL creation checks framebuffer completeness and rolls back partial
+allocations. A dedicated Mesa test covers clear/load, depth occlusion, geometry,
+target switching, budget rejection and repeated cleanup. Native CTest remains
+14 display-independent suites; the extra GL test runs explicitly under Xvfb.
+Next planned implementation: sample offscreen color in a compositing pass.
 See the [prioritized gaps and acceptance criteria](docs/ENGINE_BASELINE.md#remaining-renderer-work-in-priority-order). GPU meshes are created on demand; CPU model data
 and decoded image recipes remain eager and retained for reattachment. Asynchronous streaming, skeletal animation
 and full glTF/IBL support remain future work.

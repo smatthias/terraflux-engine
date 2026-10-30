@@ -116,4 +116,9 @@ if(TERRAFLUX_WITH_OPENGL)
 
   add_executable(terraflux-terrain-viewer src/graphics/terrain_viewer.cpp)
   target_link_libraries(terraflux-terrain-viewer PRIVATE terraflux_opengl)
+  if(BUILD_TESTING)
+    # Run explicitly under Xvfb; ordinary native CTest needs no display server.
+    add_executable(terraflux-offscreen-tests tests/offscreen_gl_tests.cpp)
+    target_link_libraries(terraflux-offscreen-tests PRIVATE terraflux_opengl)
+  endif()
 endif()

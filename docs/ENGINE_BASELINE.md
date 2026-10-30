@@ -141,5 +141,8 @@ baseline. See [Explicit shader program identities](GRAPHICS_BACKENDS.md#explicit
 for the migrated descriptor contract. A subsequent increment adds explicit window
 render-target/pass descriptions, independent color/depth clear/load operations,
 and begin/end validation. See [Window render targets and render passes](GRAPHICS_BACKENDS.md#window-render-targets-and-render-passes).
-The pinned P1 render-target gap is partially addressed: owned offscreen attachments,
-formats and framebuffer lifetimes remain next. Physical GPU evidence is still outstanding.
+The feature branch also adds owned RGBA8/Depth32Float offscreen targets, shared
+budget accounting, framebuffer completeness checks and explicit lifetimes, with
+a dedicated Mesa pixel/depth test. See [Owned offscreen render targets](GRAPHICS_BACKENDS.md#owned-offscreen-render-targets).
+The pinned P1 gap is further addressed; sampled attachments and composition remain
+next. Physical GPU evidence is still outstanding.

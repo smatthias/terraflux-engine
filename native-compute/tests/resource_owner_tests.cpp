@@ -47,6 +47,22 @@ void creates_and_cleans(){
   }
   check(backend.live_buffer_count()==0,"destructor after reset harmless");
 }
+void offscreen_ownership() {
+  ValidatingRenderDevice backend;
+  try {
+    RenderResourceOwner resources(backend);
+    resources.create_render_target({8,8});
+    check(resources.tracked_render_target_count()==1 && backend.live_render_target_count()==1,
+          "owner tracks offscreen storage");
+    resources.create_render_target({0,8});
+  } catch(const std::invalid_argument&) {}
+  check(!backend.live_render_target_count() && backend.live_resource_bytes().total()==0,
+        "partial target construction unwinds without leaking storage");
+  RenderResourceOwner resources(backend);
+  resources.create_render_target({4,4});resources.reset();resources.reset();
+  check(!resources.tracked_render_target_count() && !backend.live_render_target_count(),
+        "offscreen owner reset is idempotent");
+}
 void exception_cleanup(){
   ValidatingRenderDevice backend;
   std::array<std::byte,32> data{};
@@ -165,9 +181,10 @@ int main(){
   try{
     creates_and_cleans();
     exception_cleanup();
+    offscreen_ownership();
     dynamic_asset_lifetime();
     shared_texture_lifetime();
-    std::cout<<"GPU resource ownership: 4 test groups passed\n";
+    std::cout<<"GPU resource ownership: 5 test groups passed\n";
   }catch(const std::exception& e){
     std::cerr<<"GPU ownership test failed: "<<e.what()<<'\n';return 1;
   }

@@ -350,6 +350,52 @@ void test_resource_telemetry() {
   require(!device.resource_telemetry().budget_rejections,"validation error is not a budget rejection");
 }
 
+void test_offscreen_targets() {
+  ValidatingRenderDevice device;
+  require(offscreen_storage_bytes({3,5})==120,"RGBA8 plus Depth32Float counted exactly");
+  for(const auto desc:{OffscreenTargetDesc{0,1},OffscreenTargetDesc{1,0},
+      OffscreenTargetDesc{4097,1},OffscreenTargetDesc{2001,2000},
+      OffscreenTargetDesc{1,1,static_cast<ColorAttachmentFormat>(255)},
+      OffscreenTargetDesc{1,1,ColorAttachmentFormat::Rgba8,static_cast<DepthAttachmentFormat>(255)}})
+    must_throw([&]{(void)device.create_render_target(desc);},"invalid allocation descriptor rejected");
+  require(device.resource_telemetry().allocation_count==0,"bad descriptors never admitted");
+  device.set_resource_byte_budget(120);
+  const auto target=device.create_render_target({3,5});
+  require(device.live_resource_bytes()==ResourceBytes{0,0,120},"target storage has its own category");
+  must_throw([&]{(void)device.create_render_target({1,1});},"shared byte cap rejects target candidate");
+  require(device.live_render_target_count()==1 && device.resource_telemetry().budget_rejections==1,
+          "rejected candidate leaves original target and telemetry intact");
+  auto pass=RenderPassDesc{{3,5,RenderTargetKind::Offscreen,target}};
+  auto invalid=pass;invalid.target.width=4;
+  must_throw([&]{device.begin_render_pass(invalid);},"pass extent must match allocation");
+  invalid=pass;invalid.target.kind=RenderTargetKind::Window;
+  must_throw([&]{device.begin_render_pass(invalid);},"window target cannot carry owned handle");
+  invalid=pass;invalid.target.handle={};
+  must_throw([&]{device.begin_render_pass(invalid);},"offscreen target requires owned handle");
+  device.begin_render_pass(pass);
+  must_throw([&]{device.destroy_render_target(target);},"active target cannot be destroyed");
+  device.end_render_pass();
+  pass.color_load=AttachmentLoadOp::Load;pass.depth_load=AttachmentLoadOp::Load;
+  device.begin_render_pass(pass);device.end_render_pass();
+  device.set_resource_byte_budget(119);
+  require(device.resource_telemetry().over_budget,"lower cap preserves existing target");
+  device.destroy_render_target(target);
+  must_throw([&]{device.begin_render_pass(pass);},"destroyed target cannot be rendered");
+  must_throw([&]{device.destroy_render_target(target);},"double target destruction rejected");
+  require(device.live_resource_bytes()==ResourceBytes{} && !device.live_render_target_count(),
+          "target cleanup returns all storage to baseline");
+  const auto t=device.resource_telemetry();
+  require(t.peak_bytes.render_target_bytes==120 && t.peak_total_bytes==120 && t.allocation_count==1,
+          "target peaks survive destruction");
+  device.reset_resource_telemetry();
+  require(device.resource_telemetry().peak_bytes==ResourceBytes{},"reset rebases target peak");
+  device.set_resource_byte_budget(128);
+  const auto larger=device.create_render_target({4,4});
+  require(larger!=target,"replacement cannot revive stale handles");
+  device.begin_render_pass({{4,4,RenderTargetKind::Offscreen,larger}});device.end_render_pass();
+  device.destroy_render_target(larger);
+}
+
 void test_render_pass_contract() {
   ValidatingRenderDevice device;
   const auto upload=quad_upload();
@@ -465,7 +511,8 @@ int main() {
     test_resource_telemetry();
     test_explicit_shader_identity();
     test_render_pass_contract();
-    std::cout << "TerraFlux graphics contracts: 16 tests passed\n";
+    test_offscreen_targets();
+    std::cout << "TerraFlux graphics contracts: 17 tests passed\n";
   } catch (const std::exception& error) {
     std::cerr << "TerraFlux graphics test failed: " << error.what() << '\n';
     return 1;
