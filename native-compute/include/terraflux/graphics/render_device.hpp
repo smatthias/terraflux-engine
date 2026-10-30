@@ -72,7 +72,7 @@ struct PipelineHandle {
 
 enum class ShaderProgramId : std::uint8_t {
   Unspecified, ContractOnly, Terrain, Wildfire, Object, TexturedObject,
-  InstancedTexturedObject, PbrObject, PbrInstanced
+  InstancedTexturedObject, PbrObject, PbrInstanced, Composite
 };
 struct PipelineDesc {
   ShaderProgramId program=ShaderProgramId::Unspecified;
@@ -99,7 +99,7 @@ struct OffscreenTargetDesc {
   DepthAttachmentFormat depth=DepthAttachmentFormat::Depth32Float;
 };
 // Window storage is borrowed. Offscreen storage is owned by a live handle;
-// pass extents must match its immutable allocation. No MSAA or sampling yet.
+// pass extents must match its immutable allocation. No MSAA; color sampling uses a borrowed texture handle.
 enum class RenderTargetKind : std::uint8_t { Window, Offscreen };
 struct RenderTargetDesc {
   std::uint32_t width=0,height=0;
@@ -183,6 +183,8 @@ class RenderDevice {
   virtual void destroy_texture(TextureHandle handle) = 0;
   virtual RenderTargetHandle create_render_target(OffscreenTargetDesc desc) = 0;
   virtual void destroy_render_target(RenderTargetHandle handle) = 0;
+  // Borrowed color view: valid until target destruction, never separately owned.
+  virtual TextureHandle render_target_color(RenderTargetHandle handle) const = 0;
   virtual PipelineHandle create_pipeline(PipelineDesc desc) = 0;
   virtual void destroy_pipeline(PipelineHandle handle) = 0;
   // Passes cannot nest; drawing requires an active pass. End preserves target
@@ -206,6 +208,7 @@ class ValidatingRenderDevice final : public RenderDevice {
   void destroy_texture(TextureHandle handle) override;
   RenderTargetHandle create_render_target(OffscreenTargetDesc desc) override;
   void destroy_render_target(RenderTargetHandle handle) override;
+  TextureHandle render_target_color(RenderTargetHandle handle) const override;
   PipelineHandle create_pipeline(PipelineDesc desc) override;
   void destroy_pipeline(PipelineHandle handle) override;
   void begin_render_pass(const RenderPassDesc& desc) override;
@@ -228,7 +231,9 @@ class ValidatingRenderDevice final : public RenderDevice {
   };
   bool pass_active_=false;
   RenderTargetHandle active_target_{};
-  std::unordered_map<std::uint32_t,OffscreenTargetDesc> render_targets_;
+  struct StoredTarget {OffscreenTargetDesc desc;TextureHandle color;};
+  std::unordered_map<std::uint32_t,StoredTarget> render_targets_;
+  std::unordered_map<std::uint32_t,RenderTargetHandle> borrowed_colors_;
   ResourceTelemetry telemetry_;
   void admit_bytes(std::uint64_t bytes);
   void record_allocation();

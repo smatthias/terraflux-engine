@@ -29,6 +29,7 @@ target_link_libraries(terraflux-compute-runner PRIVATE terraflux_compute)
 
 # Device abstraction and terrain upload data: no OpenGL or platform SDK dependencies.
 add_library(terraflux_graphics STATIC
+  src/graphics/composite.cpp
   src/graphics/render_device.cpp
   src/graphics/terrain_upload.cpp
   src/graphics/mesh_upload.cpp

@@ -508,16 +508,16 @@ hours or release-readiness guarantees. The PS4 backend is unimplemented.
 
 | Desktop engine — Phases 1–9 | Full roadmap including PS4 |
 | --- | --- |
-| **~86%** (previously ~85%) | **~57%** (previously ~56%) |
+| **~87%** (previously ~86%) | **~58%** (previously ~57%) |
 
 | Phase | Component | Estimated completion |
 | --- | --- | ---: |
 | 1 | Core extraction | 100% |
-| 2 | Rendering abstraction | ~83% (previously ~78%) |
-| 3 | OpenGL backend | ~88% (previously 85%) |
+| 2 | Rendering abstraction | ~86% (previously ~83%) |
+| 3 | OpenGL backend | ~90% (previously ~88%) |
 | 4 | 3D terrain renderer | 75% |
 | 5 | Simulation visualization | 65% |
-| 6 | Shader system | ~80% (previously 76%) |
+| 6 | Shader system | ~82% (previously ~80%) |
 | 7 | Scene and asset system | ~90% (previously 86%) |
 | 8 | Engine runtime | ~86% |
 | 9 | Performance | ~75% (previously ~70%) |
@@ -547,7 +547,14 @@ cleanup. OpenGL creation checks framebuffer completeness and rolls back partial
 allocations. A dedicated Mesa test covers clear/load, depth occlusion, geometry,
 target switching, budget rejection and repeated cleanup. Native CTest remains
 14 display-independent suites; the extra GL test runs explicitly under Xvfb.
-Next planned implementation: sample offscreen color in a compositing pass.
+Offscreen color now exposes a borrowed sampled texture view, with no duplicate
+byte charge and invalidation when its target is destroyed. The reusable
+`FullscreenComposite` helper copies it into a separate offscreen/window pass
+through an explicit Composite shader; feedback sampling of the active target
+rejects. Mesa tests check exact pixels, orientation, nearest scaling, depth
+preservation and subsequent geometry state restoration. The main viewer still
+renders directly to the window.
+Next planned implementation: opt-in viewer offscreen composition with resize recovery.
 See the [prioritized gaps and acceptance criteria](docs/ENGINE_BASELINE.md#remaining-renderer-work-in-priority-order). GPU meshes are created on demand; CPU model data
 and decoded image recipes remain eager and retained for reattachment. Asynchronous streaming, skeletal animation
 and full glTF/IBL support remain future work.

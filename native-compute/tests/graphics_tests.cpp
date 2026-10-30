@@ -1,4 +1,5 @@
 #include <terraflux/graphics/render_device.hpp>
+#include <terraflux/graphics/composite.hpp>
 #include <terraflux/graphics/terrain_upload.hpp>
 #include <terraflux/grid.hpp>
 #include <terraflux/terrain_mesh.hpp>
@@ -350,6 +351,54 @@ void test_resource_telemetry() {
   require(!device.resource_telemetry().budget_rejections,"validation error is not a budget rejection");
 }
 
+void test_sampled_target_composition() {
+  ValidatingRenderDevice device;
+  const auto initial=device.live_resource_bytes();
+  TextureHandle stale;
+  {
+    FullscreenComposite composite(device);
+    must_throw([&]{composite.draw({});},"composition requires an active pass");
+    const auto buffer_bytes=device.live_resource_bytes().buffer_bytes;
+    const auto a=device.create_render_target({8,8});
+    const auto b=device.create_render_target({4,4});
+    const auto color=device.render_target_color(a);stale=color;
+    require(color && device.render_target_color(a)==color,"stable borrowed color view");
+    const auto bytes=device.live_resource_bytes();
+    require(bytes==ResourceBytes{buffer_bytes,0,(64+16)*8},"borrowed views do not double count bytes");
+    require(device.live_texture_count()==2,"color views tracked as bindable textures");
+    must_throw([&]{device.destroy_texture(color);},"borrowed color cannot be separately destroyed");
+    device.begin_render_pass({{8,8,RenderTargetKind::Offscreen,a}});
+    must_throw([&]{composite.draw(color);},"active color sampling feedback rejected");
+    device.end_render_pass();
+    device.begin_render_pass({{4,4,RenderTargetKind::Offscreen,b}});
+    composite.draw(color);
+    device.end_render_pass();
+    device.begin_render_pass({{64,64}});composite.draw(device.render_target_color(b));
+    device.end_render_pass();
+    device.destroy_render_target(a);
+    must_throw([&]{(void)device.render_target_color(a);},"destroyed target cannot return color");
+    device.begin_render_pass({{64,64}});
+    must_throw([&]{composite.draw(stale);},"borrowed view expires with target");
+    composite.draw(device.render_target_color(b)); // Rejection leaves the pass usable.
+    device.end_render_pass();device.destroy_render_target(b);
+    require(!device.live_texture_count(),"target destruction invalidates all borrowed views");
+    require(device.draw_count()==3,"invalid source draws were not submitted");
+  }
+  require(device.live_resource_bytes()==initial && !device.live_pipeline_count(),
+          "composite and target resources return to baseline");
+  const auto layout=shader_program_layout(ShaderProgramId::Composite);
+  must_throw([&]{validate_pipeline_desc({ShaderProgramId::Composite,layout,true,false,false});},
+             "composite forbids depth testing");
+  must_throw([&]{validate_pipeline_desc({ShaderProgramId::Composite,layout,false,false,true});},
+             "composite forbids depth writes");
+  auto altered=layout;altered.bindings[0].slot=3;
+  must_throw([&]{validate_pipeline_desc({ShaderProgramId::Composite,altered,false,false,false});},
+             "composite slot is explicit");
+  device.set_resource_byte_budget(64); // Vertex allocation fits; index allocation must roll back.
+  must_throw([&]{FullscreenComposite composite(device);},"composite construction obeys shared cap");
+  require(device.live_resource_bytes()==initial,"failed composite construction leaves no resources");
+}
+
 void test_offscreen_targets() {
   ValidatingRenderDevice device;
   require(offscreen_storage_bytes({3,5})==120,"RGBA8 plus Depth32Float counted exactly");
@@ -512,7 +561,8 @@ int main() {
     test_explicit_shader_identity();
     test_render_pass_contract();
     test_offscreen_targets();
-    std::cout << "TerraFlux graphics contracts: 17 tests passed\n";
+    test_sampled_target_composition();
+    std::cout << "TerraFlux graphics contracts: 18 tests passed\n";
   } catch (const std::exception& error) {
     std::cerr << "TerraFlux graphics test failed: " << error.what() << '\n';
     return 1;

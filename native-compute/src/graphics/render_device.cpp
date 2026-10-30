@@ -40,8 +40,8 @@ void ValidatingRenderDevice::begin_render_pass(const RenderPassDesc& desc) {
   validate_render_pass_desc(desc);
   if(desc.target.kind==RenderTargetKind::Offscreen) {
     const auto it=render_targets_.find(desc.target.handle.id);
-    if(it==render_targets_.end() || it->second.width!=desc.target.width ||
-       it->second.height!=desc.target.height)
+    if(it==render_targets_.end() || it->second.desc.width!=desc.target.width ||
+       it->second.desc.height!=desc.target.height)
       throw std::invalid_argument("unknown render target or mismatched pass extent");
   }
   active_target_=desc.target.handle;
@@ -151,15 +151,30 @@ std::uint64_t offscreen_storage_bytes(OffscreenTargetDesc desc) {
 RenderTargetHandle ValidatingRenderDevice::create_render_target(OffscreenTargetDesc desc) {
   admit_bytes(offscreen_storage_bytes(desc));
   const auto id=allocate_id();
-  render_targets_.emplace(id,desc);
+  const auto color=TextureHandle{allocate_id()};
+  try {
+    render_targets_.emplace(id,StoredTarget{desc,color});
+    TextureDesc texture{desc.width,desc.height};
+    texture.sampling.wrap_s=texture.sampling.wrap_t=TextureWrap::ClampToEdge;
+    borrowed_colors_.emplace(color.id,RenderTargetHandle{id});
+    textures_.emplace(color.id,texture);
+  } catch(...) {
+    textures_.erase(color.id);borrowed_colors_.erase(color.id);render_targets_.erase(id);
+    throw;
+  }
   record_allocation();
   return {id};
+}
+TextureHandle ValidatingRenderDevice::render_target_color(RenderTargetHandle handle) const {
+  const auto it=render_targets_.find(handle.id);
+  if(it==render_targets_.end())throw std::invalid_argument("unknown render target color view");
+  return it->second.color;
 }
 void ValidatingRenderDevice::destroy_render_target(RenderTargetHandle handle) {
   if(pass_active_ && handle==active_target_)
     throw std::logic_error("cannot destroy the active render target");
-  if(render_targets_.erase(handle.id)!=1)
-    throw std::invalid_argument("unknown or destroyed render target");
+  const auto color=render_target_color(handle);
+  textures_.erase(color.id);borrowed_colors_.erase(color.id);render_targets_.erase(handle.id);
 }
 
 void check_resource_byte_budget(std::uint64_t used,std::uint64_t additional,std::uint64_t limit) {
@@ -169,8 +184,9 @@ void check_resource_byte_budget(std::uint64_t used,std::uint64_t additional,std:
 ResourceBytes ValidatingRenderDevice::live_resource_bytes() const {
   ResourceBytes result;
   for(const auto& [id,buffer]:buffers_)result.buffer_bytes+=buffer.desc.size_bytes;
-  for(const auto& [id,texture]:textures_)result.texture_bytes+=rgba8_storage_bytes(texture);
-  for(const auto& [id,target]:render_targets_)result.render_target_bytes+=offscreen_storage_bytes(target);
+  for(const auto& [id,texture]:textures_)
+    if(!borrowed_colors_.contains(id))result.texture_bytes+=rgba8_storage_bytes(texture);
+  for(const auto& [id,target]:render_targets_)result.render_target_bytes+=offscreen_storage_bytes(target.desc);
   return result;
 }
 
@@ -257,12 +273,17 @@ TextureHandle ValidatingRenderDevice::create_texture2d(
   return {id};
 }
 void ValidatingRenderDevice::destroy_texture(TextureHandle handle) {
+  if(borrowed_colors_.contains(handle.id))
+    throw std::invalid_argument("render target color cannot be destroyed separately");
   if (textures_.erase(handle.id)!=1)
     throw std::invalid_argument("unknown or destroyed texture");
 }
 
 ShaderLayout shader_program_layout(ShaderProgramId program) {
   switch(program) {
+    case ShaderProgramId::Composite:return {16,{{"POSITION",0,VertexFormat::Float2,0},
+        {"TEXCOORD",1,VertexFormat::Float2,8}},
+        {{"SourceColor",ShaderResourceKind::SampledTexture,0,kFragmentStage}}};
     case ShaderProgramId::Terrain:return terrain_shader_layout();
     case ShaderProgramId::Wildfire:return wildfire_shader_layout();
     case ShaderProgramId::Object:return object_shader_layout();
@@ -275,6 +296,9 @@ ShaderLayout shader_program_layout(ShaderProgramId program) {
 }
 void validate_pipeline_desc(const PipelineDesc& desc,bool allow_contract_only) {
   validate_shader_layout(desc.layout);
+  if(desc.program==ShaderProgramId::Composite &&
+     (desc.depth_test || desc.depth_write || desc.alpha_blend))
+    throw std::invalid_argument("composite pipeline requires disabled depth and blend state");
   if(desc.alpha_blend && (!desc.depth_test || desc.depth_write || desc.program!=ShaderProgramId::PbrObject))
     throw std::invalid_argument("transparent pipeline requires noninstanced PBR, depth testing and no depth writes");
   if(desc.program==ShaderProgramId::ContractOnly) {
@@ -379,6 +403,9 @@ void ValidatingRenderDevice::draw_indexed(const DrawIndexed& command) {
       throw std::invalid_argument("duplicate texture slot");
     if (!textures_.contains(bound.texture.id))
       throw std::invalid_argument("unknown or destroyed texture binding");
+    const auto owner=borrowed_colors_.find(bound.texture.id);
+    if(owner!=borrowed_colors_.end() && owner->second==active_target_)
+      throw std::invalid_argument("cannot sample the active render target color");
     const auto& declared=pipeline->second.layout.bindings;
     const auto found=std::find_if(declared.begin(),declared.end(),
       [&](const ShaderBinding& binding) {

@@ -157,6 +157,7 @@ auto pipeline = device.create_pipeline({
 | InstancedTexturedObject | Textured geometry with InstanceData storage |
 | PbrObject | Textured per-object PBR material/resources; optional sorted alpha blend |
 | PbrInstanced | Opaque instanced PBR material/resources |
+| Composite | Fullscreen POSITION/TEXCOORD geometry and SourceColor sampler; depth/blend disabled |
 | ContractOnly | CPU validation of custom layouts; rejected by GPU creation |
 
 Unspecified and unknown IDs reject. A declared built-in must match its full
@@ -240,20 +241,24 @@ A window pass carries no owned handle. An offscreen pass requires a live
 RenderTargetHandle and dimensions exactly matching the allocation. Invalid
 handles or extents reject before changing pass state or GL bindings. Destroying
 the active target rejects; end the pass first. Creation of another target during
-a pass restores the previous read/draw framebuffer and renderbuffer bindings.
+a pass restores the previous read/draw framebuffer, renderbuffer and active-unit
+texture bindings.
 Pass end preserves the attachment storage and leaves it bound for GL diagnostic
 readback. A later window pass explicitly rebinds framebuffer zero. Destruction
 of an inactive bound framebuffer follows OpenGL's unbinding behavior.
 
-OpenGL owns one framebuffer and two renderbuffers per target. Storage allocation
+OpenGL owns one framebuffer, an RGBA8 color texture and a Depth32Float
+renderbuffer per target. Storage allocation
 checks GL error status and framebuffer completeness before publication. Failure
 restores bindings, deletes partial objects and removes the validating mirror's
 live allocation. RenderResourceOwner tracks targets for reverse-order cleanup;
 the device also deletes any remaining target objects before context destruction.
-No attachment is exposed as a sampled TextureHandle in this increment.
+Color sampling is available through the borrowed handle described below; depth
+remains a renderbuffer and cannot be sampled.
 
 `ResourceBytes::render_target_bytes` accounts for width × height × 8 bytes,
-separately from sampled texture bytes. It contributes to total bytes, shared
+separately from independently owned sampled texture bytes. Color views appear in
+live texture counts but do not charge texture_bytes again. Storage contributes to total bytes, shared
 budget admission, category/total peaks, allocation count and headroom. One target
 is one logical admission. OpenGL's mirror admits before driver allocation, so
 failed driver creation may remain in admission/peak history even though current
@@ -280,5 +285,60 @@ It reads back color and float depth, checks independent target storage, color-on
 and depth-only clears, preserved depth occlusion, actual triangle drawing,
 creation while a pass is active, window restoration, budget rejection and repeated
 replacement/cleanup. The existing viewer continues to render directly to the
-window. Next: sampled offscreen color and a compositing pass. Physical GPU testing
+window. Physical GPU testing
 is still required before hardware performance conclusions.
+
+
+## Sampled target color and fullscreen composition
+
+`render_target_color(RenderTargetHandle)` returns a stable, borrowed TextureHandle
+for its RGBA8 color attachment. It accepts only a live target. Destruction of the
+target invalidates the view; calling destroy_texture on a live borrowed view
+rejects. Keep the owner alive for every draw that samples it. No ownership is
+transferred, no allocation occurs on retrieval, and the same width × height × 8
+budget charge continues to cover color and depth. Never put the borrowed handle
+in an independent owning texture cache.
+
+The color texture has one mip level, nearest min/mag filtering, and clamp-to-edge
+wrapping. Its initial contents are undefined until cleared or rendered. A later
+pass may sample it as a normal texture binding. Sampling the active destination's
+color is rejected before the backend submits a draw, for every shader family;
+use two targets for effects that read their previous output. Sequential OpenGL
+framebuffer writes followed by draws sampling a different target need no CPU
+readback or explicit finish. Cross-context synchronization is not supported.
+
+`ShaderProgramId::Composite` is an explicit built-in program, with a 16-byte
+vertex stride: POSITION float2 at location 0/offset 0, TEXCOORD float2 at location
+1/offset 8, and SourceColor sampler at fragment slot 0. The pipeline requires
+depth testing, depth writes and blending all disabled. GLSL reflection validates
+this contract just like the other built-ins.
+
+`FullscreenComposite` owns one reusable pipeline and a fullscreen indexed quad.
+It constructs transactionally through RenderResourceOwner and submits one draw
+inside the caller's active destination pass:
+
+```cpp
+FullscreenComposite copy(device); // Reuse across frames.
+// Render scene into source_target, then end that pass.
+device.begin_render_pass({{window_width,window_height}});
+copy.draw(device.render_target_color(source_target));
+device.end_render_pass();
+// Platform presentation follows here.
+```
+
+The helper copies RGBA without blending, tone mapping, gamma conversion or a
+vertical flip. Destination dimensions may differ; target color views use nearest
+scaling. Destination depth is left intact by the draw (the pass descriptor still
+controls its clear/load operation). It does not copy depth or present the window.
+Color texture creation restores the previous texture binding and invalidates the
+backend's texture binding cache; destruction likewise clears that cache. Ordinary
+geometry after composition restores its own cached depth, pipeline and vertex state.
+
+Native tests cover stable view retrieval, single charging, feedback rejection,
+stale views, separate-destruction rejection, state contracts and failed helper
+construction. The explicit Mesa/Xvfb test additionally checks an asymmetric
+rendered image copied between targets, exact RGBA equality, nearest enlargement
+into the window, unchanged destination depth and geometry drawn after the copy.
+The main viewer still uses direct window rendering. Next: opt-in offscreen viewer
+composition and resize/reallocation recovery. HDR, sampled depth and general
+post-processing effects remain future work.

@@ -144,5 +144,8 @@ and begin/end validation. See [Window render targets and render passes](GRAPHICS
 The feature branch also adds owned RGBA8/Depth32Float offscreen targets, shared
 budget accounting, framebuffer completeness checks and explicit lifetimes, with
 a dedicated Mesa pixel/depth test. See [Owned offscreen render targets](GRAPHICS_BACKENDS.md#owned-offscreen-render-targets).
-The pinned P1 gap is further addressed; sampled attachments and composition remain
-next. Physical GPU evidence is still outstanding.
+Borrowed sampled color and a reusable explicit-shader fullscreen composition pass
+are also implemented. See [Sampled target color and fullscreen composition](GRAPHICS_BACKENDS.md#sampled-target-color-and-fullscreen-composition).
+The next integration is opt-in viewer composition with resize recovery. The pinned
+P1 gap still includes broader attachment formats and effects. Physical GPU evidence
+is still outstanding.

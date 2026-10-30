@@ -31,6 +31,7 @@ class OpenGLRenderDevice final : public RenderDevice {
   void destroy_texture(TextureHandle handle) override;
   RenderTargetHandle create_render_target(OffscreenTargetDesc desc) override;
   void destroy_render_target(RenderTargetHandle handle) override;
+  TextureHandle render_target_color(RenderTargetHandle handle) const override;
   PipelineHandle create_pipeline(PipelineDesc desc) override;
   void destroy_pipeline(PipelineHandle handle) override;
   void begin_render_pass(const RenderPassDesc& desc) override;

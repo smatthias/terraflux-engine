@@ -1,4 +1,5 @@
 #include <terraflux/graphics/opengl_device.hpp>
+#include <terraflux/graphics/composite.hpp>
 #include <terraflux/graphics/resource_owner.hpp>
 #include <terraflux/graphics/terrain_upload.hpp>
 #define GLFW_INCLUDE_NONE
@@ -69,6 +70,42 @@ void verify(OpenGLRenderDevice& device) {
           "geometry failed to render into owned target");
     check(std::abs(depth()-0.5f)<1e-6f,"draw did not write owned depth attachment");
     device.end_render_pass();
+    const auto source_pixels=pixels;
+    FullscreenComposite composite(device);
+    const auto color=device.render_target_color(a);
+    rejects([&]{device.destroy_texture(color);});
+    device.begin_render_pass({target,AttachmentLoadOp::Load,AttachmentLoadOp::Load});
+    rejects([&]{composite.draw(color);});
+    check(device.capture_rgba(32,32)==source_pixels,"feedback rejection changed source pixels");
+    device.end_render_pass();
+    const auto copied=owner.create_render_target({32,32});
+    const auto copy_target=RenderTargetDesc{32,32,RenderTargetKind::Offscreen,copied};
+    device.begin_render_pass({copy_target,AttachmentLoadOp::Clear,AttachmentLoadOp::Clear,{0,0,0,0},0.125f});
+    composite.draw(color);
+    check(device.capture_rgba(32,32)==source_pixels,"sampled target copy changed pixels or orientation");
+    check(std::abs(depth()-0.125f)<1e-6f,"fullscreen copy changed destination depth");
+    device.end_render_pass();
+    // Window scaling is nearest-filtered with no vertical flip.
+    device.begin_render_pass({{64,64}});
+    composite.draw(device.render_target_color(copied));
+    const auto enlarged=device.capture_rgba(64,64);
+    for(std::size_t y=0;y<64;++y)for(std::size_t x=0;x<64;++x)
+      for(std::size_t channel=0;channel<4;++channel)
+        check(enlarged[(y*64+x)*4+channel]==source_pixels[((y/2)*32+x/2)*4+channel],
+              "window composite scaling/orientation mismatch");
+    device.end_render_pass();
+    // Drawing geometry after the compositor must restore depth and vertex state.
+    device.begin_render_pass({target,AttachmentLoadOp::Clear,AttachmentLoadOp::Clear,{0,1,0,1}});
+    device.draw_indexed(draw);
+    check(device.capture_rgba(32,32)==source_pixels,"composite left stale draw state");
+    device.end_render_pass();
+    const auto transient=device.create_render_target({2,2});
+    const auto expired=device.render_target_color(transient);
+    device.destroy_render_target(transient);
+    device.begin_render_pass({{64,64}});
+    rejects([&]{composite.draw(expired);});
+    composite.draw(color);
+    device.end_render_pass();
     pass.color_load=AttachmentLoadOp::Clear;pass.depth_load=AttachmentLoadOp::Load;
     pass.clear_color={0,0,1,1};
     device.begin_render_pass(pass);
@@ -112,7 +149,7 @@ int main() {
         glfwCreateWindow(64,64,"Offscreen tests",nullptr,nullptr),glfwDestroyWindow);
     check(bool(window),"could not create GL 4.3 test context");glfwMakeContextCurrent(window.get());
     OpenGLRenderDevice device;verify(device);
-    std::cout<<"Offscreen GL: clear/load, depth occlusion, drawing, budgets and cleanup passed\n";
+    std::cout<<"Offscreen GL: attachments, sampled composition, feedback rejection, budgets and cleanup passed\n";
   } catch(const std::exception& error) {std::cerr<<error.what()<<'\n';result=1;}
   glfwTerminate();return result;
 }

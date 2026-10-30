@@ -81,6 +81,7 @@ struct GL {
   PFNGLBINDRENDERBUFFERPROC BindRenderbuffer = get_proc<PFNGLBINDRENDERBUFFERPROC>("glBindRenderbuffer");
   PFNGLRENDERBUFFERSTORAGEPROC RenderbufferStorage = get_proc<PFNGLRENDERBUFFERSTORAGEPROC>("glRenderbufferStorage");
   PFNGLFRAMEBUFFERRENDERBUFFERPROC FramebufferRenderbuffer = get_proc<PFNGLFRAMEBUFFERRENDERBUFFERPROC>("glFramebufferRenderbuffer");
+  PFNGLFRAMEBUFFERTEXTURE2DPROC FramebufferTexture2D = get_proc<PFNGLFRAMEBUFFERTEXTURE2DPROC>("glFramebufferTexture2D");
   PFNGLGETINTEGERVPROC GetIntegerv = get_proc<PFNGLGETINTEGERVPROC>("glGetIntegerv");
   PFNGLGETERRORPROC GetError = get_proc<PFNGLGETERRORPROC>("glGetError");
   PFNGLCLEARPROC Clear = get_proc<PFNGLCLEARPROC>("glClear");
@@ -93,6 +94,19 @@ struct GL {
   PFNGLGETQUERYOBJECTIVPROC GetQueryObjectiv = get_proc<PFNGLGETQUERYOBJECTIVPROC>("glGetQueryObjectiv");
   PFNGLGETQUERYOBJECTUI64VPROC GetQueryObjectui64v = get_proc<PFNGLGETQUERYOBJECTUI64VPROC>("glGetQueryObjectui64v");
 };
+
+constexpr char kCompositeVertexShader[] = R"GLSL(#version 430 core
+layout(location=0) in vec2 POSITION;
+layout(location=1) in vec2 TEXCOORD;
+out vec2 uv;
+void main() {uv=TEXCOORD;gl_Position=vec4(POSITION,0.0,1.0);}
+)GLSL";
+constexpr char kCompositeFragmentShader[] = R"GLSL(#version 430 core
+in vec2 uv;
+layout(binding=0) uniform sampler2D SourceColor;
+out vec4 fragColor;
+void main() {fragColor=texture(SourceColor,uv);}
+)GLSL";
 
 constexpr char kVertexShader[] = R"GLSL(#version 430 core
 layout(location = 0) in vec3 POSITION;
@@ -607,7 +621,7 @@ GLint components_for(VertexFormat format) {
 
 struct OpenGLRenderDevice::Impl {
   struct GpuBuffer { GLuint name=0; BufferUsage usage{}; std::size_t bytes=0; };
-  struct GpuTexture { GLuint name = 0; };
+  struct GpuTexture { GLuint name = 0; bool borrowed=false; };
   struct GpuPipeline { GLuint program = 0, vao = 0; PipelineDesc desc; };
 
   struct GpuTarget {GLuint framebuffer=0,color=0,depth=0;};
@@ -661,7 +675,7 @@ struct OpenGLRenderDevice::Impl {
     for(const auto& [id,target]:render_targets) {
       (void)id;
       gl.DeleteFramebuffers(1,&target.framebuffer);
-      gl.DeleteRenderbuffers(1,&target.color);
+      gl.DeleteTextures(1,&target.color);
       gl.DeleteRenderbuffers(1,&target.depth);
     }
     for (const auto& [id, pipeline] : pipelines) {
@@ -671,7 +685,7 @@ struct OpenGLRenderDevice::Impl {
     }
     for (const auto& [id, texture] : textures) {
       (void)id;
-      gl.DeleteTextures(1,&texture.name);
+      if(!texture.borrowed)gl.DeleteTextures(1,&texture.name);
     }
     for (const auto& [id, buffer] : buffers) {
       (void)id;
@@ -840,23 +854,29 @@ RenderTargetHandle OpenGLRenderDevice::create_render_target(OffscreenTargetDesc 
   (void)offscreen_storage_bytes(desc);
   GLint maximum=0;
   impl_->gl.GetIntegerv(GL_MAX_RENDERBUFFER_SIZE,&maximum);
+  GLint max_texture=0;
+  impl_->gl.GetIntegerv(GL_MAX_TEXTURE_SIZE,&max_texture);
+  maximum=std::min(maximum,max_texture);
   if(desc.width>static_cast<std::uint32_t>(maximum) ||
      desc.height>static_cast<std::uint32_t>(maximum))
     throw std::invalid_argument("offscreen target exceeds device extent limit");
   const auto handle=impl_->validator.create_render_target(desc);
   Impl::GpuTarget target;
-  GLint previous_draw=0,previous_read=0,previous_renderbuffer=0;
+  GLint previous_draw=0,previous_read=0,previous_renderbuffer=0,previous_texture=0;
   impl_->gl.GetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING,&previous_draw);
   impl_->gl.GetIntegerv(GL_READ_FRAMEBUFFER_BINDING,&previous_read);
   impl_->gl.GetIntegerv(GL_RENDERBUFFER_BINDING,&previous_renderbuffer);
+  impl_->gl.GetIntegerv(GL_TEXTURE_BINDING_2D,&previous_texture);
   const auto restore=[&] {
     impl_->gl.BindFramebuffer(GL_DRAW_FRAMEBUFFER,static_cast<GLuint>(previous_draw));
     impl_->gl.BindFramebuffer(GL_READ_FRAMEBUFFER,static_cast<GLuint>(previous_read));
     impl_->gl.BindRenderbuffer(GL_RENDERBUFFER,static_cast<GLuint>(previous_renderbuffer));
+    impl_->gl.BindTexture(GL_TEXTURE_2D,static_cast<GLuint>(previous_texture));
+    impl_->texture_units.clear();
   };
   try {
     impl_->gl.GenFramebuffers(1,&target.framebuffer);
-    impl_->gl.GenRenderbuffers(1,&target.color);
+    impl_->gl.GenTextures(1,&target.color);
     impl_->gl.GenRenderbuffers(1,&target.depth);
     if(!target.framebuffer || !target.color || !target.depth)
       throw std::runtime_error("offscreen GL object allocation failed");
@@ -867,17 +887,28 @@ RenderTargetHandle OpenGLRenderDevice::create_render_target(OffscreenTargetDesc 
           static_cast<GLsizei>(desc.width),static_cast<GLsizei>(desc.height));
       impl_->gl.FramebufferRenderbuffer(GL_FRAMEBUFFER,point,GL_RENDERBUFFER,name);
     };
-    attach(target.color,GL_RGBA8,GL_COLOR_ATTACHMENT0);
+    impl_->gl.BindTexture(GL_TEXTURE_2D,target.color);
+    impl_->gl.TexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);
+    impl_->gl.TexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
+    impl_->gl.TexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
+    impl_->gl.TexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+    impl_->gl.TexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,static_cast<GLsizei>(desc.width),
+        static_cast<GLsizei>(desc.height),0,GL_RGBA,GL_UNSIGNED_BYTE,nullptr);
+    impl_->gl.FramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,target.color,0);
     attach(target.depth,GL_DEPTH_COMPONENT32F,GL_DEPTH_ATTACHMENT);
     const auto complete=impl_->gl.CheckFramebufferStatus(GL_FRAMEBUFFER);
     const auto error=impl_->gl.GetError();
     if(complete!=GL_FRAMEBUFFER_COMPLETE || error!=GL_NO_ERROR)
       throw std::runtime_error("offscreen framebuffer storage or completeness failed");
+    impl_->textures.emplace(impl_->validator.render_target_color(handle).id,
+                            Impl::GpuTexture{target.color,true});
     impl_->render_targets.emplace(handle.id,target);
   } catch(...) {
+    impl_->textures.erase(impl_->validator.render_target_color(handle).id);
+    impl_->render_targets.erase(handle.id);
     restore();
     impl_->gl.DeleteFramebuffers(1,&target.framebuffer);
-    impl_->gl.DeleteRenderbuffers(1,&target.color);
+    impl_->gl.DeleteTextures(1,&target.color);
     impl_->gl.DeleteRenderbuffers(1,&target.depth);
     impl_->validator.destroy_render_target(handle);
     throw;
@@ -887,12 +918,18 @@ RenderTargetHandle OpenGLRenderDevice::create_render_target(OffscreenTargetDesc 
 }
 
 void OpenGLRenderDevice::destroy_render_target(RenderTargetHandle handle) {
+  const auto color=impl_->validator.render_target_color(handle);
   impl_->validator.destroy_render_target(handle);
+  impl_->textures.erase(color.id);impl_->texture_units.clear();
   const auto target=impl_->render_targets.at(handle.id);
   impl_->gl.DeleteFramebuffers(1,&target.framebuffer);
-  impl_->gl.DeleteRenderbuffers(1,&target.color);
+  impl_->gl.DeleteTextures(1,&target.color);
   impl_->gl.DeleteRenderbuffers(1,&target.depth);
   impl_->render_targets.erase(handle.id);
+}
+
+TextureHandle OpenGLRenderDevice::render_target_color(RenderTargetHandle handle) const {
+  return impl_->validator.render_target_color(handle);
 }
 
 PipelineHandle OpenGLRenderDevice::create_pipeline(PipelineDesc desc) {
@@ -900,6 +937,7 @@ PipelineHandle OpenGLRenderDevice::create_pipeline(PipelineDesc desc) {
   const char* vertex_source=nullptr;
   const char* fragment_source=nullptr;
   switch(desc.program) {
+    case ShaderProgramId::Composite:vertex_source=kCompositeVertexShader;fragment_source=kCompositeFragmentShader;break;
     case ShaderProgramId::Terrain:vertex_source=kVertexShader;fragment_source=kFragmentShader;break;
     case ShaderProgramId::Wildfire:vertex_source=kFireVertexShader;fragment_source=kFireFragmentShader;break;
     case ShaderProgramId::Object:vertex_source=kObjectVertexShader;fragment_source=kObjectFragmentShader;break;
