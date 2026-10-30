@@ -31,6 +31,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -296,6 +297,7 @@ int main(int argc, char** argv) {
       };
       std::map<std::string,LocatedMaterial> material_files;
       terraflux::assets::Mesh object;
+      std::map<std::string,terraflux::assets::ImageRgba8> gltf_images;
       std::vector<terraflux::assets::Mesh> extra_meshes;
       std::vector<std::pair<std::uint32_t,terraflux::math::Mat4>> node_worlds;
       if(use_gltf) {
@@ -310,6 +312,7 @@ int main(int argc, char** argv) {
         auto asset=terraflux::assets::import_gltf(read_file(source_file),resolver);
         if(asset.meshes.empty())throw std::invalid_argument("glTF contains no meshes");
         object=std::move(asset.meshes.front());
+        gltf_images=std::move(asset.images);
         for(std::size_t i=1;i<asset.meshes.size();++i)
           extra_meshes.push_back(std::move(asset.meshes[i]));
         for(const auto& instance:asset.instances)
@@ -431,10 +434,21 @@ int main(int argc, char** argv) {
         if(source.empty())
           image=use_gltf?terraflux::assets::ImageRgba8{1,1,{255,255,255,255}}:
                          terraflux::assets::checkerboard_image();
-        else {
-          std::ifstream file(source);
-          if(!file) throw std::runtime_error("cannot open material texture: "+source.string());
-          image=terraflux::assets::read_ppm_p3(file);
+        else if(use_gltf && gltf_images.contains(source.generic_string())) {
+          image=gltf_images.at(source.generic_string());
+        } else {
+          const auto path=source.string();
+          if(std::filesystem::file_size(source)>32'000'000)
+            throw std::invalid_argument("texture image exceeds 32MB");
+          const auto encoded=read_file(path);
+          if(encoded.starts_with("P3")){
+            std::istringstream file(encoded);
+            image=terraflux::assets::read_ppm_p3(file);
+          }else{
+            const auto raw=std::span(
+                reinterpret_cast<const std::uint8_t*>(encoded.data()),encoded.size());
+            image=terraflux::assets::decode_image(raw);
+          }
         }
         const auto bytes=std::as_bytes(std::span(image.pixels));
         const auto id=owned.create_texture2d({image.width,image.height},bytes);
@@ -453,7 +467,9 @@ int main(int argc, char** argv) {
               throw std::invalid_argument("undefined imported material: "+section.material_name);
             color=it->second.material.base_color;
             if(!it->second.material.albedo_map.empty())
-              texture_file=asset_path(it->second.folder,it->second.material.albedo_map);
+              texture_file=(use_gltf && gltf_images.contains(it->second.material.albedo_map))?
+                  std::filesystem::path(it->second.material.albedo_map):
+                  asset_path(it->second.folder,it->second.material.albedo_map);
           }
           if(!options.texture_file.empty())texture_file=options.texture_file;
           const auto handle=cached_texture(texture_file);

@@ -300,3 +300,32 @@ and all ring-owned buffers are released on viewer shutdown or an exception.
 diagnosing ring reuse and allocation behavior. OpenGL driver internals may
 still impose costs; measure real GPU performance rather than assuming
 faster frame times from streaming alone.
+
+
+## Phase 7: glTF PNG/JPEG base-color textures
+
+The glTF importer now loads `images` and `textures` from data URIs, external
+files, and embedded bufferViews, decodes PNG/JPEG with libpng and libjpeg,
+and caches each decoded image by image index. Multiple materials using the
+same source image reuse the uploaded GPU texture. The viewer also supports
+PNG/JPEG files for OBJ/MTL `map_Kd` and `--texture` overrides alongside PPM P3.
+
+```bash
+./build-gl/terraflux-terrain-viewer \
+  --gltf examples/assets/textured_multi_mesh.gltf
+```
+
+This example contains two textured material groups: one embedded PNG and
+one embedded JPEG, each applied to separate mesh primitives. Decoder
+dimensions are bounded and MIME signatures are checked. Only
+`TEXCOORD_0`, repeat wrapping and nearest sampling are supported in this
+initial implementation; unsupported sampler modes reject clearly rather
+than silently changing appearance.
+
+The importer also **preserves** glTF metallic and roughness scalar factors.
+However, the current fragment shader still provides diffuse sunlight
+shading of the base color, **not physically based metallic/roughness
+lighting**. It rejects metallic-roughness textures, normal maps,
+occlusion/emissive textures, transparency and required extensions.
+Full Blender/glTF PBR compatibility will require those features and
+configurable samplers in a follow-up.
