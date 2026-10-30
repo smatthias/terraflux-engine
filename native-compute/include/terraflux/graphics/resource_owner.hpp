@@ -3,6 +3,8 @@
 #include <terraflux/graphics/render_device.hpp>
 
 #include <cstddef>
+#include <algorithm>
+#include <stdexcept>
 #include <span>
 #include <utility>
 #include <vector>
@@ -39,6 +41,13 @@ class RenderResourceOwner {
     try{pipelines_.push_back(handle);}
     catch(...){device_.destroy_pipeline(handle);throw;}
     return handle;
+  }
+  // Selective release: forget only after backend destruction succeeds.
+  void release_buffer(BufferHandle handle) {
+    const auto it=std::find(buffers_.begin(),buffers_.end(),handle);
+    if(it==buffers_.end())throw std::invalid_argument("buffer is not owned by this scope");
+    device_.destroy_buffer(handle);
+    buffers_.erase(it);
   }
   // Best-effort cleanup. Backend-specific destroy failures must not escape
   // a destructor during unwinding. The device owns the underlying backend.

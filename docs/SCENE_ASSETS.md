@@ -603,3 +603,23 @@ exercise real OpenGL allocations. This is the texture-ownership prerequisite
 for selective model eviction: interactive node/model detachment and per-model
 geometry ownership remain pending. API destruction is not a physical VRAM
 reclamation or performance measurement.
+
+
+## Scene node detachment and selective geometry eviction
+
+Press **D** to detach the first remaining drawable scene node. Its expanded
+glTF mesh instances and per-instance uniforms are removed. The scene node,
+its transform/components and child hierarchy remain; this does not recursively
+delete children. Shared geometry retains the same GPU handles while another
+node still references it. Unreferenced vertex/index buffers, material uniforms
+and texture leases are released; mesh indices remain stable tombstones.
+Pipelines remain owned by the imported scope. The instance stream ring is
+retired and rebuilt after detachment to discard stale cached instance data.
+
+`--smoke-test --scene-detach-test --scene examples/mixed_asset_scene.json`
+detaches nodes between rendered frames and verifies shared-handle stability,
+unreferenced-geometry release and the terrain-only buffer/texture baseline
+after the last drawable leaves. CI also covers pure OBJ, legacy scenes and
+non-instanced rendering. R reload restores the original authored references;
+selective reattachment and on-demand residency remain future work. CPU mesh
+loading is still eager; this milestone evicts GPU geometry/material resources.

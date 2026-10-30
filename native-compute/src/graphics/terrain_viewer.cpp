@@ -72,7 +72,7 @@ std::filesystem::path asset_path(const std::filesystem::path& directory,
 
 struct Options {
   bool smoke_test=false, profile=false, no_culling=false, no_instancing=false,asset_preview=false;
-  bool asset_lifecycle_test=false,scene_controls_test=false;
+  bool asset_lifecycle_test=false,scene_controls_test=false,scene_detach_test=false;
   std::uint32_t benchmark_frames=0;
   std::string request_file, response_file, obj_file, gltf_file, texture_file, scene_file;
 };
@@ -82,6 +82,7 @@ Options parse_args(int argc, char** argv) {
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
     if (arg == "--smoke-test") options.smoke_test = true;
+    else if (arg == "--scene-detach-test") options.scene_detach_test=true;
     else if (arg == "--scene-controls-test") options.scene_controls_test=true;
     else if (arg == "--asset-lifecycle-test") options.asset_lifecycle_test=true;
     else if (arg == "--profile") options.profile = true;
@@ -129,6 +130,9 @@ Options parse_args(int argc, char** argv) {
   if(options.scene_controls_test && (!options.smoke_test || options.scene_file.empty() ||
                                       options.asset_lifecycle_test))
     throw std::invalid_argument("--scene-controls-test requires --smoke-test and --scene; cannot test lifecycle together");
+  if(options.scene_detach_test && (!options.smoke_test || options.scene_file.empty() ||
+      options.scene_controls_test || options.asset_lifecycle_test))
+    throw std::invalid_argument("--scene-detach-test requires --smoke-test and --scene, exclusively");
   return options;
 }
 
@@ -691,7 +695,38 @@ int main(int argc, char** argv) {
       std::cout<<"Asset unloaded; terrain resources preserved\n";
     };
     if(has_asset && !options.smoke_test && !options.benchmark_frames)
-      std::cout<<"Asset controls: U unload | R reload | P pause scene | N single tick (failed reload preserves current asset)\n";
+      std::cout<<"Asset controls: U unload | R reload | D detach first scene node | P pause scene | N single tick (failed reload preserves current asset)\n";
+
+    const auto detach_node=[&](terraflux::scene::NodeId node) {
+      if(!imported || !imported->uses_scene_file)return;
+      auto& asset=*imported.operator->();
+      asset.scene.set_mesh_instance(node,false);
+      // Retire prior streamed instance records before releasing their inputs.
+      asset.instance_ring.reset();
+      std::erase_if(asset.scene_instances,[&](const auto& instance) {
+        if(instance.node!=node)return false;
+        asset.resources->release_buffer(instance.uniform);
+        return true;
+      });
+      std::vector<std::size_t> references(asset.additional_meshes.size()+1);
+      for(const auto& instance:asset.scene_instances)++references.at(instance.mesh_index);
+      for(std::size_t mesh=0;mesh<references.size();++mesh) {
+        auto& vertex=mesh==0?asset.vb:asset.additional_meshes[mesh-1].vb;
+        auto& index=mesh==0?asset.ib:asset.additional_meshes[mesh-1].ib;
+        auto& sections=mesh==0?asset.sections:asset.additional_meshes[mesh-1].sections;
+        if(references[mesh] || vertex.id==0)continue;
+        asset.resources->release_buffer(vertex);
+        asset.resources->release_buffer(index);
+        for(const auto& section:sections)
+          if(section.pbr_uniform.id)asset.resources->release_buffer(section.pbr_uniform);
+        sections.clear(); // releases texture leases only when their last user leaves
+        vertex={};index={};
+      }
+      asset.textures.prune();
+      if(!options.no_instancing)
+        asset.instance_ring=std::make_unique<OpaqueRenderQueue::InstanceBufferRing>(device);
+      std::cout<<"Detached scene node "<<node<<"; "<<asset.scene_instances.size()<<" mesh instances remain\n";
+    };
 
     double yaw = 0.45, pitch = options.asset_preview?0.42:0.75;
     double distance=scene_camera.starting_distance*(options.asset_preview?0.75:1.0);
@@ -709,7 +744,7 @@ int main(int argc, char** argv) {
     std::size_t playback_frame = 0;
     std::size_t uploaded_frame = static_cast<std::size_t>(-1);
     bool playing = playback.has_value();
-    bool previous_unload=false,previous_reload=false;
+    bool previous_unload=false,previous_reload=false,previous_detach=false;
     bool previous_space = false, previous_home = false, previous_back = false, previous_forward = false;
     unsigned rendered_frames = 0;
     std::vector<std::uint8_t> lifecycle_terrain;
@@ -742,6 +777,11 @@ int main(int argc, char** argv) {
           previous_time=glfwGetTime(); // disk/shader loading isn't simulated time
         }
       }
+      const bool detach=glfwGetKey(window.get(),GLFW_KEY_D)==GLFW_PRESS;
+      if(detach && !previous_detach && !options.smoke_test && !options.benchmark_frames &&
+         imported && imported->uses_scene_file && !imported->scene_instances.empty())
+        detach_node(imported->scene_instances.front().node);
+      previous_detach=detach;
       previous_unload=unload;previous_reload=reload;
       const double now = glfwGetTime();
       const double profile_update_start = glfwGetTime();
@@ -837,7 +877,7 @@ int main(int argc, char** argv) {
 
       if(imported && !imported->is_gltf && !options.smoke_test && !options.benchmark_frames) {
         std::string title=std::string("TerraFlux | Scene ")+
-            (scene_playback.paused()?"paused":"playing")+" | P pause/resume | N tick | U unload | R reload";
+            (scene_playback.paused()?"paused":"playing")+" | P pause/resume | N tick | D detach | U unload | R reload";
         if(playback)title+=" | Fire "+std::to_string(playback_frame+1)+"/"+
             std::to_string(playback->frames.size())+" | Space pause fire";
         if(title!=last_scene_title) {
@@ -1029,7 +1069,8 @@ int main(int argc, char** argv) {
                   << transparent_draws << " transparent draws\n";
       }
       if(record_gpu)device.end_gpu_timing();
-      if(options.smoke_test && imported) {
+      if(options.smoke_test && imported &&
+         (!imported->uses_scene_file || !imported->scene_instances.empty())) {
         if(imported->uses_pbr) {
           const auto frame=device.capture_rgba(width,height);
           if(frame.size()!=terrain_snapshot.size())
@@ -1081,7 +1122,28 @@ int main(int argc, char** argv) {
       }
       glfwSwapBuffers(window.get());
       ++rendered_frames;
-      if(options.asset_lifecycle_test) {
+      if(options.scene_detach_test) {
+        if(!imported->scene_instances.empty()) {
+          const auto node=imported->scene_instances.front().node;
+          std::vector<BufferHandle> previous_vertices{imported->vb};
+          for(const auto& mesh:imported->additional_meshes)previous_vertices.push_back(mesh.vb);
+          detach_node(node);
+          for(std::size_t mesh=0;mesh<previous_vertices.size();++mesh) {
+            const bool used=std::any_of(imported->scene_instances.begin(),imported->scene_instances.end(),
+                [&](const auto& item){return item.mesh_index==mesh;});
+            const auto vertex=mesh==0?imported->vb:imported->additional_meshes[mesh-1].vb;
+            if((used && vertex!=previous_vertices[mesh]) || (!used && vertex.id))
+              throw std::runtime_error("detach invalidated shared geometry or retained unused geometry");
+          }
+        }else{
+          const auto counts=device.live_resource_counts();
+          if(counts.buffers!=terrain_resources.buffers || counts.textures!=terrain_resources.textures)
+            throw std::runtime_error("last detach retained geometry, material uniforms or textures");
+          unload_imported();
+          std::cout<<"Scene detach passed: shared meshes preserved, unused geometry evicted, terrain retained\n";
+          break;
+        }
+      }else if(options.asset_lifecycle_test) {
         if(rendered_frames==1) {
           const auto before=device.live_resource_counts();
           const auto original=imported->vb;

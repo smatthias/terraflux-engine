@@ -24,7 +24,7 @@ void creates_and_cleans(){
   std::array<std::byte,64> data{};
   {
     RenderResourceOwner resources(backend);
-    resources.create_buffer({BufferUsage::Vertex,data.size()},data);
+    const auto selected=resources.create_buffer({BufferUsage::Vertex,data.size()},data);
     resources.create_buffer({BufferUsage::Uniform,data.size()},data);
     resources.create_texture2d({2,2},std::span(data).first(16));
     resources.create_pipeline({terraflux::graphics::terrain_shader_layout(),true});
@@ -33,6 +33,12 @@ void creates_and_cleans(){
           resources.tracked_pipeline_count()==1,"tracks each GPU resource kind");
     check(backend.live_buffer_count()==2 && backend.live_texture_count()==1 &&
           backend.live_pipeline_count()==1,"resources live before reset");
+    resources.release_buffer(selected);
+    check(backend.live_buffer_count()==1 && resources.tracked_buffer_count()==1 &&
+          backend.live_texture_count()==1,"selective buffer release preserves other resource kinds");
+    bool rejected=false;
+    try{resources.release_buffer(selected);}catch(const std::invalid_argument&){rejected=true;}
+    check(rejected && backend.live_buffer_count()==1,"double release rejected without affecting remaining resources");
     resources.reset();
     check(!backend.live_buffer_count() && !backend.live_texture_count() &&
           !backend.live_pipeline_count(),"explicit reset frees GPU resources");

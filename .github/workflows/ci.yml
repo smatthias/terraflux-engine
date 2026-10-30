@@ -137,6 +137,17 @@ jobs:
             --scene examples/mixed_asset_scene.json | tee /tmp/terraflux-mixed-scene.log
           grep -q "7 meshes" /tmp/terraflux-mixed-scene.log
           grep -q "17 instances" /tmp/terraflux-mixed-scene.log
+          for source in "--scene examples/asset_scene.json" \
+                        "--scene examples/mixed_asset_scene.json" \
+                        "--obj examples/assets/pyramid.obj --scene examples/scenes/twin_pyramids.json"; do
+            xvfb-run -a -s "-screen 0 1280x800x24" \
+              ./build-gl/terraflux-terrain-viewer --smoke-test --scene-detach-test \
+              $source | tee /tmp/terraflux-detach.log
+            grep -q "Scene detach passed" /tmp/terraflux-detach.log
+          done
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --scene-detach-test \
+            --no-instancing --scene examples/mixed_asset_scene.json
           grep -Eq '[1-9][0-9]* transparent draws' /tmp/terraflux-mixed-scene.log
           for mode in "--scene-controls-test" "--asset-lifecycle-test"; do
             xvfb-run -a -s "-screen 0 1280x800x24" \
