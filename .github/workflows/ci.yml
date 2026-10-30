@@ -158,6 +158,21 @@ jobs:
           fi
           grep -q "terrain resident tile count limit exceeded" /tmp/terraflux-terrain-limit.log
 
+      - name: Verify terrain retention hysteresis
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --terrain-retain-frames 2 --terrain-tile-quads 8 \
+            --terrain-retention-test --smoke-test | tee /tmp/terraflux-terrain-retention.log
+          grep -q "Terrain retention passed" /tmp/terraflux-terrain-retention.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --terrain-retain-frames 2 --terrain-tile-quads 8 \
+            --terrain-retention-test --smoke-test --offscreen
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --terrain-retain-frames 2 --terrain-tile-quads 16 \
+            --smoke-test --offscreen --asset-lifecycle-test --scene examples/mixed_asset_scene.json
+
       - name: Verify viewer offscreen composition and resize recovery
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"

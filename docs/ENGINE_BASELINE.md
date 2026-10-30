@@ -156,6 +156,8 @@ CTest suite (15 total on the branch). See [Terrain tile geometry contract](TERRA
 The viewer also offers eager tile uploads and conservative AABB frustum submission,
 with monolithic pixel-reference checks across orbit views, wildfire and asset
 lifecycle paths. Selective GPU tile residency is implemented with retained recipes,
-transactional set transitions and budget/rehydration checks. Residency hysteresis
-is next. The pinned snapshot remains unchanged. LOD, broader attachment
+transactional set transitions and budget/rehydration checks. Bounded retention
+hysteresis adds count/byte pressure trimming and failure-safe ages. The next
+increment targets independent terrain/fire visibility in the pinned P1 simulation
+visualization gap. The pinned snapshot remains unchanged. LOD, broader attachment
 formats/effects and physical GPU evidence remain outstanding.

@@ -259,6 +259,68 @@ void selective_gpu_residency() {
           "resident renderer destruction returns shared resource baseline");
 }
 
+void retention_hysteresis() {
+  using namespace graphics;
+  ValidatingRenderDevice device;
+  std::vector<compute::GridCell> cells;
+  for(int y=0;y<5;++y)for(int x=0;x<5;++x)cells.push_back(cell(x,y,0));
+  const auto source=build_terrain_mesh(compute::Grid(cells),1);
+  const auto visible=Frustum::from_view_projection(math::Mat4::identity());
+  const auto absent=Frustum::from_view_projection(math::Mat4::translation({100,100,100}));
+  const auto shifted=Frustum::from_view_projection(math::Mat4::translation({-3,0,0}));
+  {
+    TerrainTileRenderer tiles(device,source,{1},false);
+    rejects([&]{tiles.set_retention_frames(kMaxTerrainRetentionFrames+1);});
+    tiles.set_retention_frames(2);
+    tiles.synchronize_visible(visible);const auto original=tiles.resident_vertex_buffer(0);
+    auto change=tiles.synchronize_visible(absent);
+    require(change.retained==4 && !change.evicted && tiles.resident_tile_count()==4,"first hidden update retains GPU tiles");
+    change=tiles.synchronize_visible(visible);
+    require(!change.admitted && !change.evicted && tiles.resident_vertex_buffer(0)==original,"return within window reuses GPU handles");
+    tiles.synchronize_visible(absent);change=tiles.synchronize_visible(absent);
+    require(change.retained==4 && !change.evicted,"last retained update is inclusive");
+    change=tiles.synchronize_visible(absent);
+    require(change.evicted==4 && !tiles.resident_tile_count(),"tiles expire after configured successful hidden updates");
+    tiles.synchronize_visible(visible);
+    require(tiles.resident_vertex_buffer(0)!=original,"expired tile cold-loads on return");
+    tiles.set_residency_limit(2);change=tiles.synchronize_visible(absent);
+    require(change.retained==2 && change.trimmed==2 && tiles.resident_tiles()==std::vector<std::size_t>({0,1}),
+            "count pressure trims hidden tiles with deterministic tie order");
+    tiles.set_residency_limit(16);tiles.synchronize_visible(visible);
+    {
+      RenderResourceOwner other(device);const std::array<std::byte,8> payload{};
+      other.create_buffer({BufferUsage::Uniform,payload.size()},payload);
+      device.set_resource_byte_budget(3*136);change=tiles.synchronize_visible(absent);
+      require(change.retained==2 && change.trimmed==2 && tiles.resident_bytes()==2*136 &&
+              device.live_resource_bytes().total()==2*136+payload.size(),
+              "byte retention cap includes other owners' live resources");
+      device.set_resource_byte_budget(std::numeric_limits<std::uint64_t>::max());
+    }
+    tiles.synchronize_visible(visible);tiles.synchronize_visible(absent); // Ages are one.
+    const auto before=tiles.resident_tiles();const auto live=device.live_resource_bytes();
+    const auto stable=tiles.resident_vertex_buffer(0);
+    device.set_resource_byte_budget(live.total());
+    rejects<std::length_error>([&]{tiles.synchronize_visible(shifted);});
+    require(tiles.resident_tiles()==before && tiles.resident_vertex_buffer(0)==stable && device.live_resource_bytes()==live,
+            "failed required admission preserves resident set and handles");
+    device.set_resource_byte_budget(std::numeric_limits<std::uint64_t>::max());
+    change=tiles.synchronize_visible(absent);
+    require(change.retained==4 && !change.evicted,"failed synchronization did not advance retention ages");
+    change=tiles.synchronize_visible(absent);require(change.evicted==4,"expiry resumes after successful updates");
+    tiles.synchronize_visible(visible);tiles.synchronize_visible(shifted);
+    tiles.set_residency_limit(4);change=tiles.synchronize_visible(visible);
+    require(tiles.resident_tiles()==std::vector<std::size_t>({0,1,4,5}) && change.trimmed==4 && !change.retained,
+            "required visible tiles take count priority over hidden retention");
+    tiles.set_residency_limit(16);tiles.synchronize_visible(shifted);tiles.synchronize_visible(visible);
+    tiles.set_residency_limit(3);change=tiles.synchronize_visible(absent);
+    require(tiles.resident_tiles()==std::vector<std::size_t>({0,1,4}) && change.trimmed==5,
+            "recently visible residents outrank older hidden residents");
+    tiles.set_residency_limit(16);tiles.set_retention_frames(0);change=tiles.synchronize_visible(absent);
+    require(!tiles.resident_tile_count() && change.evicted==3,"zero retention restores immediate eviction");
+  }
+  require(device.live_resource_bytes()==ResourceBytes{} && !device.live_buffer_count(),"retention owner cleanup releases all GPU bytes");
+}
+
 void integer_edges_and_maximum_tile() {
   const auto high=std::numeric_limits<std::int32_t>::max();
   const auto mesh=build_terrain_mesh(compute::Grid({cell(high-1,high-1,1),cell(high,high-1,1),
@@ -279,7 +341,7 @@ void integer_edges_and_maximum_tile() {
 int main() {
   try {
     dense_coverage_and_seams();stable_under_permutation();sparse_holes_and_islands();
-    count_budgets();malformed_inputs();integer_edges_and_maximum_tile();gpu_uploads_and_culling();selective_gpu_residency();
-    std::cout<<"Terrain tiles: 8 test groups passed\n";
+    count_budgets();malformed_inputs();integer_edges_and_maximum_tile();gpu_uploads_and_culling();selective_gpu_residency();retention_hysteresis();
+    std::cout<<"Terrain tiles: 9 test groups passed\n";
   }catch(const std::exception& error){std::cerr<<"Terrain tile test failed: "<<error.what()<<'\n';return 1;}
 }

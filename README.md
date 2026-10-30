@@ -283,6 +283,32 @@ all-tile geometry_bytes from resident_tiles/resident_geometry_bytes and reports
 admissions/evictions. The five-frame residency smoke test forces rejection and
 recovery, then full eviction and cold readmission, with monolithic pixel checks.
 
+### Terrain residency retention window
+
+```bash
+./build-gl/terraflux-terrain-viewer --terrain-retain-frames 30 --terrain-tile-quads 16
+LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a -s "-screen 0 1280x800x24" \
+  ./build-gl/terraflux-terrain-viewer --terrain-retain-frames 2 --terrain-tile-quads 8 \
+  --terrain-retention-test --smoke-test
+```
+
+`--terrain-retain-frames 0..600` enables selective residency. The default is zero
+(immediate eviction). With N > 0, a resident tile remains eligible for N successful
+visibility synchronizations after it becomes hidden. A return resets its age and
+reuses its GPU handles; hidden retained tiles are still culled from drawing.
+Required visible tiles take priority. Count and final-set byte pressure trim
+optional hidden tiles, preferring the most recently visible and then stable tile
+IDs. Staging still requires old plus new bytes; failed transitions preserve both
+residents and ages. Minimized windows do not advance the policy.
+
+TERRAIN_JSON adds retention_frames, retained_hidden and pressure_trimmed; benchmark
+JSON adds the retention setting and per-frame retention/trim averages. The six-frame
+retention test checks return without uploads, age reset and expiry, with matching
+monolithic pixels. It requires demo smoke mode, a two-update window and default
+budgets, and can use `--offscreen`. The earlier five-frame residency test requires
+zero retention. This avoids extra uploads on brief returns; physical GPU timing
+benefits remain unmeasured.
+
 ### Optional offscreen viewer rendering
 
 ```bash
@@ -613,19 +639,19 @@ hours or release-readiness guarantees. The PS4 backend is unimplemented.
 
 | Desktop engine — Phases 1–9 | Full roadmap including PS4 |
 | --- | --- |
-| **~91%** (previously ~90%) | **~62%** (previously ~61%) |
+| **~91%** (unchanged) | **~62%** (unchanged) |
 
 | Phase | Component | Estimated completion |
 | --- | --- | ---: |
 | 1 | Core extraction | 100% |
 | 2 | Rendering abstraction | ~89% (previously ~88%) |
 | 3 | OpenGL backend | ~91% (previously ~90%) |
-| 4 | 3D terrain renderer | ~88% (previously ~85%) |
+| 4 | 3D terrain renderer | ~89% (previously ~88%) |
 | 5 | Simulation visualization | 65% |
 | 6 | Shader system | ~82% (previously ~80%) |
 | 7 | Scene and asset system | ~90% (previously 86%) |
 | 8 | Engine runtime | ~90% (previously ~89%) |
-| 9 | Performance | ~82% (previously ~78%) |
+| 9 | Performance | ~83% (previously ~82%) |
 | 10 | PS4 backend | 0% |
 
 Latest milestones: selective node reattachment and on-demand GPU mesh residency,
@@ -674,7 +700,11 @@ pixels, including fire-grid lookup, offscreen composition and asset lifecycle.
 Optional `--terrain-residency` now evicts hidden tile buffers, stages missing
 visible tiles transactionally and preserves the old set on admission failure.
 CPU recipes remain retained; LOD is future work. See [terrain tile geometry](docs/TERRAIN_TILES.md).
-Next planned implementation: terrain residency hysteresis to reduce camera-boundary churn.
+Optional `--terrain-retain-frames N` now keeps recently hidden GPU tiles for up
+to N successful visibility updates, with visible-first count/byte trimming and
+transactional age updates. A six-frame Mesa test checks reuse, expiry and exact
+monolithic pixels. Rounded overall progress estimates remain unchanged.
+Next planned implementation: independent terrain/fire layer visibility controls.
 See the [prioritized gaps and acceptance criteria](docs/ENGINE_BASELINE.md#remaining-renderer-work-in-priority-order). GPU meshes are created on demand; CPU model data
 and decoded image recipes remain eager and retained for reattachment. Asynchronous streaming, skeletal animation
 and full glTF/IBL support remain future work.

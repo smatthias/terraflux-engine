@@ -81,8 +81,8 @@ struct Options {
   bool asset_lifecycle_test=false,scene_controls_test=false,scene_detach_test=false,scene_residency_test=false;
   bool residency_report=false,start_inactive=false,resource_recovery_test=false;
   bool offscreen=false,offscreen_resize_test=false;
-  bool terrain_tiles=false,terrain_tile_test=false,terrain_residency=false,terrain_residency_test=false;
-  std::uint32_t max_resident_terrain_tiles=4096;
+  bool terrain_tiles=false,terrain_tile_test=false,terrain_residency=false,terrain_residency_test=false,terrain_retention_test=false;
+  std::uint32_t max_resident_terrain_tiles=4096,terrain_retention_frames=0;
   std::uint32_t terrain_tile_quads=32;
   std::optional<terraflux::scene::NodeId> selected_node,activate_node;
   std::uint32_t max_resident_meshes=512,max_scene_instances=1024;
@@ -98,6 +98,14 @@ Options parse_args(int argc, char** argv) {
     const std::string arg = argv[i];
     if (arg == "--smoke-test") options.smoke_test = true;
     else if(arg=="--terrain-residency"){options.terrain_residency=true;options.terrain_tiles=true;}
+    else if(arg=="--terrain-retention-test")options.terrain_retention_test=true;
+    else if(arg=="--terrain-retain-frames" && i+1<argc) {
+      const std::string text=argv[++i];std::uint32_t n=0;
+      const auto parsed=std::from_chars(text.data(),text.data()+text.size(),n);
+      if(parsed.ec!=std::errc{} || parsed.ptr!=text.data()+text.size() || n>terraflux::graphics::kMaxTerrainRetentionFrames)
+        throw std::invalid_argument("--terrain-retain-frames must be 0..600");
+      options.terrain_residency=true;options.terrain_tiles=true;options.terrain_retention_frames=n;
+    }
     else if(arg=="--terrain-residency-test")options.terrain_residency_test=true;
     else if(arg=="--max-resident-terrain-tiles" && i+1<argc) {
       const std::string text=argv[++i];std::uint32_t n=0;
@@ -171,15 +179,22 @@ Options parse_args(int argc, char** argv) {
     else if (arg == "--save-state" && i+1<argc)options.save_state=argv[++i];
     else if (arg == "--scene" && i + 1 < argc) options.scene_file = argv[++i];
     else throw std::invalid_argument(
-        "usage: terraflux-terrain-viewer [--request request.json --response response.json] [--obj model.obj | --gltf model.gltf] [--texture texture.ppm] [--scene scene.json (legacy scenes require --obj)] [--terrain-tiles] [--terrain-residency] [--max-resident-terrain-tiles 4096] [--terrain-residency-test with --smoke-test --terrain-residency] [--terrain-tile-quads 32] [--terrain-tile-test with --smoke-test --terrain-tiles] [--offscreen] [--offscreen-resize-test with --offscreen --smoke-test] [--profile] [--no-culling] [--no-instancing] [--asset-preview with --gltf] [--benchmark-frames 60] [--smoke-test] [--asset-lifecycle-test with --smoke-test]");
+        "usage: terraflux-terrain-viewer [--request request.json --response response.json] [--obj model.obj | --gltf model.gltf] [--texture texture.ppm] [--scene scene.json (legacy scenes require --obj)] [--terrain-tiles] [--terrain-residency] [--terrain-retain-frames 30] [--terrain-retention-test with --smoke-test --terrain-retain-frames 2] [--max-resident-terrain-tiles 4096] [--terrain-residency-test with --smoke-test --terrain-residency] [--terrain-tile-quads 32] [--terrain-tile-test with --smoke-test --terrain-tiles] [--offscreen] [--offscreen-resize-test with --offscreen --smoke-test] [--profile] [--no-culling] [--no-instancing] [--asset-preview with --gltf] [--benchmark-frames 60] [--smoke-test] [--asset-lifecycle-test with --smoke-test]");
   }
+  if(options.terrain_retention_test && (!options.terrain_residency || !options.smoke_test ||
+      options.terrain_retention_frames!=2 || !options.request_file.empty() || !options.scene_file.empty() ||
+      !options.obj_file.empty() || !options.gltf_file.empty() || options.offscreen_resize_test ||
+      options.asset_lifecycle_test || options.scene_controls_test || options.scene_detach_test ||
+      options.scene_residency_test || options.terrain_tile_test || options.terrain_residency_test ||
+      options.no_culling || options.resource_budget_bytes || options.max_resident_terrain_tiles!=4096))
+    throw std::invalid_argument("--terrain-retention-test requires demo smoke mode, two retention frames, culling and default budgets");
   if(options.terrain_residency_test && (!options.terrain_residency || !options.smoke_test ||
       !options.request_file.empty() || !options.scene_file.empty() || !options.obj_file.empty() ||
       !options.gltf_file.empty() || options.offscreen_resize_test || options.asset_lifecycle_test ||
       options.scene_controls_test || options.scene_detach_test || options.scene_residency_test ||
       options.terrain_tile_test || options.no_culling || options.resource_budget_bytes ||
-      options.max_resident_terrain_tiles!=4096))
-    throw std::invalid_argument("--terrain-residency-test requires residency smoke mode with demo terrain, culling and default budgets");
+      options.max_resident_terrain_tiles!=4096 || options.terrain_retention_frames!=0))
+    throw std::invalid_argument("--terrain-residency-test requires demo residency smoke mode, culling, default budgets and zero retention");
   if(options.terrain_tile_test && (!options.terrain_tiles || !options.smoke_test ||
       !options.request_file.empty() || !options.scene_file.empty() || !options.obj_file.empty() ||
       !options.gltf_file.empty() || options.offscreen_resize_test || options.asset_lifecycle_test ||
@@ -378,11 +393,15 @@ int main(int argc, char** argv) {
     std::unique_ptr<TerrainTileRenderer> tiled_terrain;
     if(options.terrain_tiles)tiled_terrain=std::make_unique<TerrainTileRenderer>(
         device,mesh,terraflux::terrain::TerrainTileOptions{options.terrain_tile_quads},!options.terrain_residency);
-    if(tiled_terrain)tiled_terrain->set_residency_limit(options.max_resident_terrain_tiles);
+    if(tiled_terrain) {
+      tiled_terrain->set_residency_limit(options.max_resident_terrain_tiles);
+      tiled_terrain->set_retention_frames(options.terrain_retention_frames);
+    }
     std::vector<std::size_t> terrain_initial_residents;
     std::vector<BufferHandle> terrain_initial_handles;
     bool terrain_saw_eviction=false,terrain_saw_readmission=false;
     std::uint64_t benchmark_terrain_uploads=0,benchmark_terrain_evictions=0;
+    std::uint64_t benchmark_terrain_retained=0,benchmark_terrain_trimmed=0;
     std::uint64_t benchmark_terrain_draws=0,benchmark_terrain_culled=0,tile_test_culled=0;
 
     // Two independent world transforms share the original asset VBO/IBO.
@@ -1220,6 +1239,11 @@ int main(int argc, char** argv) {
                                 rendered_frames>=kBenchmarkWarmup);
       const double profile_render_start=glfwGetTime();
       std::uint32_t frame_draws=0;
+      if(options.terrain_retention_test) {
+        const bool close=rendered_frames==1 || rendered_frames>=3;
+        distance=scene_camera.starting_distance*(close?0.2:1.0);
+        yaw=0.45;pitch=close?0.55:0.75;
+      }
       if(options.terrain_residency_test) {
         const bool close=rendered_frames==1 || rendered_frames==3;
         distance=scene_camera.starting_distance*(close?0.2:1.0);
@@ -1269,7 +1293,10 @@ int main(int argc, char** argv) {
                    <<",\"resident_geometry_bytes\":"<<tiled_terrain->resident_bytes()
                    <<",\"resident_tile_limit\":"<<tiled_terrain->residency_limit()
                    <<",\"admitted\":"<<terrain_residency_change.admitted
-                   <<",\"evicted\":"<<terrain_residency_change.evicted<<"}\n";
+                   <<",\"evicted\":"<<terrain_residency_change.evicted
+                   <<",\"retention_frames\":"<<tiled_terrain->retention_frames()
+                   <<",\"retained_hidden\":"<<terrain_residency_change.retained
+                   <<",\"pressure_trimmed\":"<<terrain_residency_change.trimmed<<"}\n";
       } else {device.draw_indexed(command);++frame_draws;}
       const auto terrain_snapshot=(options.smoke_test &&
           (options.asset_lifecycle_test || (imported && imported->uses_pbr)))?
@@ -1485,6 +1512,8 @@ int main(int argc, char** argv) {
         benchmark_terrain_culled+=terrain_stats.culled;
         benchmark_terrain_uploads+=terrain_residency_change.admitted;
         benchmark_terrain_evictions+=terrain_residency_change.evicted;
+        benchmark_terrain_retained+=terrain_residency_change.retained;
+        benchmark_terrain_trimmed+=terrain_residency_change.trimmed;
         benchmark_visible+=visible_instances;
         benchmark_culled+=culled_instances;
       }
@@ -1503,7 +1532,28 @@ int main(int argc, char** argv) {
       }
       glfwSwapBuffers(window.get());
       ++rendered_frames;
-      if(options.terrain_residency_test) {
+      if(options.terrain_retention_test) {
+        if(rendered_frames==1) {
+          terrain_initial_residents=tiled_terrain->resident_tiles();
+          for(const auto id:terrain_initial_residents)terrain_initial_handles.push_back(tiled_terrain->resident_vertex_buffer(id));
+        } else if(rendered_frames<=5) {
+          if(terrain_residency_change.admitted || terrain_residency_change.evicted ||
+             tiled_terrain->resident_tiles()!=terrain_initial_residents)
+            throw std::runtime_error("terrain retention changed buffers before expiry");
+          if(rendered_frames!=3 && !terrain_residency_change.retained)
+            throw std::runtime_error("terrain retention test held no hidden tiles");
+          for(std::size_t i=0;i<terrain_initial_residents.size();++i)
+            if(tiled_terrain->resident_vertex_buffer(terrain_initial_residents[i])!=terrain_initial_handles[i])
+              throw std::runtime_error("terrain retention replaced a retained GPU handle");
+        } else if(rendered_frames==6) {
+          if(!terrain_residency_change.evicted || tiled_terrain->resident_tile_count()>=terrain_initial_residents.size())
+            throw std::runtime_error("terrain retention did not expire hidden tiles");
+          tiled_terrain->set_resident_tiles({});
+          if(tiled_terrain->resident_bytes())throw std::runtime_error("terrain retention cleanup retained GPU bytes");
+          std::cout<<"Terrain retention passed: hold, return without uploads, reset age, expire, cleanup\n";
+          break;
+        }
+      }else if(options.terrain_residency_test) {
         if(rendered_frames==1) {
           terrain_initial_residents=tiled_terrain->resident_tiles();
           for(const auto id:terrain_initial_residents)terrain_initial_handles.push_back(tiled_terrain->resident_vertex_buffer(id));
@@ -1702,6 +1752,9 @@ int main(int argc, char** argv) {
                 <<",\"terrain_tiled\":"<<(options.terrain_tiles?"true":"false")
                 <<",\"terrain_tiles\":"<<(tiled_terrain?tiled_terrain->tile_count():0)
                 <<",\"terrain_residency\":"<<(options.terrain_residency?"true":"false")
+                <<",\"terrain_retention_frames\":"<<options.terrain_retention_frames
+                <<",\"terrain_retained_hidden_per_frame\":"<<static_cast<double>(benchmark_terrain_retained)/n
+                <<",\"terrain_pressure_trimmed_per_frame\":"<<static_cast<double>(benchmark_terrain_trimmed)/n
                 <<",\"terrain_resident_tiles\":"<<(tiled_terrain?tiled_terrain->resident_tile_count():0)
                 <<",\"terrain_resident_geometry_bytes\":"<<(tiled_terrain?tiled_terrain->resident_bytes():0)
                 <<",\"terrain_admitted_per_frame\":"<<static_cast<double>(benchmark_terrain_uploads)/n

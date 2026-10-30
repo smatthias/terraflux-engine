@@ -438,5 +438,8 @@ reference pixel checks in smoke mode; see that contract for CLI flags, diagnosti
 and eager-residency limits. Selective terrain GPU residency now stages visible-set changes transactionally
 and releases hidden buffer pairs; retained CPU recipes support cold readmission.
 See the terrain contract for final-set count limits, transient byte admission,
-complete-surface preflight and recovery tests. Residency hysteresis is next.
+complete-surface preflight and recovery tests. Bounded hidden-tile retention now
+reduces re-upload churn on brief returns, with visible-first pressure trimming and
+transactional ages. Native/Mesa checks cover handle reuse, expiry and pixel parity.
+Independent terrain/fire layer visibility controls are next.
 Physical GPU validation remains outstanding.

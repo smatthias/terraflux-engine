@@ -10,8 +10,9 @@ struct TerrainTileDrawStats {
   std::size_t total=0,visible=0,culled=0,draws=0;
   std::uint64_t triangles=0;
 };
+inline constexpr std::uint32_t kMaxTerrainRetentionFrames=600;
 struct TerrainResidencyChange {
-  std::size_t admitted=0,evicted=0;
+  std::size_t admitted=0,evicted=0,retained=0,trimmed=0;
 };
 // Retained packed CPU recipes; independently owned, selectively resident GPU
 // buffer pairs. Caller owns the pass, pipeline, camera and optional fire field.
@@ -28,6 +29,10 @@ class TerrainTileRenderer {
   // count; global byte admission also covers old + staged allocations.
   TerrainResidencyChange set_resident_tiles(std::span<const std::size_t> ids);
   TerrainResidencyChange synchronize_visible(const Frustum& frustum,bool cull=true);
+  // Hidden GPU tiles may survive this many successful visibility updates.
+  // Zero preserves immediate eviction. Required visible tiles always win.
+  void set_retention_frames(std::uint32_t frames);
+  std::uint32_t retention_frames() const {return retention_frames_;}
   void set_residency_limit(std::size_t count) {residency_limit_=count;}
   std::size_t residency_limit() const {return residency_limit_;}
   std::vector<std::size_t> resident_tiles() const;
@@ -48,10 +53,13 @@ class TerrainTileRenderer {
     TerrainUpload recipe;
     math::Vec3 lo,hi;
     std::unique_ptr<Resident> gpu;
+    std::uint32_t hidden_frames=0;
   };
+  TerrainResidencyChange commit_resident_tiles(std::span<const std::size_t> ids);
   RenderDevice& device_;
   std::vector<Tile> tiles_;
   std::size_t residency_limit_=4096;
+  std::uint32_t retention_frames_=0;
   std::uint64_t geometry_bytes_=0;
 };
 } // namespace terraflux::graphics

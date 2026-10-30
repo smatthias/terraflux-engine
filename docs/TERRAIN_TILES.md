@@ -148,7 +148,8 @@ before making performance claims.
 initially_resident=false. It retains all packed CPU recipes but creates no tile
 GPU buffers until the first visible-set synchronization. Before each terrain
 pass the viewer calls synchronize_visible using the same frustum/culling policy
-as draw. Hidden buffers are released, common residents keep their handles, and
+as draw. Hidden buffers expire according to the retention policy below (immediate
+by default), common residents keep their handles, and
 returning tiles are re-uploaded synchronously on the context thread. Eager tiled
 mode remains available. No loading threads or simulation changes are introduced.
 
@@ -194,7 +195,7 @@ no monolithic GPU copy; smoke mode still retains that extra reference allocation
 No performance gain is established by these functional checks.
 
 The five-frame --terrain-residency-test uses demo terrain, tiled residency smoke
-mode, culling and default budgets, without other scripted tests. It verifies a
+mode, zero retention, culling and default budgets, without other scripted tests. It verifies a
 smaller resident set in a close view, rejects readmission under a fixed byte cap,
 checks preserved counts/bytes, raises the cap, recovers the original set with cold
 handles, fully evicts, then rehydrates. Every rendered frame matches monolithic
@@ -203,6 +204,66 @@ disabled culling and a zero resident-count rejection. Native tests additionally
 exercise overlapping set handle reuse, duplicate/invalid IDs, lowered count caps,
 partial multi-tile staging failure, fail-before-partial-draw behavior and cleanup.
 
-Next: residency hysteresis to reduce camera-boundary eviction/re-upload churn.
+Residency hysteresis is described below.
 Physical GPU measurements, LOD, source-mesh streaming and CPU recipe eviction
 remain outstanding.
+
+
+## Bounded retention hysteresis
+
+set_retention_frames accepts 0..600; --terrain-retain-frames selects the same
+value and enables selective viewer mode. Zero is the default and preserves
+immediate eviction. A visible tile has age zero. Each successful visibility
+synchronization increments the age of hidden residents and may keep them while
+age <= the configured window. A two-update window therefore retains hidden
+updates one and two, then expires on update three. A return to visibility resets
+age and reuses the same buffers. Retained hidden tiles are never added to draw
+submission just because they remain allocated.
+
+Visibility synchronization first computes the complete required set and candidate
+ages. Recently hidden residents are optional. It prefers lower age (more recently
+visible) and then ascending stable tile ID, adding optional residents only when
+they fit the committed count limit and available final-set bytes. Available bytes
+subtract other owners' current resources from the device's effective cap. Count
+or byte pressure drops optional retention before required visible tiles. Expired
+tiles are not counted as pressure trims. Required-visible count overflow still
+rejects the transition.
+
+The policy commits ages only after the transactional resident-set transition
+succeeds. Validation or staged allocation failure preserves ages, residents and
+handles, so retries do not silently consume retention time. An explicit
+set_resident_tiles call bypasses hysteresis and resets age history after success;
+it remains available for deterministic eviction and manual lifetime control.
+
+Trimming retention is not early eviction for staging. Old + missing-new buffers
+must still fit global byte admission before old resources are released. A failed
+required upload therefore preserves the previous complete set even if a different
+set could fit after destructive eviction. If a byte cap is lowered below already
+resident required geometry, the existing admission contract retains that geometry;
+optional hidden retention is dropped. This policy does not promise a hard physical
+VRAM limit or guaranteed streaming under every cap.
+
+Ages count successful synchronize_visible calls, not simulation ticks or elapsed
+seconds. The viewer invokes it once per drawable frame; minimized frames and failed
+synchronizations do not age residents. CPU recipes remain retained regardless of
+GPU expiry. No asynchronous loading or GPU/CPU memory measurement is added.
+
+TerrainResidencyChange and TERRAIN_JSON expose retained/retained_hidden (the number
+of optional hidden residents kept) and trimmed/pressure_trimmed (recent hidden
+candidates dropped for count/byte pressure), plus retention_frames. BENCHMARK_JSON
+adds terrain_retention_frames, terrain_retained_hidden_per_frame and
+terrain_pressure_trimmed_per_frame. Admission/eviction counters remain available
+for direct comparisons; retaining tiles can increase steady GPU storage.
+
+Native tests cover exact expiry boundaries, return handle reuse, zero-window
+behavior, deterministic ties and recency preference, visible-first count limits,
+byte trimming with another resource owner, failure-preserved ages and cleanup.
+The six-frame --terrain-retention-test uses the demo, a two-update window, culling
+and default budgets. It holds hidden tiles, returns without uploads, resets ages,
+then waits for expiry and releases storage. Every rendered frame matches the
+monolithic pixel reference. CI runs direct/offscreen variants and a mixed-scene
+asset lifecycle with retention enabled. The earlier immediate-eviction test
+requires a zero window.
+
+Next: independent terrain/fire layer visibility controls. Physical GPU timing,
+LOD, source streaming and CPU recipe eviction remain outstanding.

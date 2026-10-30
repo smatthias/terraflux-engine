@@ -46,7 +46,16 @@ std::uint64_t TerrainTileRenderer::resident_bytes() const {
 BufferHandle TerrainTileRenderer::resident_vertex_buffer(std::size_t id) const {
   const auto& tile=tiles_.at(id);return tile.gpu?tile.gpu->vertices:BufferHandle{};
 }
+void TerrainTileRenderer::set_retention_frames(std::uint32_t frames) {
+  if(frames>kMaxTerrainRetentionFrames)throw std::invalid_argument("terrain retention must be 0..600 frames");
+  retention_frames_=frames;
+}
 TerrainResidencyChange TerrainTileRenderer::set_resident_tiles(std::span<const std::size_t> ids) {
+  const auto change=commit_resident_tiles(ids);
+  for(auto& tile:tiles_)tile.hidden_frames=0; // Explicit sets begin fresh policy history.
+  return change;
+}
+TerrainResidencyChange TerrainTileRenderer::commit_resident_tiles(std::span<const std::size_t> ids) {
   if(device_.active_render_pass_id())throw std::logic_error("terrain residency changes require ended passes");
   if(ids.size()>residency_limit_)throw std::length_error("terrain resident tile count limit exceeded");
   std::vector<bool> wanted(tiles_.size(),false);
@@ -66,10 +75,45 @@ TerrainResidencyChange TerrainTileRenderer::set_resident_tiles(std::span<const s
   return change;
 }
 TerrainResidencyChange TerrainTileRenderer::synchronize_visible(const Frustum& frustum,bool cull) {
-  std::vector<std::size_t> wanted;
-  for(std::size_t i=0;i<tiles_.size();++i)
-    if(!cull || frustum.intersects_aabb(tiles_[i].lo,tiles_[i].hi))wanted.push_back(i);
-  return set_resident_tiles(wanted);
+  if(device_.active_render_pass_id())throw std::logic_error("terrain residency changes require ended passes");
+  std::vector<std::size_t> wanted,optional;
+  std::vector<std::uint32_t> next_ages(tiles_.size(),0);
+  std::uint64_t wanted_bytes=0;
+  const auto bytes=[&](std::size_t id) {
+    const auto& recipe=tiles_[id].recipe;
+    return static_cast<std::uint64_t>(recipe.vertices.size())*sizeof(TerrainGpuVertex)+
+           static_cast<std::uint64_t>(recipe.indices.size())*sizeof(std::uint32_t);
+  };
+  for(std::size_t i=0;i<tiles_.size();++i) {
+    const auto& tile=tiles_[i];
+    if(!cull || frustum.intersects_aabb(tile.lo,tile.hi)) {
+      wanted.push_back(i);wanted_bytes+=bytes(i);
+    }else if(tile.gpu) {
+      next_ages[i]=tile.hidden_frames+1; // At most 601; retained ages are capped at 600.
+      if(next_ages[i]<=retention_frames_)optional.push_back(i);
+    }
+  }
+  if(wanted.size()>residency_limit_)throw std::length_error("terrain resident tile count limit exceeded");
+  // Prefer the most recently visible hidden tiles, with stable IDs for ties.
+  std::sort(optional.begin(),optional.end(),[&](auto a,auto b) {
+    return next_ages[a]!=next_ages[b]?next_ages[a]<next_ages[b]:a<b;
+  });
+  const auto other_bytes=device_.live_resource_bytes().total()-resident_bytes();
+  const auto cap=device_.resource_telemetry().limit_bytes;
+  const auto available=cap>=other_bytes?cap-other_bytes:0;
+  std::size_t retained=0,trimmed=0;
+  for(const auto id:optional) {
+    const auto size=bytes(id);
+    if(wanted.size()<residency_limit_ && wanted_bytes<=available && size<=available-wanted_bytes) {
+      wanted.push_back(id);wanted_bytes+=size;++retained;
+    }else ++trimmed;
+  }
+  // Staging still admits against old + new storage. Retention trimming never
+  // evicts early to disguise a failed required-tile admission.
+  auto change=commit_resident_tiles(wanted);
+  for(std::size_t i=0;i<tiles_.size();++i)tiles_[i].hidden_frames=tiles_[i].gpu?next_ages[i]:0;
+  change.retained=retained;change.trimmed=trimmed;
+  return change;
 }
 TerrainTileDrawStats TerrainTileRenderer::draw(PipelineHandle pipeline,BufferHandle camera,
     std::optional<BufferHandle> fire,const Frustum& frustum,bool cull) {
