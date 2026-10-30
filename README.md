@@ -231,6 +231,16 @@ the configured state file. Full asset unload retains the last residency snapshot
 for saving. Budgets, animation time, runtime transforms and camera state are not
 saved; the fingerprint is a compatibility check, not an asset-integrity signature.
 
+### Terrain tile geometry groundwork
+
+`terrain::tile_terrain_mesh` partitions the existing terrain mesh into nonempty
+CPU tiles, defaulting to 32 quads per side. Each tile has a compact mesh,
+source-vertex mapping and inclusive bounds. Adjacent tiles copy the same globally
+computed positions/normals, including after GPU packing; holes and winding are
+preserved. Aggregate tile/vertex/index limits reject over-budget candidates.
+The viewer still uploads the monolithic mesh. LOD, GPU tile residency and tiled
+frustum submission remain future work. See the [API and limits](docs/TERRAIN_TILES.md).
+
 ### Optional offscreen viewer rendering
 
 ```bash
@@ -561,14 +571,14 @@ hours or release-readiness guarantees. The PS4 backend is unimplemented.
 
 | Desktop engine — Phases 1–9 | Full roadmap including PS4 |
 | --- | --- |
-| **~88%** (unchanged) | **~59%** (unchanged) |
+| **~89%** (previously ~88%) | **~60%** (previously ~59%) |
 
 | Phase | Component | Estimated completion |
 | --- | --- | ---: |
 | 1 | Core extraction | 100% |
 | 2 | Rendering abstraction | ~89% (previously ~88%) |
 | 3 | OpenGL backend | ~91% (previously ~90%) |
-| 4 | 3D terrain renderer | 75% |
+| 4 | 3D terrain renderer | ~80% (previously 75%) |
 | 5 | Simulation visualization | 65% |
 | 6 | Shader system | ~82% (previously ~80%) |
 | 7 | Scene and asset system | ~90% (previously 86%) |
@@ -583,7 +593,7 @@ resolution, serializable Motion,
 shared mixed-format scene assets, isolated
 GPU asset lifetimes, unload/reload with failure recovery, and independent
 scene pause/resume and single-step controls. The mixed-format example includes
-OBJ, glTF, GLB, transparent materials and repeated model references. Native testing comprises 14
+OBJ, glTF, GLB, transparent materials and repeated model references. Native testing comprises 15
 CTest suites and 71 simulation parity fixtures; CI also exercises the viewer
 under Mesa/Xvfb. See the branch's CI results for validation of each commit.
 
@@ -599,7 +609,7 @@ validated pass handles/extents, shared byte-budget admission, telemetry and scop
 cleanup. OpenGL creation checks framebuffer completeness and rolls back partial
 allocations. A dedicated Mesa test covers clear/load, depth occlusion, geometry,
 target switching, budget rejection and repeated cleanup. Native CTest remains
-14 display-independent suites; the extra GL test runs explicitly under Xvfb.
+15 display-independent suites; the extra GL test runs explicitly under Xvfb.
 Offscreen color now exposes a borrowed sampled texture view, with no duplicate
 byte charge and invalidation when its target is destroyed. The reusable
 `FullscreenComposite` helper copies it into a separate offscreen/window pass
@@ -613,8 +623,12 @@ Viewer terrain, object and compositing passes now use `RenderPassScope`. Scope
 exit ends the owned pass before resource cleanup, including when drawing throws.
 Monotonic pass IDs keep stale scopes from ending newer passes. Native/Mesa tests
 exercise exceptions, failed draws, budget rejection, cleanup and subsequent rendering.
-This hardening leaves the rounded overall progress estimates unchanged.
-Next planned implementation: terrain tiling groundwork with seam and bounds tests.
+The compute library now partitions full-resolution terrain into bounded, nonempty
+CPU tiles with local indices, source-vertex maps and inclusive geometry bounds.
+Tiles preserve global positions/normals, holes and exact triangle coverage, with
+configurable aggregate count budgets. This groundwork does not yet change viewer
+submission or implement LOD. See [terrain tile geometry](docs/TERRAIN_TILES.md).
+Next planned implementation: optional viewer tile uploads and frustum culling.
 See the [prioritized gaps and acceptance criteria](docs/ENGINE_BASELINE.md#remaining-renderer-work-in-priority-order). GPU meshes are created on demand; CPU model data
 and decoded image recipes remain eager and retained for reattachment. Asynchronous streaming, skeletal animation
 and full glTF/IBL support remain future work.

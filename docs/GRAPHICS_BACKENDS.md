@@ -280,7 +280,7 @@ with `-DTERRAFLUX_WITH_OPENGL=ON` and `BUILD_TESTING=ON`, then run:
 LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a ./build-gl/terraflux-offscreen-tests
 ```
 
-This test is separate from CTest so the 14 native suites remain display-independent.
+This test is separate from CTest so the 15 native suites remain display-independent.
 It reads back color and float depth, checks independent target storage, color-only
 and depth-only clears, preserved depth occlusion, actual triangle drawing,
 creation while a pass is active, window restoration, budget rejection and repeated
@@ -389,8 +389,8 @@ Mesa/Xvfb, forces a cap rejection, verifies old-target retention, raises the cap
 recovers at the same requested size, resizes again and checks cleanup. It turns
 off instancing to avoid unrelated ring allocations during the admission check.
 CI separately exercises first-allocation fallback, mixed-format asset lifecycle
-and wildfire replay through the offscreen path. Display-independent CTest still
-has 14 suites. Physical GPU validation remains outstanding.
+and wildfire replay through the offscreen path. Display-independent CTest now
+has 15 suites. Physical GPU validation remains outstanding.
 
 
 ## Exception-safe render-pass scopes
@@ -431,5 +431,8 @@ and budget rejection inside owned offscreen passes; they check that target and
 composite resources return to baseline and that a later window pass renders pixels.
 These are controlled validation failures, not simulated hardware device loss.
 
-Next: terrain tiling groundwork with bounded geometry, seam and bounds tests,
-preserving simulation outputs. Physical GPU validation remains outstanding.
+Terrain tiling groundwork is now available in the compute library; see
+[Terrain tile geometry contract](TERRAIN_TILES.md) for copied boundary normals,
+source mappings, bounds and aggregate budgets. The viewer remains monolithic;
+optional tiled uploads and frustum submission are next. Physical GPU validation
+remains outstanding.

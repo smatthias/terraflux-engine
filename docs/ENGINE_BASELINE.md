@@ -150,5 +150,9 @@ Opt-in viewer composition and transactional resize recovery are also implemented
 see [Viewer offscreen mode and transactional resizing](GRAPHICS_BACKENDS.md#viewer-offscreen-mode-and-transactional-resizing).
 Exception-safe render-pass scopes now cover the viewer's pass boundaries and
 controlled-failure cleanup/recovery tests; see [Exception-safe render-pass scopes](GRAPHICS_BACKENDS.md#exception-safe-render-pass-scopes).
-The next implementation targets the pinned P1 terrain tiling gap with seam/bounds
-tests. Broader attachment formats/effects and physical GPU evidence remain outstanding.
+The feature branch now also includes bounded CPU terrain partitioning, exact seam
+normal/position copies, source mappings and geometry bounds, with a new native
+CTest suite (15 total on the branch). See [Terrain tile geometry contract](TERRAIN_TILES.md).
+Optional viewer tile uploads and frustum submission are next. The pinned snapshot
+remains unchanged. LOD/residency, broader attachment formats/effects and physical
+GPU evidence remain outstanding.
