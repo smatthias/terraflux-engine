@@ -90,6 +90,10 @@ std::string serialize_scene(const Scene& scene) {
       out<<",\"spin\":";
       vec3_out(out,*node.angular_velocity);
     }
+    if(node.linear_velocity) {
+      out<<",\"motion\":";
+      vec3_out(out,*node.linear_velocity);
+    }
     out<<'}'<<(id+1<scene.size()?",":"")<<'\n';
   }
   out<<"  ]\n}\n";
@@ -115,6 +119,7 @@ Scene deserialize_scene(const std::string& json_text) {
   std::vector<Transform> transforms(nodes.size());
   std::vector<bool> mesh_flags(nodes.size());
   std::vector<std::optional<math::Vec3>> spin_components(nodes.size());
+  std::vector<std::optional<math::Vec3>> motion_components(nodes.size());
   for(std::size_t id=0;id<nodes.size();++id) {
     const auto& obj=terraflux::json::object(nodes[id]);
     const auto name=terraflux::json::string(terraflux::json::field(obj,"name"));
@@ -137,9 +142,10 @@ Scene deserialize_scene(const std::string& json_text) {
         throw std::invalid_argument("invalid Spin component");
       spin_components[id]=v;
     }
+    if(obj.contains("motion"))motion_components[id]=vec3(obj,"motion");
     if(id==0){
-      if(name!="Root" || parents[id]!=0 || mesh_flags[id] || spin_components[id])
-        throw std::invalid_argument("scene root must have name Root, parent 0 and no mesh");
+      if(name!="Root" || parents[id]!=0 || mesh_flags[id] || spin_components[id] || motion_components[id])
+        throw std::invalid_argument("scene root must have name Root, parent 0 and no mesh or runtime components");
     }else{
       scene.create_node(name);
       if(parents[id]==id)
@@ -153,6 +159,8 @@ Scene deserialize_scene(const std::string& json_text) {
   for(std::size_t id=0;id<nodes.size();++id){
     scene.set_transform(static_cast<NodeId>(id),transforms[id]);
     if(mesh_flags[id])scene.set_mesh_instance(static_cast<NodeId>(id),true);
+    if(motion_components[id])
+      scene.set_linear_velocity(static_cast<NodeId>(id),motion_components[id]);
     if(spin_components[id])
       scene.set_angular_velocity(static_cast<NodeId>(id),spin_components[id]);
   }

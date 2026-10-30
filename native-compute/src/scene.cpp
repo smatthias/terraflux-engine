@@ -24,7 +24,7 @@ math::Mat4 Transform::matrix() const {
          math::Mat4::scaling(scale);
 }
 
-Scene::Scene() { nodes_.push_back({root(), "Root", {}, false, std::nullopt}); }
+Scene::Scene() { nodes_.push_back({root(), "Root", {}, false, std::nullopt, std::nullopt}); }
 
 void Scene::check_node(NodeId id) const {
   if (id >= nodes_.size()) throw std::out_of_range("unknown scene node");
@@ -36,7 +36,7 @@ NodeId Scene::create_node(std::string name, NodeId parent) {
   if (nodes_.size() >= std::numeric_limits<NodeId>::max())
     throw std::overflow_error("scene node ID space exhausted");
   const auto id = static_cast<NodeId>(nodes_.size());
-  nodes_.push_back({parent, std::move(name), {}, false, std::nullopt});
+  nodes_.push_back({parent, std::move(name), {}, false, std::nullopt, std::nullopt});
   return id;
 }
 
@@ -72,6 +72,17 @@ void Scene::set_angular_velocity(NodeId node, std::optional<math::Vec3> velocity
                    std::abs(velocity->z)>1000))
     throw std::invalid_argument("Spin angular velocity must be finite and bounded");
   nodes_[node].angular_velocity=velocity;
+}
+
+void Scene::set_linear_velocity(NodeId node, std::optional<math::Vec3> velocity) {
+  check_node(node);
+  if (node == root() && velocity)
+    throw std::invalid_argument("scene root cannot have a Motion component");
+  if (velocity && (!finite(*velocity) ||
+                   std::abs(velocity->x)>1000 || std::abs(velocity->y)>1000 ||
+                   std::abs(velocity->z)>1000))
+    throw std::invalid_argument("Motion velocity must be finite and bounded");
+  nodes_[node].linear_velocity=velocity;
 }
 
 const Node& Scene::get(NodeId node) const {

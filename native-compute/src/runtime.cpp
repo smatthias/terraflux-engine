@@ -58,13 +58,21 @@ std::size_t update_scene_components(scene::Scene& graph,double dt) {
   for(std::size_t i=1;i<graph.size();++i) {
     const auto id=static_cast<scene::NodeId>(i);
     const auto& node=graph.get(id);
-    if(!node.angular_velocity)continue;
-    const auto velocity=*node.angular_velocity;
+    if(!node.angular_velocity && !node.linear_velocity)continue;
     auto pose=node.local;
-    constexpr double period=2.0*std::numbers::pi;
-    pose.rotation_radians.x=std::remainder(pose.rotation_radians.x+velocity.x*dt,period);
-    pose.rotation_radians.y=std::remainder(pose.rotation_radians.y+velocity.y*dt,period);
-    pose.rotation_radians.z=std::remainder(pose.rotation_radians.z+velocity.z*dt,period);
+    if(node.linear_velocity) {
+      const auto velocity=*node.linear_velocity;
+      pose.translation.x+=velocity.x*dt;
+      pose.translation.y+=velocity.y*dt;
+      pose.translation.z+=velocity.z*dt;
+    }
+    if(node.angular_velocity) {
+      const auto velocity=*node.angular_velocity;
+      constexpr double period=2.0*std::numbers::pi;
+      pose.rotation_radians.x=std::remainder(pose.rotation_radians.x+velocity.x*dt,period);
+      pose.rotation_radians.y=std::remainder(pose.rotation_radians.y+velocity.y*dt,period);
+      pose.rotation_radians.z=std::remainder(pose.rotation_radians.z+velocity.z*dt,period);
+    }
     graph.set_transform(id,pose);
     ++updated;
   }

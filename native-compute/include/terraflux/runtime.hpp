@@ -35,9 +35,10 @@ class FixedStepScheduler {
   double simulated_seconds_=0.0;
 };
 
-// Fixed-step component system: integrate Spin components in scene-local space.
+// Fixed-step component system: integrate Spin and Motion in scene-local space.
+// Returns the number of updated nodes (a node with both components counts once).
 // Unlike the OBJ demo's hard-coded animation, any serialized scene node may
-// opt into this behavior; omitted Spin components remain entirely static.
+// opt into these behaviors; nodes without components remain static.
 std::size_t update_scene_components(scene::Scene& scene,double fixed_dt);
 
 struct ProfileSample {

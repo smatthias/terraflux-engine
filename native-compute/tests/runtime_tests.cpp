@@ -150,6 +150,68 @@ void runtime_components_and_profiler(){
   profiler.clear();
   check(profiler.summary().samples==0,"profiler clear");
 }
+void motion_components() {
+  using terraflux::math::Vec3;
+  using terraflux::runtime::update_scene_components;
+  terraflux::scene::Scene graph;
+  const auto parent=graph.create_node("Moving parent");
+  const auto child=graph.create_node("Spinning child",parent);
+  const auto idle=graph.create_node("Static");
+  graph.set_transform(parent,{{0,0,0},{0,0,0},{2,3,4}});
+  graph.set_linear_velocity(parent,Vec3{2,-1,.5});
+  graph.set_linear_velocity(child,Vec3{1,0,0});
+  graph.set_angular_velocity(child,Vec3{0,2,0});
+  auto batched=graph;
+  terraflux::runtime::FixedStepScheduler a(.1,1,10),b(.1,1,10);
+  const auto tick=[&](double dt){
+    check(update_scene_components(graph,dt)==2,"count updated nodes, not components");
+  };
+  a.advance(.2,tick);
+  b.advance(.06,[&](double dt){update_scene_components(batched,dt);});
+  b.advance(.14,[&](double dt){update_scene_components(batched,dt);});
+  check(near(graph.get(parent).local.translation.x,.4) &&
+        near(graph.get(parent).local.translation.y,-.2) &&
+        near(graph.get(parent).local.translation.z,.1),"integrate local Motion in all axes");
+  check(near(graph.get(child).local.rotation_radians.y,.4),"Spin and Motion coexist");
+  const auto world=graph.world_matrix(child).transformPoint({0,0,0});
+  check(near(world.x,.8) && near(world.y,-.2) && near(world.z,.1),
+        "parent scale and translation apply to moving child");
+  check(near(graph.get(idle).local.translation.x,0),"static node stays still");
+  check(terraflux::scene::serialize_scene(graph)==terraflux::scene::serialize_scene(batched),
+        "Motion is deterministic across wall-clock frame partitions");
+  const auto encoded=terraflux::scene::serialize_scene(graph);
+  auto restored=terraflux::scene::deserialize_scene(encoded);
+  check(restored.get(child).linear_velocity.has_value() &&
+        terraflux::scene::serialize_scene(restored)==encoded,"Motion JSON roundtrip");
+  update_scene_components(graph,.1);
+  update_scene_components(restored,.1);
+  check(terraflux::scene::serialize_scene(restored)==terraflux::scene::serialize_scene(graph),
+        "loaded components continue identically");
+  restored.set_linear_velocity(parent,std::nullopt);
+  const auto frozen=restored.get(parent).local.translation;
+  check(update_scene_components(restored,.1)==1 &&
+        near(restored.get(parent).local.translation.x,frozen.x),"removing Motion stops translation");
+  rejects([&]{graph.set_linear_velocity(0,Vec3{});},"root cannot move");
+  rejects([&]{graph.set_linear_velocity(999,Vec3{});},"unknown Motion node rejected");
+  for(double bad:{1001.0,-1001.0,std::numeric_limits<double>::infinity(),
+                  std::numeric_limits<double>::quiet_NaN()}) {
+    rejects([&]{graph.set_linear_velocity(child,Vec3{0,bad,0});},"invalid Motion velocity rejected");
+  }
+  // Malformed serialized components must fail rather than disappear on load.
+  const auto corrupt=[&](const std::string& value) {
+    auto text=encoded;
+    const auto key=text.find("\"motion\":[");
+    const auto end=text.find(']',key);
+    text.replace(key,end-key+1,"\"motion\":"+value);
+    return text;
+  };
+  for(const std::string value:{"[1,2]","[1,2,3,4]","[0,1001,0]","[0,\"x\",0]","null"})
+    rejects([&]{(void)terraflux::scene::deserialize_scene(corrupt(value));},
+            "malformed Motion JSON rejected");
+  auto root_motion=encoded;
+  root_motion.insert(root_motion.find("\"parent\":0"),"\"motion\":[0,0,0],");
+  rejects([&]{(void)terraflux::scene::deserialize_scene(root_motion);},"serialized root Motion rejected");
+}
 void example_scene(const std::string& path){
   std::ifstream file(path);
   if(!file)throw std::runtime_error("scene example not found");
@@ -174,8 +236,9 @@ int main(int argc,char** argv) {
     save_and_load();
     reject_invalid_scene();
     runtime_components_and_profiler();
+    motion_components();
     example_scene(argv[1]);
-    std::cout<<"TerraFlux runtime: 5 test groups passed\n";
+    std::cout<<"TerraFlux runtime: 6 test groups passed\n";
   }catch(const std::exception& e){
     std::cerr<<"Runtime test failed: "<<e.what()<<'\n';
     return 1;

@@ -400,3 +400,28 @@ Use `--asset-preview --gltf examples/assets/textured_multi_mesh.gltf` to choose 
 Blended glTF materials are rendered in a separate back-to-front primitive/instance pass after opaque geometry, with depth testing on, depth writes off and SRC_ALPHA/ONE_MINUS_SRC_ALPHA blending. They are intentionally not hardware-instanced or included in the opaque material sort. This is object/primitive sorting, not per-triangle sorting or order-independent transparency: intersecting transparent surfaces can still have artifacts.
 
 The glTF loader preserves optional FLOAT VEC4 TANGENT attributes, with the signed w component determining the bitangent handedness. The PBR shader transforms supplied tangents for the object and accounts for mirrored transforms; meshes without tangents continue using UV derivatives. Run `./build-gl/terraflux-terrain-viewer --gltf examples/assets/tangent_blend.gltf --asset-preview` for the blended/tangent sample.
+
+
+## Phase 8: Reusable linear Motion components
+
+A scene node may now carry `"motion": [vx, vy, vz]` alongside `"spin"`.
+Motion integrates translation at the existing fixed 60 Hz update rate, in
+parent-local scene units per second. Parent rotation and scale affect the
+resulting world-space direction and speed; spinning the node itself does not
+change its local velocity. Both components can coexist on the same node.
+Velocity components must be finite and within [-1000, 1000]; the scene root
+cannot carry Motion. Omit Motion for static translation, or remove it at
+runtime with `Scene::set_linear_velocity(node, std::nullopt)`.
+
+Scene JSON version 1 preserves this optional component and existing scene
+files remain accepted. The twin-pyramids fixture moves its shared parent
+upward at 0.05 units/s, so both children move together while spinning:
+
+```bash
+./build-gl/terraflux-terrain-viewer --obj examples/assets/pyramid.obj \
+  --scene examples/scenes/twin_pyramids.json
+```
+
+Motion is unbounded constant velocity, not collision, physics or looping
+animation. Automated tests cover fixed-step determinism, combined Spin and
+Motion, hierarchy transforms, save/load continuation and invalid components.

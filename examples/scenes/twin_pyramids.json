@@ -24,6 +24,7 @@
     },
     {
       "name": "Props",
+      "motion": [0, 0.05, 0],
       "parent": 0,
       "mesh_instance": false,
       "translation": [
