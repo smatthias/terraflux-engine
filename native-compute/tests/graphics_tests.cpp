@@ -1,5 +1,7 @@
 #include <terraflux/graphics/render_device.hpp>
 #include <terraflux/graphics/composite.hpp>
+#include <terraflux/graphics/render_pass.hpp>
+#include <type_traits>
 #include <terraflux/graphics/terrain_upload.hpp>
 #include <terraflux/grid.hpp>
 #include <terraflux/terrain_mesh.hpp>
@@ -351,6 +353,64 @@ void test_resource_telemetry() {
   require(!device.resource_telemetry().budget_rejections,"validation error is not a budget rejection");
 }
 
+void test_render_pass_scopes() {
+  static_assert(!std::is_copy_constructible_v<RenderPassScope> &&
+                !std::is_move_constructible_v<RenderPassScope> &&
+                std::is_nothrow_destructible_v<RenderPassScope>);
+  ValidatingRenderDevice device;
+  require(!device.active_render_pass_id(),"new device has no active pass identity");
+  std::uint64_t first=0;
+  {
+    RenderPassScope pass(device,{{64,64}});first=device.active_render_pass_id();
+    require(first && pass.active(),"scope owns its successful begin");
+    must_throw([&]{RenderPassScope nested(device,{{64,64}});},"nested scope construction rejects");
+    require(device.active_render_pass_id()==first && pass.active(),"failed nested begin preserves outer owner");
+    pass.end();pass.end();
+    require(!pass.active() && !device.active_render_pass_id(),"explicit end is idempotent");
+    device.begin_render_pass({{64,64}});
+  }
+  require(device.active_render_pass_id()>first,"closed scope destructor leaves newer raw pass alone");
+  device.end_render_pass();
+  must_throw([&]{RenderPassScope invalid(device,{{0,64}});},"failed begin never acquires ownership");
+  require(!device.active_render_pass_id(),"failed construction leaves pass inactive");
+  std::uint64_t newer=0;
+  {
+    RenderPassScope stale(device,{{64,64}});
+    device.end_render_pass();device.begin_render_pass({{64,64}});
+    newer=device.active_render_pass_id();
+    require(!stale.active(),"externally replaced pass is no longer owned");
+    must_throw([&]{stale.end();},"explicit close reports raw-API ownership mismatch");
+  }
+  require(device.active_render_pass_id()==newer,"stale destructor cannot close somebody else's pass");
+  device.end_render_pass();
+  const auto baseline=device.live_resource_bytes();
+  for(int failure=0;failure<3;++failure) {
+    bool caught=false;
+    try {
+      RenderResourceOwner resources(device); // Outlives the pass during unwinding.
+      const auto target=resources.create_render_target({8,8});
+      RenderPassScope pass(device,{{8,8,RenderTargetKind::Offscreen,target}});
+      if(failure==0)throw std::runtime_error("original scene exception");
+      if(failure==1)device.draw_indexed({});
+      if(failure==2) {
+        device.set_resource_byte_budget(device.live_resource_bytes().total());
+        resources.create_render_target({1,1});
+      }
+    } catch(const std::exception& error) {
+      caught=true;
+      if(failure==0)require(std::string(error.what())=="original scene exception",
+                           "scope cleanup preserves original exception");
+    }
+    device.set_resource_byte_budget(std::numeric_limits<std::uint64_t>::max());
+    require(caught && !device.active_render_pass_id(),"throwing work automatically ends its pass");
+    require(device.live_resource_bytes()==baseline && !device.live_render_target_count() &&
+            !device.live_texture_count(),"unwinding closes pass before releasing target storage");
+    RenderPassScope recovered(device,{{64,64}}); // Normal implicit destructor closure.
+    require(recovered.active(),"new pass starts after a drawing failure");
+  }
+  require(!device.active_render_pass_id(),"normal scope exit ends its pass");
+}
+
 void test_resize_recovery() {
   ValidatingRenderDevice device;
   const auto baseline=device.live_resource_bytes();
@@ -602,7 +662,8 @@ int main() {
     test_offscreen_targets();
     test_sampled_target_composition();
     test_resize_recovery();
-    std::cout << "TerraFlux graphics contracts: 19 tests passed\n";
+    test_render_pass_scopes();
+    std::cout << "TerraFlux graphics contracts: 20 tests passed\n";
   } catch (const std::exception& error) {
     std::cerr << "TerraFlux graphics test failed: " << error.what() << '\n';
     return 1;

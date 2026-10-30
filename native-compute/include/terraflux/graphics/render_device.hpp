@@ -191,6 +191,9 @@ class RenderDevice {
   // attachments; swapping/presentation remains the platform's responsibility.
   virtual void begin_render_pass(const RenderPassDesc& desc) = 0;
   virtual void end_render_pass() = 0;
+  // Zero means inactive. Successful begins use monotonically increasing IDs;
+  // scoped cleanup must never end a different, subsequently started pass.
+  virtual std::uint64_t active_render_pass_id() const noexcept = 0;
   virtual void draw_indexed(const DrawIndexed& command) = 0;
 };
 
@@ -213,6 +216,7 @@ class ValidatingRenderDevice final : public RenderDevice {
   void destroy_pipeline(PipelineHandle handle) override;
   void begin_render_pass(const RenderPassDesc& desc) override;
   void end_render_pass() override;
+  std::uint64_t active_render_pass_id() const noexcept override {return active_pass_id_;}
   void draw_indexed(const DrawIndexed& command) override;
   ResourceBytes live_resource_bytes() const override;
   ResourceTelemetry resource_telemetry() const override;
@@ -229,7 +233,7 @@ class ValidatingRenderDevice final : public RenderDevice {
     BufferDesc desc;
     std::vector<std::byte> bytes;
   };
-  bool pass_active_=false;
+  std::uint64_t active_pass_id_=0,next_pass_id_=1;
   RenderTargetHandle active_target_{};
   struct StoredTarget {OffscreenTargetDesc desc;TextureHandle color;};
   std::unordered_map<std::uint32_t,StoredTarget> render_targets_;

@@ -36,6 +36,7 @@ class OpenGLRenderDevice final : public RenderDevice {
   void destroy_pipeline(PipelineHandle handle) override;
   void begin_render_pass(const RenderPassDesc& desc) override;
   void end_render_pass() override;
+  std::uint64_t active_render_pass_id() const noexcept override;
   void draw_indexed(const DrawIndexed& command) override;
 
   struct ResourceCounts {

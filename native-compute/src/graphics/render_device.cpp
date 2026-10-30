@@ -36,7 +36,7 @@ void validate_render_pass_desc(const RenderPassDesc& desc) {
 }
 
 void ValidatingRenderDevice::begin_render_pass(const RenderPassDesc& desc) {
-  if(pass_active_)throw std::logic_error("render passes cannot nest");
+  if(active_pass_id_)throw std::logic_error("render passes cannot nest");
   validate_render_pass_desc(desc);
   if(desc.target.kind==RenderTargetKind::Offscreen) {
     const auto it=render_targets_.find(desc.target.handle.id);
@@ -44,13 +44,14 @@ void ValidatingRenderDevice::begin_render_pass(const RenderPassDesc& desc) {
        it->second.desc.height!=desc.target.height)
       throw std::invalid_argument("unknown render target or mismatched pass extent");
   }
+  if(!next_pass_id_)throw std::overflow_error("render pass identity space exhausted");
   active_target_=desc.target.handle;
-  pass_active_=true;
+  active_pass_id_=next_pass_id_++;
 }
 
 void ValidatingRenderDevice::end_render_pass() {
-  if(!pass_active_)throw std::logic_error("no active render pass");
-  pass_active_=false;
+  if(!active_pass_id_)throw std::logic_error("no active render pass");
+  active_pass_id_=0;
   active_target_={};
 }
 
@@ -171,7 +172,7 @@ TextureHandle ValidatingRenderDevice::render_target_color(RenderTargetHandle han
   return it->second.color;
 }
 void ValidatingRenderDevice::destroy_render_target(RenderTargetHandle handle) {
-  if(pass_active_ && handle==active_target_)
+  if(active_pass_id_ && handle==active_target_)
     throw std::logic_error("cannot destroy the active render target");
   const auto color=render_target_color(handle);
   textures_.erase(color.id);borrowed_colors_.erase(color.id);render_targets_.erase(handle.id);
@@ -320,7 +321,7 @@ void ValidatingRenderDevice::destroy_pipeline(PipelineHandle handle) {
 }
 
 void ValidatingRenderDevice::draw_indexed(const DrawIndexed& command) {
-  if(!pass_active_)throw std::logic_error("drawing requires an active render pass");
+  if(!active_pass_id_)throw std::logic_error("drawing requires an active render pass");
   const auto pipeline = pipelines_.find(command.pipeline.id);
   const auto vb = buffers_.find(command.vertex_buffer.id);
   const auto ib = buffers_.find(command.index_buffer.id);

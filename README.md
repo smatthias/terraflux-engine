@@ -273,6 +273,28 @@ reject before backend compilation. `ContractOnly` exists for CPU validation test
 and cannot render through OpenGL. See the [pipeline contract](docs/GRAPHICS_BACKENDS.md#explicit-shader-program-identities)
 for migration and remaining shader-module work.
 
+### Exception-safe render-pass scopes
+
+Include `terraflux/graphics/render_pass.hpp` and declare the pass after its target
+and resource owners, so unwinding closes the pass before freeing their storage:
+
+```cpp
+RenderResourceOwner resources(device);
+const auto target=resources.create_render_target({640,480});
+{
+  RenderPassScope pass(device,{{640,480,RenderTargetKind::Offscreen,target}});
+  // Submit draws; an exception here still ends the pass on scope exit.
+} // Target storage remains alive until resources is destroyed.
+```
+
+A successful explicit `pass.end()` closes early and is idempotent. Destruction is
+nonthrowing and preserves the original drawing exception. Each successful begin
+has a distinct identity; stale scopes leave newer passes alone, while explicit
+closure reports an ownership mismatch. The device/context must outlive the scope.
+Viewer passes use these guards in both rendering modes. Rendering errors still
+propagate to the viewer's existing error handler; native/Mesa recovery tests also
+verify that the device can start a new pass after the failure and cleanup.
+
 ### Wildfire replay and runtime checks
 
 ```bash
@@ -539,18 +561,18 @@ hours or release-readiness guarantees. The PS4 backend is unimplemented.
 
 | Desktop engine — Phases 1–9 | Full roadmap including PS4 |
 | --- | --- |
-| **~88%** (previously ~87%) | **~59%** (previously ~58%) |
+| **~88%** (unchanged) | **~59%** (unchanged) |
 
 | Phase | Component | Estimated completion |
 | --- | --- | ---: |
 | 1 | Core extraction | 100% |
-| 2 | Rendering abstraction | ~88% (previously ~86%) |
+| 2 | Rendering abstraction | ~89% (previously ~88%) |
 | 3 | OpenGL backend | ~91% (previously ~90%) |
 | 4 | 3D terrain renderer | 75% |
 | 5 | Simulation visualization | 65% |
 | 6 | Shader system | ~82% (previously ~80%) |
 | 7 | Scene and asset system | ~90% (previously 86%) |
-| 8 | Engine runtime | ~88% (previously ~86%) |
+| 8 | Engine runtime | ~89% (previously ~88%) |
 | 9 | Performance | ~75% (previously ~70%) |
 | 10 | PS4 backend | 0% |
 
@@ -587,7 +609,12 @@ preservation and subsequent geometry state restoration. The viewer now supports
 `--offscreen` with transactional target resize, retained-target scaling on failure,
 and direct rendering if the first target cannot be admitted. Smoke tests validate
 composited pixels, actual window resize recovery, asset lifecycle and wildfire replay.
-Next planned implementation: exception-safe render-pass scopes and cleanup recovery.
+Viewer terrain, object and compositing passes now use `RenderPassScope`. Scope
+exit ends the owned pass before resource cleanup, including when drawing throws.
+Monotonic pass IDs keep stale scopes from ending newer passes. Native/Mesa tests
+exercise exceptions, failed draws, budget rejection, cleanup and subsequent rendering.
+This hardening leaves the rounded overall progress estimates unchanged.
+Next planned implementation: terrain tiling groundwork with seam and bounds tests.
 See the [prioritized gaps and acceptance criteria](docs/ENGINE_BASELINE.md#remaining-renderer-work-in-priority-order). GPU meshes are created on demand; CPU model data
 and decoded image recipes remain eager and retained for reattachment. Asynchronous streaming, skeletal animation
 and full glTF/IBL support remain future work.

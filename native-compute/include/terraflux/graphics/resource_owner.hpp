@@ -15,6 +15,7 @@ namespace terraflux::graphics {
 // outlive this scope. The destructor releases render targets, pipelines, textures then buffers,
 // including when asset loading or shader compilation throws partway through.
 // End render passes before destroying or resetting their target-owning scope.
+// Declare RenderPassScope after this owner to enforce that order during unwinding.
 // This object is deliberately not copyable or movable.
 class RenderResourceOwner {
  public:

@@ -360,7 +360,7 @@ A failed admission, unsupported extent or active-target retirement preserves the
 old allocation and destroys the candidate. Reset is explicit/idempotent and the
 destructor provides best-effort cleanup. Resize/reset must run between passes.
 Destroying the owning helper during an active pass remains a caller error;
-exception-safe pass scopes are the next lifecycle increment.
+exception-safe pass scopes below provide the intended ownership order.
 
 The viewer catches resize failures before drawing. It retains and scales the old
 target, or draws directly if there is no allocation yet. It retries after changes
@@ -391,3 +391,45 @@ off instancing to avoid unrelated ring allocations during the admission check.
 CI separately exercises first-allocation fallback, mixed-format asset lifecycle
 and wildfire replay through the offscreen path. Display-independent CTest still
 has 14 suites. Physical GPU validation remains outstanding.
+
+
+## Exception-safe render-pass scopes
+
+Include `terraflux/graphics/render_pass.hpp` for RenderPassScope. Its constructor
+begins a pass; failed begins acquire no ownership. Declare it after every resource
+owner needed by the pass. Its nonthrowing destructor ends the owned active pass,
+so stack unwinding closes it before target, texture or geometry storage is released.
+The device and GL context must outlive the guard. Copying and moving are disabled.
+
+`end()` supports early closure and is idempotent after success. It propagates an
+end failure and keeps the guard armed for destructor cleanup. Destruction catches
+cleanup failures to preserve the original exception; this is best-effort cleanup,
+not recovery of a lost device/context. Existing backends end a valid owned pass
+without issuing fallible driver commands. They retain normal nesting and draw
+validation rules.
+
+RenderDevice::active_render_pass_id() is a noexcept query: zero means inactive,
+and each successful begin receives a nonzero, monotonically increasing identity.
+Invalid descriptors or nested begins leave identity/state unchanged. ID exhaustion
+rejects a new begin rather than recycling identity. The validating backend owns
+this state; OpenGL delegates to its validating mirror.
+
+The guard checks identity before closure. If raw calls ended/replaced its pass,
+`active()` returns false, explicit `end()` reports the mismatch, and destruction
+leaves any newer pass alone. Mixing raw calls with guards is therefore detectable;
+ordinary callers should let the guard manage its pass. A successfully closed guard
+also cannot interfere with a later pass in the same lexical scope.
+
+All viewer terrain, object and composite passes use RenderPassScope, retaining
+explicit close points for pass boundaries and readback. Rendering exceptions
+propagate to the existing top-level error handler after pass/resource unwinding.
+They are not silently retried. Native tests cover normal implicit exit, explicit
+and repeated end, invalid/nested construction, stale ownership, original exception
+preservation, invalid draw/admission failures and a subsequent successful pass.
+Mesa tests additionally inject scene exceptions, invalid draws, feedback sampling
+and budget rejection inside owned offscreen passes; they check that target and
+composite resources return to baseline and that a later window pass renders pixels.
+These are controlled validation failures, not simulated hardware device loss.
+
+Next: terrain tiling groundwork with bounded geometry, seam and bounds tests,
+preserving simulation outputs. Physical GPU validation remains outstanding.

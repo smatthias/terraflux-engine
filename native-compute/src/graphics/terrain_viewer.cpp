@@ -1,5 +1,6 @@
 #include <terraflux/graphics/opengl_device.hpp>
 #include <terraflux/graphics/composite.hpp>
+#include <terraflux/graphics/render_pass.hpp>
 #include <terraflux/graphics/terrain_upload.hpp>
 #include <terraflux/graphics/mesh_upload.hpp>
 #include <terraflux/graphics/resource_owner.hpp>
@@ -1170,7 +1171,7 @@ int main(int argc, char** argv) {
                     cell_size, fire_field ? fire_field->width : 1,
                     fire_field ? fire_field->height : 1, engine_time);
       if(record_gpu)device.begin_gpu_timing();
-      device.begin_render_pass({scene_target});
+      RenderPassScope terrain_pass(device,{scene_target});
       DrawIndexed command{pipeline, vb, ib, 0,
           static_cast<std::uint32_t>(upload.indices.size()), {{0, camera}}, {}};
       if (fire_buffer) command.storage_buffers.push_back({1, *fire_buffer});
@@ -1184,9 +1185,9 @@ int main(int argc, char** argv) {
         else if(lifecycle_terrain!=terrain_snapshot)
           throw std::runtime_error("terrain framebuffer changed during asset lifecycle");
       }
-      device.end_render_pass();
+      terrain_pass.end();
       // Preserve terrain color and depth for opaque/transparent object draws.
-      device.begin_render_pass({scene_target,AttachmentLoadOp::Load,AttachmentLoadOp::Load});
+      RenderPassScope object_pass(device,{scene_target,AttachmentLoadOp::Load,AttachmentLoadOp::Load});
       if(options.smoke_test && !terrain_snapshot.empty() &&
          device.capture_rgba(scene_width,scene_height)!=terrain_snapshot)
         throw std::runtime_error("load pass changed preserved terrain color");
@@ -1327,7 +1328,7 @@ int main(int argc, char** argv) {
                   << queue_stats.state_groups << " state groups, "
                   << transparent_draws << " transparent draws\n";
       }
-      device.end_render_pass();
+      object_pass.end();
       if(options.smoke_test && imported &&
          (!imported->uses_scene_file || !imported->scene_instances.empty())) {
         if(imported->uses_pbr) {
@@ -1360,9 +1361,9 @@ int main(int argc, char** argv) {
       if(offscreen.target()) {
         const auto source=options.smoke_test?device.capture_rgba(scene_width,scene_height):
                                             std::vector<std::uint8_t>{};
-        device.begin_render_pass({window_target});
+        RenderPassScope composite_pass(device,{window_target});
         compositor->draw(offscreen.color());++frame_draws;
-        device.end_render_pass();
+        composite_pass.end();
         if(options.smoke_test) {
           const auto presented=device.capture_rgba(width,height);
           for(std::uint64_t y=0;y<window_target.height;++y)

@@ -1121,6 +1121,10 @@ void OpenGLRenderDevice::begin_render_pass(const RenderPassDesc& desc) {
   if(mask)impl_->gl.Clear(mask);
 }
 
+std::uint64_t OpenGLRenderDevice::active_render_pass_id() const noexcept {
+  return impl_->validator.active_render_pass_id();
+}
+
 void OpenGLRenderDevice::end_render_pass() {
   impl_->validator.end_render_pass();
 }

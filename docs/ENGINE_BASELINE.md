@@ -148,5 +148,7 @@ Borrowed sampled color and a reusable explicit-shader fullscreen composition pas
 are also implemented. See [Sampled target color and fullscreen composition](GRAPHICS_BACKENDS.md#sampled-target-color-and-fullscreen-composition).
 Opt-in viewer composition and transactional resize recovery are also implemented;
 see [Viewer offscreen mode and transactional resizing](GRAPHICS_BACKENDS.md#viewer-offscreen-mode-and-transactional-resizing).
-The next lifecycle increment is exception-safe pass scopes. The pinned P1 gap still
-includes broader attachment formats and effects. Physical GPU evidence is still outstanding.
+Exception-safe render-pass scopes now cover the viewer's pass boundaries and
+controlled-failure cleanup/recovery tests; see [Exception-safe render-pass scopes](GRAPHICS_BACKENDS.md#exception-safe-render-pass-scopes).
+The next implementation targets the pinned P1 terrain tiling gap with seam/bounds
+tests. Broader attachment formats/effects and physical GPU evidence remain outstanding.

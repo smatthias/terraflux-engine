@@ -1,5 +1,6 @@
 #include <terraflux/graphics/opengl_device.hpp>
 #include <terraflux/graphics/composite.hpp>
+#include <terraflux/graphics/render_pass.hpp>
 #include <terraflux/graphics/resource_owner.hpp>
 #include <terraflux/graphics/terrain_upload.hpp>
 #define GLFW_INCLUDE_NONE
@@ -18,6 +19,50 @@ template<class F> void rejects(F&& f) {
   bool rejected=false;try{f();}catch(const std::exception&){rejected=true;}
   check(rejected,"invalid target operation was accepted");
 }
+void verify_scope_recovery(OpenGLRenderDevice& device) {
+  const auto counts=device.live_resource_counts();
+  const auto bytes=device.live_resource_bytes();
+  const auto limit=device.resource_telemetry().limit_bytes;
+  for(int failure=0;failure<4;++failure) {
+    bool caught=false;
+    try {
+      RenderResourceOwner owner(device);
+      FullscreenComposite composite(device);
+      const auto target=owner.create_render_target({16,16});
+      RenderPassScope pass(device,{{16,16,RenderTargetKind::Offscreen,target}});
+      if(failure==0)throw std::runtime_error("original GL scene exception");
+      if(failure==1)device.draw_indexed({});
+      if(failure==2)composite.draw(device.render_target_color(target));
+      if(failure==3) {
+        device.set_resource_byte_budget(device.live_resource_bytes().total());
+        owner.create_render_target({1,1});
+      }
+    } catch(const std::exception& error) {
+      caught=true;
+      if(failure==0)check(std::string(error.what())=="original GL scene exception",
+                           "pass cleanup replaced original GL scene exception");
+    }
+    device.set_resource_byte_budget(limit);
+    check(caught && !device.active_render_pass_id(),"GL failure left an active render pass");
+    check(device.live_resource_counts()==counts && device.live_resource_bytes()==bytes,
+          "GL pass unwinding leaked target/composite storage");
+    RenderPassScope recovered(device,{{64,64},AttachmentLoadOp::Clear,
+        AttachmentLoadOp::Clear,{0,1,0,1}});
+    const auto pixels=device.capture_rgba(64,64);
+    check(pixels[0]==0 && pixels[1]==255 && pixels[2]==0,"GL rendering did not recover after exception");
+  }
+  check(!device.active_render_pass_id(),"GL normal scope exit did not end pass");
+  std::uint64_t replacement=0;
+  {
+    RenderPassScope stale(device,{{64,64}});
+    device.end_render_pass();device.begin_render_pass({{64,64}});
+    replacement=device.active_render_pass_id();
+    rejects([&]{stale.end();});
+  }
+  check(device.active_render_pass_id()==replacement,"stale GL scope closed a newer pass");
+  device.end_render_pass();
+}
+
 void verify(OpenGLRenderDevice& device) {
   const auto baseline=device.live_resource_counts();
   const auto bytes=device.live_resource_bytes();
@@ -148,8 +193,8 @@ int main() {
     std::unique_ptr<GLFWwindow,decltype(&glfwDestroyWindow)> window(
         glfwCreateWindow(64,64,"Offscreen tests",nullptr,nullptr),glfwDestroyWindow);
     check(bool(window),"could not create GL 4.3 test context");glfwMakeContextCurrent(window.get());
-    OpenGLRenderDevice device;verify(device);
-    std::cout<<"Offscreen GL: attachments, sampled composition, feedback rejection, budgets and cleanup passed\n";
+    OpenGLRenderDevice device;verify_scope_recovery(device);verify(device);
+    std::cout<<"Offscreen GL: attachments, composition, exception recovery, budgets and cleanup passed\n";
   } catch(const std::exception& error) {std::cerr<<error.what()<<'\n';result=1;}
   glfwTerminate();return result;
 }
