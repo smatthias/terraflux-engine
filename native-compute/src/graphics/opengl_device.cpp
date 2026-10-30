@@ -320,6 +320,9 @@ ShaderLayout reflect_program(const GL& gl, GLuint program, const ShaderLayout& e
                             3, props, 3, nullptr, values);
     const auto name = resource_name(gl, program, GL_PROGRAM_INPUT,
                                     static_cast<GLuint>(i), values[0]);
+    // Some Mesa drivers expose gl_InstanceID in PROGRAM_INPUT reflection.
+    // Built-in gl_* variables are not application vertex attributes.
+    if (name.starts_with("gl_")) continue;
     const auto match = std::find_if(expected.attributes.begin(), expected.attributes.end(),
         [&](const VertexAttribute& attr) { return attr.semantic == name; });
     if (match == expected.attributes.end())
