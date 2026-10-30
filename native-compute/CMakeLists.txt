@@ -18,6 +18,7 @@ add_library(terraflux_compute STATIC
   src/assets/gltf.cpp
   src/terrain_mesh.cpp
   src/terrain_tiles.cpp
+  src/terrain_lod.cpp
 )
 find_package(PNG REQUIRED)
 find_package(JPEG REQUIRED)
@@ -92,6 +93,10 @@ if(BUILD_TESTING)
   add_test(NAME terraflux-terrain-tile-tests COMMAND terraflux-terrain-tile-tests)
 
   add_executable(terraflux-terrain-mesh-tests tests/terrain_mesh_tests.cpp)
+  add_executable(terraflux-terrain-lod-tests tests/terrain_lod_tests.cpp)
+  target_link_libraries(terraflux-terrain-lod-tests PRIVATE terraflux_graphics)
+  add_test(NAME terraflux-terrain-lod-tests COMMAND terraflux-terrain-lod-tests)
+
   target_link_libraries(terraflux-terrain-mesh-tests PRIVATE terraflux_compute)
   add_test(NAME terraflux-terrain-mesh-tests COMMAND terraflux-terrain-mesh-tests)
 
