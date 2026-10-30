@@ -27,7 +27,7 @@ void creates_and_cleans(){
     const auto selected=resources.create_buffer({BufferUsage::Vertex,data.size()},data);
     resources.create_buffer({BufferUsage::Uniform,data.size()},data);
     resources.create_texture2d({2,2},std::span(data).first(16));
-    resources.create_pipeline({terraflux::graphics::terrain_shader_layout(),true});
+    resources.create_pipeline({terraflux::graphics::ShaderProgramId::Terrain,terraflux::graphics::terrain_shader_layout(),true});
     check(resources.tracked_buffer_count()==2 &&
           resources.tracked_texture_count()==1 &&
           resources.tracked_pipeline_count()==1,"tracks each GPU resource kind");
@@ -47,6 +47,22 @@ void creates_and_cleans(){
   }
   check(backend.live_buffer_count()==0,"destructor after reset harmless");
 }
+void offscreen_ownership() {
+  ValidatingRenderDevice backend;
+  try {
+    RenderResourceOwner resources(backend);
+    resources.create_render_target({8,8});
+    check(resources.tracked_render_target_count()==1 && backend.live_render_target_count()==1,
+          "owner tracks offscreen storage");
+    resources.create_render_target({0,8});
+  } catch(const std::invalid_argument&) {}
+  check(!backend.live_render_target_count() && backend.live_resource_bytes().total()==0,
+        "partial target construction unwinds without leaking storage");
+  RenderResourceOwner resources(backend);
+  resources.create_render_target({4,4});resources.reset();resources.reset();
+  check(!resources.tracked_render_target_count() && !backend.live_render_target_count(),
+        "offscreen owner reset is idempotent");
+}
 void exception_cleanup(){
   ValidatingRenderDevice backend;
   std::array<std::byte,32> data{};
@@ -55,7 +71,7 @@ void exception_cleanup(){
     RenderResourceOwner resources(backend);
     resources.create_buffer({BufferUsage::Vertex,data.size()},data);
     resources.create_texture2d({2,2},std::span(data).first(16));
-    resources.create_pipeline({terraflux::graphics::terrain_shader_layout(),true});
+    resources.create_pipeline({terraflux::graphics::ShaderProgramId::Terrain,terraflux::graphics::terrain_shader_layout(),true});
     // Validation backend fails before creating a new GPU resource.
     resources.create_texture2d({2,2},std::span(data).first(8));
   }catch(const std::invalid_argument&){caught=true;}
@@ -82,7 +98,7 @@ void dynamic_asset_lifetime() {
     asset->vertex=asset->resources.create_buffer({BufferUsage::Vertex,bytes.size()},bytes);
     asset->resources.create_buffer({BufferUsage::Index,bytes.size()},bytes);
     asset->resources.create_texture2d({2,2},std::span(bytes).first(16));
-    asset->resources.create_pipeline({terrain_shader_layout(),true});
+    asset->resources.create_pipeline({terraflux::graphics::ShaderProgramId::Terrain,terrain_shader_layout(),true});
     asset->ring=std::make_unique<OpaqueRenderQueue::InstanceBufferRing>(backend);
     asset->ring->begin_frame();
     (void)asset->ring->acquire(2);
@@ -135,11 +151,13 @@ void shared_texture_lifetime(){
   auto first=cache.acquire("shared",{2,2},pixels);
   const auto original=first->handle();
   auto second=cache.acquire("shared",{2,2},pixels);
-  check(first==second && backend.live_texture_count()==1,"models share one texture allocation");
+  check(first==second && backend.live_texture_count()==1 && backend.live_resource_bytes().texture_bytes==16,
+        "models share one texture allocation counted once");
   first.reset();
   check(backend.live_texture_count()==1 && second->handle()==original,"one model release preserves another lease");
   second.reset();
-  check(!backend.live_texture_count() && cache.size()==0 && !cache.find("shared"),
+  check(!backend.live_texture_count() && backend.live_resource_bytes().texture_bytes==0 &&
+        cache.size()==0 && !cache.find("shared"),
         "last material release evicts GPU texture despite weak cache entry");
   auto renewed=cache.acquire("shared",{2,2},pixels);
   check(renewed->handle()!=original,"expired entry creates a fresh valid GPU resource");
@@ -163,9 +181,10 @@ int main(){
   try{
     creates_and_cleans();
     exception_cleanup();
+    offscreen_ownership();
     dynamic_asset_lifetime();
     shared_texture_lifetime();
-    std::cout<<"GPU resource ownership: 4 test groups passed\n";
+    std::cout<<"GPU resource ownership: 5 test groups passed\n";
   }catch(const std::exception& e){
     std::cerr<<"GPU ownership test failed: "<<e.what()<<'\n';return 1;
   }

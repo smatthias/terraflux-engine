@@ -9,6 +9,7 @@ add_library(terraflux_compute STATIC
   src/scene.cpp
   src/scene_io.cpp
   src/runtime.cpp
+  src/residency_state.cpp
   src/assets/obj.cpp
   src/assets/scene_assets.cpp
   src/assets/material.cpp
@@ -16,6 +17,7 @@ add_library(terraflux_compute STATIC
   src/assets/image.cpp
   src/assets/gltf.cpp
   src/terrain_mesh.cpp
+  src/terrain_tiles.cpp
 )
 find_package(PNG REQUIRED)
 find_package(JPEG REQUIRED)
@@ -28,8 +30,10 @@ target_link_libraries(terraflux-compute-runner PRIVATE terraflux_compute)
 
 # Device abstraction and terrain upload data: no OpenGL or platform SDK dependencies.
 add_library(terraflux_graphics STATIC
+  src/graphics/composite.cpp
   src/graphics/render_device.cpp
   src/graphics/terrain_upload.cpp
+  src/graphics/terrain_tiles.cpp
   src/graphics/mesh_upload.cpp
   src/graphics/visibility.cpp
   src/replay.cpp
@@ -71,6 +75,10 @@ if(BUILD_TESTING)
       "${CMAKE_SOURCE_DIR}/../examples/assets/textured_multi_mesh.gltf"
       "${CMAKE_SOURCE_DIR}/../examples/assets/tangent_blend.gltf")
 
+  add_executable(terraflux-cpu-recipe-tests tests/cpu_recipe_tests.cpp)
+  target_link_libraries(terraflux-cpu-recipe-tests PRIVATE terraflux_compute)
+  add_test(NAME terraflux-cpu-recipe-tests COMMAND terraflux-cpu-recipe-tests)
+
   add_executable(terraflux-material-tests tests/material_tests.cpp)
   target_link_libraries(terraflux-material-tests PRIVATE terraflux_compute)
   add_test(NAME terraflux-material-tests COMMAND terraflux-material-tests)
@@ -78,6 +86,10 @@ if(BUILD_TESTING)
   add_executable(terraflux-mesh-upload-tests tests/mesh_upload_tests.cpp)
   target_link_libraries(terraflux-mesh-upload-tests PRIVATE terraflux_graphics)
   add_test(NAME terraflux-mesh-upload-tests COMMAND terraflux-mesh-upload-tests)
+
+  add_executable(terraflux-terrain-tile-tests tests/terrain_tile_tests.cpp)
+  target_link_libraries(terraflux-terrain-tile-tests PRIVATE terraflux_graphics)
+  add_test(NAME terraflux-terrain-tile-tests COMMAND terraflux-terrain-tile-tests)
 
   add_executable(terraflux-terrain-mesh-tests tests/terrain_mesh_tests.cpp)
   target_link_libraries(terraflux-terrain-mesh-tests PRIVATE terraflux_compute)
@@ -111,4 +123,9 @@ if(TERRAFLUX_WITH_OPENGL)
 
   add_executable(terraflux-terrain-viewer src/graphics/terrain_viewer.cpp)
   target_link_libraries(terraflux-terrain-viewer PRIVATE terraflux_opengl)
+  if(BUILD_TESTING)
+    # Run explicitly under Xvfb; ordinary native CTest needs no display server.
+    add_executable(terraflux-offscreen-tests tests/offscreen_gl_tests.cpp)
+    target_link_libraries(terraflux-offscreen-tests PRIVATE terraflux_opengl)
+  endif()
 endif()

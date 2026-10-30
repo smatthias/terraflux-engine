@@ -1,4 +1,8 @@
 #include <terraflux/runtime.hpp>
+#include <terraflux/scene_residency.hpp>
+#include <terraflux/residency_state.hpp>
+#include <chrono>
+#include <memory>
 #include <terraflux/scene_io.hpp>
 
 #include <cmath>
@@ -251,6 +255,144 @@ void scene_playback_controls() {
   playback.reset();
   check(!playback.paused() && near(playback.simulated_seconds(),0),"scene clock reset");
 }
+void scene_residency_api() {
+  struct Instance {terraflux::scene::NodeId node;std::uint32_t mesh_index;std::shared_ptr<int> resource;};
+  using Residency=terraflux::runtime::SceneResidency<Instance>;
+  terraflux::scene::Scene graph;
+  graph.declare_mesh_asset("model","model.obj");
+  const auto first=graph.create_node("First"),second=graph.create_node("Second",first);
+  graph.set_mesh_asset(first,"model");graph.set_mesh_asset(second,"model");
+  graph.set_transform(first,{{3,0,0},{0,0,0},{1,1,1}});
+  std::vector<Instance> live{{first,0,std::make_shared<int>(1)},
+                            {first,1,std::make_shared<int>(2)},
+                            {second,0,std::make_shared<int>(3)}};
+  Residency residency;
+  check(residency.nodes(live)==std::vector<terraflux::scene::NodeId>{first,second},
+        "selection candidates deduplicate expanded mesh instances");
+  check(residency.selected(live)==first && residency.cycle(live)==second &&
+        residency.cycle(live)==first && residency.cycle(live,false)==second,
+        "selection wraps in both directions");
+  residency.select(live,first);
+  rejects([&]{residency.select(live,0);},"nonbinding root cannot be selected");
+  Residency empty_selection;
+  check(!empty_selection.selected({}) && !empty_selection.cycle({}),"empty selection is safe");
+  std::vector<bool> resident{true,true};
+  int retirements=0;
+  const auto evict=[&]{
+    const auto refs=Residency::reference_counts(live,2);
+    for(std::size_t i=0;i<2;++i)if(!refs[i])resident[i]=false;
+  };
+  const auto strip=[](Instance& instance){instance.resource.reset();};
+  check(residency.detach(graph,live,first,strip,[&]{++retirements;},evict),"runtime API detaches node");
+  check(residency.selected(live)==first && residency.nodes(live).size()==2,
+        "detached nodes stay selected and available for activation");
+  check(live.size()==1 && resident[0] && !resident[1] && retirements==1,
+        "shared mesh survives while unused mesh evicts");
+  check(!graph.get(first).mesh_instance && graph.get(second).parent==first &&
+        graph.get(second).mesh_instance,"detach preserves child hierarchy and draw binding");
+  check(residency.detached().at(first).instances.size()==2 &&
+        !residency.detached().at(first).instances[0].resource,
+        "saved CPU recipes do not retain resources");
+  check(!residency.detach(graph,live,first,strip,[]{},evict),"duplicate detach is a no-op");
+  std::weak_ptr<int> staged;
+  int prepared=0;
+  rejects([&]{residency.reattach(graph,live,first,[&](Instance& instance){
+    resident[instance.mesh_index]=true;
+    instance.resource=std::make_shared<int>(7);staged=instance.resource;
+    if(++prepared==2)throw std::runtime_error("preparation failed");
+  },evict);},"resource preparation failure propagates");
+  check(live.size()==1 && staged.expired() && !resident[1] && resident[0] &&
+        !graph.get(first).mesh_instance && residency.detached().contains(first),
+        "failed reattachment releases staged resources and preserves detached state");
+  const auto prepare=[&](Instance& instance){
+    resident[instance.mesh_index]=true;instance.resource=std::make_shared<int>(9);
+  };
+  const auto stats=residency.statistics(live);
+  check(stats.instances==1 && stats.referenced_meshes==1 && stats.detached_nodes==1 &&
+        stats.saved_instances==2,"residency diagnostics distinguish live and saved instances");
+  int admissions=0;
+  residency.set_budget({1,3});
+  rejects([&]{residency.reattach(graph,live,first,[&](Instance&){++admissions;},evict);},
+          "mesh residency budget rejects new mesh before preparation");
+  residency.set_budget({2,2});
+  rejects([&]{residency.reattach(graph,live,first,[&](Instance&){++admissions;},evict);},
+          "expanded instance budget enforced before preparation");
+  check(admissions==0 && live.size()==1 && residency.detached().contains(first) &&
+        !graph.get(first).mesh_instance,"budget rejection preserves current residency and graph");
+  residency.set_budget({2,3});
+
+  check(residency.reattach(graph,live,first,prepare,evict) && live.size()==3 &&
+        graph.get(first).mesh_asset=="model" && resident[1],"successful reattachment publishes complete node");
+  check(!residency.reattach(graph,live,first,prepare,evict),"duplicate attachment is a no-op");
+  residency.check_budget(live);
+  const auto admitted=residency.statistics(live);
+  check(admitted.instances==3 && admitted.referenced_meshes==2 && admitted.detached_nodes==0,
+        "shared mesh aliases count once at exact budget boundary");
+  residency.set_budget({0,0});
+  rejects([&]{residency.check_budget(live);},"zero budget rejects nonempty live set");
+  residency.check_budget({});
+
+  const auto world=graph.world_matrix(second).transformPoint({0,0,0});
+  check(near(world.x,3),"parent transform survives residency changes");
+  rejects([&]{(void)Residency::reference_counts(live,1);},"invalid mesh index rejected");
+  // Version 1 primary-mesh binding also survives the same API.
+  terraflux::scene::Scene legacy;const auto node=legacy.create_node("Legacy");
+  legacy.set_mesh_instance(node,true);
+  std::vector<Instance> old{{node,0,{}}};Residency old_residency;
+  old_residency.detach(legacy,old,node,strip,[]{},[]{});
+  old_residency.reattach(legacy,old,node,[](Instance&){},[]{});
+  check(old.size()==1 && legacy.get(node).mesh_instance && !legacy.get(node).mesh_asset,
+        "legacy binding restored without named asset");
+}
+void residency_state_persistence() {
+  using namespace terraflux::runtime;
+  terraflux::scene::Scene graph;
+  graph.declare_mesh_asset("asset","model.obj");
+  const auto first=graph.create_node("First"),second=graph.create_node("Second");
+  graph.set_mesh_asset(first,"asset");graph.set_mesh_asset(second,"asset");
+  ResidencyState state{residency_signature(graph),{second,first},second};
+  const auto text=serialize_residency_state(state);
+  const auto restored=deserialize_residency_state(text);
+  validate_residency_state(restored,graph);
+  check(restored.inactive==std::vector<terraflux::scene::NodeId>{first,second} &&
+        restored.selected==second && serialize_residency_state(restored)==text,
+        "state serialization is canonical and preserves inactive selection");
+  auto changed=graph;changed.set_transform(first,{{1,0,0},{},{1,1,1}});
+  rejects([&]{validate_residency_state(restored,changed);},"mismatched authored scene rejected");
+  rejects([&]{validate_residency_state(restored,graph,"other.obj");},"legacy primary source mismatch rejected");
+  auto invalid=restored;invalid.inactive={first,first};
+  rejects([&]{(void)serialize_residency_state(invalid);},"duplicate inactive IDs rejected");
+  invalid=restored;invalid.inactive={0};
+  rejects([&]{(void)serialize_residency_state(invalid);},"root state binding rejected");
+  invalid=restored;invalid.inactive={99};
+  rejects([&]{validate_residency_state(invalid,graph);},"missing node binding rejected");
+  const auto parent=graph.create_node("Nonbinding");
+  invalid={residency_signature(graph),{parent},std::nullopt};
+  rejects([&]{validate_residency_state(invalid,graph);},"nonbinding state node rejected");
+  auto bad_version=text;bad_version.replace(bad_version.find("\"version\":1"),11,"\"version\":2");
+  rejects([&]{(void)deserialize_residency_state(bad_version);},"unknown state version rejected");
+  rejects([&]{(void)deserialize_residency_state(std::string(65537,'x'));},"state byte bound enforced");
+  auto null_selected=restored;null_selected.selected.reset();
+  check(!deserialize_residency_state(serialize_residency_state(null_selected)).selected,"null selection roundtrip");
+  const auto directory=std::filesystem::temp_directory_path()/
+      ("terraflux-state-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+  struct Cleanup {std::filesystem::path path;~Cleanup(){std::error_code e;std::filesystem::remove_all(path,e);}} cleanup{directory};
+  std::filesystem::create_directories(directory);
+  const auto file=directory/"state.json";
+  save_residency_state(file,restored);
+  const auto read=[&]{std::ifstream input(file);return std::string(std::istreambuf_iterator<char>(input),{});};
+  check(read()==text,"saved file matches canonical state");
+  save_residency_state(file,null_selected);
+  const auto previous=read();
+  // Structural validation fails before touching an existing destination.
+  invalid=restored;invalid.scene_signature="bad";
+  save_residency_state(file,null_selected);
+  rejects([&]{save_residency_state(file,invalid);},"invalid state write rejected");
+  check(read()==previous,"failed serialization preserves prior state file");
+  rejects([&]{save_residency_state(directory,restored);},"rename failure propagated");
+  check(std::distance(std::filesystem::directory_iterator(directory),std::filesystem::directory_iterator{})==1,
+        "failed save removes temporary file");
+}
 void example_scene(const std::string& path){
   std::ifstream file(path);
   if(!file)throw std::runtime_error("scene example not found");
@@ -277,8 +419,10 @@ int main(int argc,char** argv) {
     runtime_components_and_profiler();
     motion_components();
     scene_playback_controls();
+    scene_residency_api();
+    residency_state_persistence();
     example_scene(argv[1]);
-    std::cout<<"TerraFlux runtime: 7 test groups passed\n";
+    std::cout<<"TerraFlux runtime: 9 test groups passed\n";
   }catch(const std::exception& e){
     std::cerr<<"Runtime test failed: "<<e.what()<<'\n';
     return 1;

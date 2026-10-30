@@ -7,6 +7,14 @@ TerraFlux provides a deterministic grid-based simulation foundation
 for environmental modeling, spatial computation, and future digital
 twin applications.
 
+## Verified engine checkpoint
+
+The [desktop baseline checkpoint](docs/ENGINE_BASELINE.md) pins implementation
+revision `c64cb0470c28b2eb73dc81e0b01fedc8386676b8`, records its validation,
+provides an isolated-worktree reproduction guide and lists remaining renderer
+gaps in priority order. It is a development baseline, not a completed roadmap
+or physical-GPU certification.
+
 ## Current capabilities
 
 - Native C++20 grid-based wildfire spread simulation
@@ -20,6 +28,7 @@ twin applications.
 - Scene pause/resume, single stepping and transactional asset unload/reload
 - Reusable CPU material/path/image resolution and sampler-aware texture keys
 - Reference-counted GPU texture leases; final material release evicts the allocation
+- Headless scene residency API with callback-driven resource preparation and eviction
 - Frustum culling, opaque hardware instancing, CPU/GPU timing and benchmarks
 
 ## Requirements
@@ -81,7 +90,9 @@ approximated as nonmetallic. Pure OBJ scenes retain the original diffuse path. L
 | Arrow keys / + / - | Orbit camera / zoom |
 | P | Pause/resume OBJ demo or scene Spin/Motion; camera and fire replay continue |
 | N | Advance one 1/60-second scene tick and remain paused |
-| D | Detach the first remaining drawable scene node and evict its unused mesh resources |
+| [ / ] | Select the previous / next scene binding, including inactive nodes |
+| D | Detach the selected scene node and evict its unused mesh resources |
+| A | Activate the selected inactive node if residency budgets permit |
 | U | Unload the imported asset/scene; retain terrain and wildfire playback |
 | R | Reload the original asset/scene; failed loads preserve the current asset |
 | Space | Pause/resume wildfire replay |
@@ -94,6 +105,335 @@ never accumulates; N discards a fractional pending tick. Successful reload
 resets scene animation to authored transforms and resumes its clock. Reload
 is synchronous and temporarily holds the old and new GPU scopes together.
 Static glTF hierarchies have no animation for P/N to advance.
+
+### Residency diagnostics and budgets
+
+```bash
+./build-gl/terraflux-terrain-viewer --scene examples/mixed_asset_scene.json \
+  --residency-report --max-resident-meshes 7 --max-scene-instances 17
+```
+
+`RESIDENCY_JSON` reports live draw instances, distinct referenced meshes,
+detached nodes/saved instances, configured limits and live OpenGL API resource
+counts (including terrain). Reports appear at initial admission and detach/
+reattach/reload; `--profile` also reports every 120 frames. Limits default to
+512 meshes and 1024 instances; zero intentionally rejects nonempty residency.
+These budgets apply to scene-file GPU residency, not CPU data, texture bytes,
+physical VRAM or automatic LRU eviction. Initial admission and reattachment
+reject over-budget draw sets before GPU preparation; existing state remains
+available if an interactive reattachment/reload is rejected.
+
+To open a scene inactive and activate only one node within a smaller budget:
+
+```bash
+./build-gl/terraflux-terrain-viewer --scene examples/mixed_asset_scene.json \
+  --start-inactive --activate-node 2 --max-resident-meshes 1 \
+  --max-scene-instances 1 --residency-report
+```
+
+`--select-node ID` selects without activating. The title shows node ID, name,
+and active/inactive state; brackets cycle through sorted binding IDs. Selection
+survives detachment. A rejected activation preserves current bindings and
+resources; no automatic victim eviction occurs. Inactive startup retains CPU
+recipes but uploads no drawable geometry. `--activate-node` applies once at
+startup; R reload reapplies inactive-start settings without auto-activation.
+
+### Logical resource-byte accounting
+
+```bash
+./build-gl/terraflux-terrain-viewer --scene examples/mixed_asset_scene.json \
+  --resource-budget-mib 64 --residency-report
+```
+
+An optional device-wide byte cap covers terrain, imported geometry, material/
+camera uniforms, shared textures, instance buffers and temporary reload
+candidates. The default is unlimited; the CLI accepts 0..16384 MiB. Allocations
+that would exceed the cap fail before backend creation. Existing resources are
+not automatically evicted. Reload/activation may need extra temporary capacity;
+initialization or draw-time stream allocation can fail if the cap is too small.
+
+Diagnostics add `buffer_bytes`, `texture_bytes`, `render_target_bytes`, `total_resource_bytes` and
+`resource_budget_bytes` (null when unlimited). Buffers count their capacity;
+RGBA8 textures count all generated mip levels. Shared textures count once per
+live allocation; orphaning keeps the same logical capacity. Destruction and
+full asset unload return counts to the terrain baseline.
+
+These are logical API payload bytes, not measured physical VRAM. Driver
+alignment/metadata, shader programs, query/framebuffer storage, deferred orphan
+copies and retained CPU data are excluded. No hardware memory availability or
+performance improvement is inferred from these counts.
+
+### Peaks, rejection history and recovery
+
+Residency reports include independent buffer/texture byte peaks, a combined
+`peak_total_bytes`, allocation-admission count, rejection count, remaining logical
+headroom and whether current usage exceeds a lowered cap. `last_byte_rejection`
+records the usage, request size and limit at the last rejection, or null.
+Freeing resources restores headroom without erasing history. Per-category peaks
+may occur at different times and must not be summed into a combined peak.
+
+RenderDevice telemetry can be reset explicitly: peaks rebase to current usage
+and admission/rejection history clears. These are validation-mirror admissions,
+including temporary reservations before driver creation; not physical VRAM peaks.
+Orphaning does not count as a new logical allocation.
+
+```bash
+./build-gl/terraflux-terrain-viewer --smoke-test --resource-recovery-test \
+  --residency-report --scene examples/mixed_asset_scene.json
+```
+
+The recovery check sets a cap at current logical usage, verifies a rejection
+preserves all active resource counts/bytes, detaches all drawables, then
+reattaches and renders one model within the same cap. It reports recovery;
+it does not introduce automatic eviction or retry policy into normal operation.
+
+### Retained CPU recipe payload
+
+```bash
+./build-gl/terraflux-terrain-viewer --scene examples/mixed_asset_scene.json \
+  --cpu-recipe-budget-mib 64 --resource-budget-mib 64 --residency-report
+```
+
+The optional CPU cap (0..16384 MiB; unlimited by default) limits logical retained
+vertex/index payload and decoded glTF image bytes. Reports expose category and
+combined `cpu_recipe_bytes` plus `cpu_recipe_budget_bytes`. Canonical path aliases
+share recipes and count once; separate imported files count separately. Selective GPU
+eviction/detachment does not reduce these retained recipes, which support reactivation.
+
+The scene loader checks accumulated payload after each canonical model, and the
+viewer checks its completed recipe before GPU upload. Parsing/decoding is still
+eager: transient parser buffers, source JSON/binary data, vector spare capacity,
+material strings/maps, allocator overhead and temporary upload layouts are
+excluded. This is a retained-payload admission limit, not a hard process-memory
+or peak-RSS limit. File-backed OBJ textures are decoded on demand and are not
+retained as CPU image recipes. Over-budget candidate loads reject without
+replacing an already active imported scope.
+
+### Persist selection and inactive bindings
+
+```bash
+./build-gl/terraflux-terrain-viewer --scene examples/mixed_asset_scene.json \
+  --start-inactive --activate-node 2 --save-state /tmp/terraflux-state.json
+./build-gl/terraflux-terrain-viewer --scene examples/mixed_asset_scene.json \
+  --load-state /tmp/terraflux-state.json --max-resident-meshes 1 --max-scene-instances 1
+```
+
+`--save-state` writes a separate versioned JSON file on clean exit. It records
+selected and inactive node IDs, with a compatibility fingerprint of the authored
+scene and legacy primary OBJ argument. Writes close successfully before replacing
+the destination by rename; failures preserve the prior destination. The source
+scene is unchanged. State is validated before residency admission, and changed
+scenes, invalid bindings, duplicate IDs and unsupported versions reject clearly.
+
+CLI `--select-node` overrides saved selection; `--start-inactive` makes every
+binding inactive, and one-time `--activate-node` runs afterward. R reload rereads
+the configured state file. Full asset unload retains the last residency snapshot
+for saving. Budgets, animation time, runtime transforms and camera state are not
+saved; the fingerprint is a compatibility check, not an asset-integrity signature.
+
+### Terrain tile geometry groundwork
+
+`terrain::tile_terrain_mesh` partitions the existing terrain mesh into nonempty
+CPU tiles, defaulting to 32 quads per side. Each tile has a compact mesh,
+source-vertex mapping and inclusive bounds. Adjacent tiles copy the same globally
+computed positions/normals, including after GPU packing; holes and winding are
+preserved. Aggregate tile/vertex/index limits reject over-budget candidates.
+`--terrain-tiles` enables eager tile uploads and camera-frustum culling;
+`--terrain-tile-quads 8` also enables that mode with smaller tiles. Monolithic
+rendering remains the default. `--terrain-residency` additionally releases hidden tiles and admits the visible set
+before each frame. LOD remains future work. See the [API and limits](docs/TERRAIN_TILES.md).
+
+```bash
+./build-gl/terraflux-terrain-viewer --terrain-tiles --scene examples/mixed_asset_scene.json
+LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a -s "-screen 0 1280x800x24" \
+  ./build-gl/terraflux-terrain-viewer --terrain-tile-quads 8 --smoke-test --terrain-tile-test
+```
+
+Tiled smoke mode retains an extra monolithic reference upload and compares terrain
+pixels before assets are drawn; normal tiled mode creates only tile geometry
+buffers. The three-camera `--terrain-tile-test` requires the demo terrain, tiled
+smoke mode and culling, and fails if no tiles are culled. `--no-culling` disables
+both terrain and asset culling and can be used in smoke/profile/benchmark runs.
+TERRAIN_JSON reports tile counts, draws, triangles and tile buffer bytes. Benchmark
+JSON also identifies tiled mode and reports terrain draws/culled tiles per frame.
+These functional checks do not establish a hardware speedup.
+
+```bash
+./build-gl/terraflux-terrain-viewer --terrain-residency --terrain-tile-quads 16 \
+  --scene examples/mixed_asset_scene.json --residency-report
+LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a -s "-screen 0 1280x800x24" \
+  ./build-gl/terraflux-terrain-viewer --terrain-residency --terrain-tile-quads 8 \
+  --terrain-residency-test --smoke-test
+```
+
+Selective mode retains packed CPU recipes, starts without tile GPU buffers and
+synchronizes residency with the conservative visible set between passes. An
+unchanged resident tile keeps its handles. Missing buffers are staged before any
+old resident is evicted; a failed upload preserves the previous set and bytes.
+Global byte admission therefore needs old plus staged storage temporarily.
+`--max-resident-terrain-tiles 0..4096` also enables selective mode and limits the
+committed set. Lowering an API limit retains existing storage but blocks oversized
+future sets. A visible-set admission failure reports an error and stops the viewer;
+it never silently renders terrain holes. API callers can raise a cap or request a
+smaller set and retry. Disabled culling requires every tile to be resident.
+
+CPU terrain recipes remain eager and retained in both tiled modes; the imported
+asset CPU recipe budget does not include terrain recipes. TERRAIN_JSON distinguishes
+all-tile geometry_bytes from resident_tiles/resident_geometry_bytes and reports
+admissions/evictions. The five-frame residency smoke test forces rejection and
+recovery, then full eviction and cold readmission, with monolithic pixel checks.
+
+### Terrain residency retention window
+
+```bash
+./build-gl/terraflux-terrain-viewer --terrain-retain-frames 30 --terrain-tile-quads 16
+LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a -s "-screen 0 1280x800x24" \
+  ./build-gl/terraflux-terrain-viewer --terrain-retain-frames 2 --terrain-tile-quads 8 \
+  --terrain-retention-test --smoke-test
+```
+
+`--terrain-retain-frames 0..600` enables selective residency. The default is zero
+(immediate eviction). With N > 0, a resident tile remains eligible for N successful
+visibility synchronizations after it becomes hidden. A return resets its age and
+reuses its GPU handles; hidden retained tiles are still culled from drawing.
+Required visible tiles take priority. Count and final-set byte pressure trim
+optional hidden tiles, preferring the most recently visible and then stable tile
+IDs. Staging still requires old plus new bytes; failed transitions preserve both
+residents and ages. Minimized windows do not advance the policy.
+
+TERRAIN_JSON adds retention_frames, retained_hidden and pressure_trimmed; benchmark
+JSON adds the retention setting and per-frame retention/trim averages. The six-frame
+retention test checks return without uploads, age reset and expiry, with matching
+monolithic pixels. It requires demo smoke mode, a two-update window and default
+budgets, and can use `--offscreen`. The earlier five-frame residency test requires
+zero retention. This avoids extra uploads on brief returns; physical GPU timing
+benefits remain unmeasured.
+
+### Optional offscreen viewer rendering
+
+```bash
+./build-gl/terraflux-terrain-viewer --offscreen --scene examples/mixed_asset_scene.json
+LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a -s "-screen 0 1280x800x24" \
+  ./build-gl/terraflux-terrain-viewer --offscreen --smoke-test \
+  --offscreen-resize-test --scene examples/mixed_asset_scene.json
+```
+
+`--offscreen` renders terrain and objects into an RGBA8/Depth32Float target, then
+copies its color to the window with nearest sampling. Direct window rendering
+remains the default. A successful frame adds one fullscreen draw; profiling/GPU
+queries include it. `BENCHMARK_JSON.offscreen` records the requested mode.
+
+Resize allocates a candidate before releasing the old target, so the resource
+budget must accommodate both temporarily. Failure keeps the previous target and
+scales its image into the window; initial failure falls back to direct rendering.
+A failed request is retried when window dimensions, live resource bytes or the
+budget limit change. Zero-sized/minimized windows skip rendering and keep storage.
+Target limits remain 4096 per axis and 4,000,000 pixels. OFFSCREEN_JSON reports
+allocation/recovery events and fallback, including the retained target dimensions.
+Assets unload independently of the compositor and current target.
+
+The four-frame `--offscreen-resize-test` forces a budget rejection, checks retention,
+raises the cap, retries the same requested size, resizes again and releases target
+storage. It requires `--offscreen --smoke-test`, disallows other scripted tests or
+an explicit resource byte cap, and disables instancing to isolate target admission
+from instance-ring growth. Mesa CI also checks initial fallback, mixed-format asset
+unload/reload and wildfire rendering. Pixel comparisons run only in smoke mode;
+ordinary frames perform no CPU framebuffer readback for composition.
+
+### Explicit pipeline shader identities
+
+`PipelineDesc` now starts with a required `ShaderProgramId`, followed by layout
+and depth/blend state. Built-in identities cover terrain, wildfire, untextured
+objects, textured objects, instanced textured objects, both PBR variants and fullscreen composition.
+Layout metadata is validated against the selected contract; binding names do
+not select or redirect shader source. Missing/unknown IDs and mismatched layouts
+reject before backend compilation. `ContractOnly` exists for CPU validation tests
+and cannot render through OpenGL. See the [pipeline contract](docs/GRAPHICS_BACKENDS.md#explicit-shader-program-identities)
+for migration and remaining shader-module work.
+
+### Exception-safe render-pass scopes
+
+Include `terraflux/graphics/render_pass.hpp` and declare the pass after its target
+and resource owners, so unwinding closes the pass before freeing their storage:
+
+```cpp
+RenderResourceOwner resources(device);
+const auto target=resources.create_render_target({640,480});
+{
+  RenderPassScope pass(device,{{640,480,RenderTargetKind::Offscreen,target}});
+  // Submit draws; an exception here still ends the pass on scope exit.
+} // Target storage remains alive until resources is destroyed.
+```
+
+A successful explicit `pass.end()` closes early and is idempotent. Destruction is
+nonthrowing and preserves the original drawing exception. Each successful begin
+has a distinct identity; stale scopes leave newer passes alone, while explicit
+closure reports an ownership mismatch. The device/context must outlive the scope.
+Viewer passes use these guards in both rendering modes. Rendering errors still
+propagate to the viewer's existing error handler; native/Mesa recovery tests also
+verify that the device can start a new pass after the failure and cleanup.
+
+### Terrain and fire layer visibility
+
+T toggles terrain shading and F toggles fire/burn marks; each key press toggles
+once. Startup flags `--hide-terrain` and `--hide-fire` select the same states.
+Both layers are visible by default. Window titles show their states and identify
+fire as unavailable in the terrain-only demo. LAYERS_JSON records requested states,
+fire availability and whether the terrain/fire surface is submitted.
+
+```bash
+./build-gl/terraflux-terrain-viewer --request /tmp/terraflux-request.json \
+  --response /tmp/terraflux-response.json --hide-terrain
+LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a -s "-screen 0 1280x800x24" \
+  ./build-gl/terraflux-terrain-viewer --request /tmp/terraflux-request.json \
+  --response /tmp/terraflux-response.json --layers-test --smoke-test
+```
+
+Terrain-only mode omits both flame and burned-area shading. Fire-only mode keeps
+active/burned footprints at their terrain elevation, discarding unaffected ground
+so it writes neither color nor depth. Hiding both skips surface draws while
+imported objects remain visible. Without replay data, fire visibility has no visual
+effect and hiding terrain skips the demo surface. Visibility changes do not pause,
+reset or edit replay or scene state. Fire-state buffers continue to receive replay
+updates while hidden. Selective tile mode releases surface buffers when neither
+layer needs them, and rehydrates on return; eager tiled mode keeps its buffers.
+
+The five-frame `--layers-test` requires replay smoke mode without assets or other
+scripted tests, with visible active fire and unaffected terrain in view. It checks
+both, terrain-only, fire-only, hidden and restored images. Shader animation time is
+fixed only for that diagnostic; engine/replay clocks continue at deterministic
+60 Hz, and the fire field/frame are checked unchanged over the short sequence.
+CI covers direct and resident/offscreen paths plus objects with both layers hidden.
+
+### Replay speed and timing controls
+
+Use keys **1–5** for **0.25x, 0.5x, 1x, 2x, 4x**, or set `--replay-speed` to one
+of those numeric values. The flag requires replay input. Titles and REPLAY_JSON
+show the selected rate, frame and play state; benchmark JSON records replay_speed.
+
+```bash
+./build-gl/terraflux-terrain-viewer --request /tmp/terraflux-request.json \
+  --response /tmp/terraflux-response.json --replay-speed 2
+LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a -s "-screen 0 1280x800x24" \
+  ./build-gl/terraflux-terrain-viewer --request /tmp/terraflux-request.json \
+  --response /tmp/terraflux-response.json --replay-controls-test --smoke-test
+```
+
+At 1x a source frame lasts 0.35 seconds of fixed engine time. Speed changes retain
+partial-frame progress and affect the next 60 Hz tick. Space pauses/resumes; Home
+selects frame zero and pauses; comma/period move one frame and pause. These actions
+clear pending partial progress, so paused time creates no replay backlog. Reaching
+the final frame stops immediately; Space at the end restarts from frame zero.
+A single-frame replay stays paused. Reset and stepping preserve the selected rate.
+Engine and scene clocks, camera input and flame animation timing retain their own
+rates. The compute response and its source frame data are unchanged.
+
+`--replay-controls-test` requires replay smoke mode with at least three frames,
+default initial speed, no assets and no other scripted test. Its seven frames use
+six fixed ticks per render to check rate change, pause, forward/back, resume and
+reset. Shader animation is frozen only for pixel comparisons; selected fire data
+and independent engine time are checked on every frame. CI runs monolithic and
+resident/offscreen variants. See the [replay clock contract](docs/GRAPHICS_BACKENDS.md#fixed-tick-replay-clock).
 
 ### Wildfire replay and runtime checks
 
@@ -361,33 +701,82 @@ hours or release-readiness guarantees. The PS4 backend is unimplemented.
 
 | Desktop engine — Phases 1–9 | Full roadmap including PS4 |
 | --- | --- |
-| **~76%** (previously ~75%) | **~50%** (previously ~49%) |
+| **~93%** (previously ~92%) | **~64%** (previously ~63%) |
 
 | Phase | Component | Estimated completion |
 | --- | --- | ---: |
 | 1 | Core extraction | 100% |
-| 2 | Rendering abstraction | 65% |
-| 3 | OpenGL backend | 85% |
-| 4 | 3D terrain renderer | 75% |
-| 5 | Simulation visualization | 65% |
-| 6 | Shader system | 76% |
+| 2 | Rendering abstraction | ~89% (previously ~88%) |
+| 3 | OpenGL backend | ~91% (previously ~90%) |
+| 4 | 3D terrain renderer | ~89% (previously ~88%) |
+| 5 | Simulation visualization | ~80% (previously ~75%) |
+| 6 | Shader system | ~84% (previously ~82%) |
 | 7 | Scene and asset system | ~90% (previously 86%) |
-| 8 | Engine runtime | ~70% (previously ~65%) |
-| 9 | Performance | 55% |
+| 8 | Engine runtime | ~91% (previously ~90%) |
+| 9 | Performance | ~83% (previously ~82%) |
 | 10 | PS4 backend | 0% |
 
-Latest milestones: selective scene-node detachment and geometry eviction,
+Latest milestones: selective node reattachment and on-demand GPU mesh residency,
+scene-node detachment and geometry eviction,
 shared GPU texture leases, reusable CPU material/texture
 resolution, serializable Motion,
 shared mixed-format scene assets, isolated
 GPU asset lifetimes, unload/reload with failure recovery, and independent
 scene pause/resume and single-step controls. The mixed-format example includes
-OBJ, glTF, GLB, transparent materials and repeated model references. Native testing comprises 13
+OBJ, glTF, GLB, transparent materials and repeated model references. Native testing comprises 15
 CTest suites and 71 simulation parity fixtures; CI also exercises the viewer
 under Mesa/Xvfb. See the branch's CI results for validation of each commit.
 
-Next planned work: selective node reattachment and on-demand model residency.
-Detached nodes retain their transform hierarchy; R reload restores authored scene references. Asynchronous streaming, skeletal animation
+Latest abstraction increment: backend-neutral window render-target/pass descriptions,
+explicit begin/end ordering and independent color/depth clear or load operations.
+Terrain and object rendering now use separate passes; Mesa smoke tests verify
+that a load pass preserves terrain color. The target is borrowed from the window;
+window storage creates no engine resource allocation and presentation remains GLFW-owned.
+Native tests validate descriptors and reject nested passes and draws outside a pass.
+The earlier explicit shader/pipeline identities retain shared layout validation.
+Owned offscreen targets now provide RGBA8 color and Depth32Float depth attachments,
+validated pass handles/extents, shared byte-budget admission, telemetry and scope
+cleanup. OpenGL creation checks framebuffer completeness and rolls back partial
+allocations. A dedicated Mesa test covers clear/load, depth occlusion, geometry,
+target switching, budget rejection and repeated cleanup. Native CTest remains
+15 display-independent suites; the extra GL test runs explicitly under Xvfb.
+Offscreen color now exposes a borrowed sampled texture view, with no duplicate
+byte charge and invalidation when its target is destroyed. The reusable
+`FullscreenComposite` helper copies it into a separate offscreen/window pass
+through an explicit Composite shader; feedback sampling of the active target
+rejects. Mesa tests check exact pixels, orientation, nearest scaling, depth
+preservation and subsequent geometry state restoration. The viewer now supports
+`--offscreen` with transactional target resize, retained-target scaling on failure,
+and direct rendering if the first target cannot be admitted. Smoke tests validate
+composited pixels, actual window resize recovery, asset lifecycle and wildfire replay.
+Viewer terrain, object and compositing passes now use `RenderPassScope`. Scope
+exit ends the owned pass before resource cleanup, including when drawing throws.
+Monotonic pass IDs keep stale scopes from ending newer passes. Native/Mesa tests
+exercise exceptions, failed draws, budget rejection, cleanup and subsequent rendering.
+The compute library now partitions full-resolution terrain into bounded, nonempty
+CPU tiles with local indices, source-vertex maps and inclusive geometry bounds.
+Tiles preserve global positions/normals, holes and exact triangle coverage, with
+configurable aggregate count budgets. The viewer now optionally uploads these tiles and culls their packed-geometry
+bounds against the camera frustum. Tiled smoke renders match monolithic reference
+pixels, including fire-grid lookup, offscreen composition and asset lifecycle.
+Optional `--terrain-residency` now evicts hidden tile buffers, stages missing
+visible tiles transactionally and preserves the old set on admission failure.
+CPU recipes remain retained; LOD is future work. See [terrain tile geometry](docs/TERRAIN_TILES.md).
+Optional `--terrain-retain-frames N` now keeps recently hidden GPU tiles for up
+to N successful visibility updates, with visible-first count/byte trimming and
+transactional age updates. A six-frame Mesa test checks reuse, expiry and exact
+monolithic pixels. Independent terrain/fire visibility is now available through T/F keys and
+`--hide-terrain` / `--hide-fire`. Fire-only rendering discards unaffected ground;
+hiding fire removes active/burned shading without pausing replay. The five-state
+layer test checks isolation, exact restoration, unchanged fire data and continued
+replay timing through monolithic, tiled/resident and offscreen paths.
+Replay now uses an exact fixed-tick controller with 0.25x/0.5x/1x/2x/4x rates,
+pause/resume, bounded stepping and endpoint restart. A seven-frame Mesa check
+verifies displayed fire data, backward/reset pixel restoration and independent
+engine timing. Native replay tests now cover nine groups.
+Next planned implementation: refresh the baseline checkpoint and remaining-work list.
+See the [prioritized gaps and acceptance criteria](docs/ENGINE_BASELINE.md#remaining-renderer-work-in-priority-order). GPU meshes are created on demand; CPU model data
+and decoded image recipes remain eager and retained for reattachment. Asynchronous streaming, skeletal animation
 and full glTF/IBL support remain future work.
 This desktop-engine breakdown is separate from the earlier simulation-focused
 [220-hour planning backlog](docs/ROADMAP.md).

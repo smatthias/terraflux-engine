@@ -1,7 +1,10 @@
 #pragma once
 
 #include <terraflux/texture_sampling.hpp>
+#include <array>
 #include <cstddef>
+#include <limits>
+#include <optional>
 #include <cstdint>
 #include <span>
 #include <string>
@@ -67,12 +70,52 @@ struct PipelineHandle {
   constexpr bool operator==(const PipelineHandle&) const = default;
 };
 
+enum class ShaderProgramId : std::uint8_t {
+  Unspecified, ContractOnly, Terrain, Wildfire, Object, TexturedObject,
+  InstancedTexturedObject, PbrObject, PbrInstanced, Composite
+};
 struct PipelineDesc {
+  ShaderProgramId program=ShaderProgramId::Unspecified;
   ShaderLayout layout;
   bool depth_test = true;
   bool alpha_blend = false;
   bool depth_write = true;
 };
+
+// Built-in engine identity is explicit; layout validation never selects a shader.
+ShaderLayout shader_program_layout(ShaderProgramId program);
+void validate_pipeline_desc(const PipelineDesc& desc,bool allow_contract_only=true);
+
+struct RenderTargetHandle {
+  std::uint32_t id=0;
+  constexpr explicit operator bool() const {return id!=0;}
+  constexpr bool operator==(const RenderTargetHandle&) const=default;
+};
+enum class ColorAttachmentFormat : std::uint8_t { Rgba8 };
+enum class DepthAttachmentFormat : std::uint8_t { Depth32Float };
+struct OffscreenTargetDesc {
+  std::uint32_t width=0,height=0;
+  ColorAttachmentFormat color=ColorAttachmentFormat::Rgba8;
+  DepthAttachmentFormat depth=DepthAttachmentFormat::Depth32Float;
+};
+// Window storage is borrowed. Offscreen storage is owned by a live handle;
+// pass extents must match its immutable allocation. No MSAA; color sampling uses a borrowed texture handle.
+enum class RenderTargetKind : std::uint8_t { Window, Offscreen };
+struct RenderTargetDesc {
+  std::uint32_t width=0,height=0;
+  RenderTargetKind kind=RenderTargetKind::Window;
+  RenderTargetHandle handle{};
+};
+std::uint64_t offscreen_storage_bytes(OffscreenTargetDesc desc);
+enum class AttachmentLoadOp : std::uint8_t { Load, Clear };
+struct RenderPassDesc {
+  RenderTargetDesc target;
+  AttachmentLoadOp color_load=AttachmentLoadOp::Clear;
+  AttachmentLoadOp depth_load=AttachmentLoadOp::Clear;
+  std::array<float,4> clear_color{0.065f,0.095f,0.13f,1.0f};
+  float clear_depth=1.0f;
+};
+void validate_render_pass_desc(const RenderPassDesc& desc);
 
 struct UniformBufferBinding {
   std::uint32_t slot = 0;
@@ -100,11 +143,34 @@ struct DrawIndexed {
   std::uint32_t instance_count=1; // OpenGL glDrawElementsInstanced for instance shader
 };
 
+// Logical API storage, excluding driver overhead and deferred orphan copies.
+struct ResourceBytes {
+  std::uint64_t buffer_bytes=0,texture_bytes=0,render_target_bytes=0;
+  std::uint64_t total() const {return buffer_bytes+texture_bytes+render_target_bytes;}
+  bool operator==(const ResourceBytes&) const=default;
+};
+struct BudgetRejection {
+  std::uint64_t used_bytes=0,requested_bytes=0,limit_bytes=0;
+};
+struct ResourceTelemetry {
+  ResourceBytes peak_bytes{};
+  std::uint64_t peak_total_bytes=0,allocation_count=0,budget_rejections=0,headroom_bytes=0;
+  std::uint64_t limit_bytes=std::numeric_limits<std::uint64_t>::max();
+  bool over_budget=false;
+  std::optional<BudgetRejection> last_rejection;
+};
+std::uint64_t rgba8_storage_bytes(TextureDesc desc);
+void check_resource_byte_budget(std::uint64_t used,std::uint64_t additional,std::uint64_t limit);
+
 // The engine owns this interface; no OpenGL, GLFW, PSSL, or console types
 // appear here. Buffers have explicit lifetime and bounded subrange updates.
 class RenderDevice {
  public:
   virtual ~RenderDevice() = default;
+  virtual ResourceBytes live_resource_bytes() const = 0;
+  virtual ResourceTelemetry resource_telemetry() const = 0;
+  virtual void reset_resource_telemetry() = 0;
+  virtual void set_resource_byte_budget(std::uint64_t bytes) = 0;
   virtual BufferHandle create_buffer(BufferDesc desc, std::span<const std::byte> initial_data) = 0;
   virtual void destroy_buffer(BufferHandle handle) = 0;
   virtual void update_buffer(BufferHandle handle, std::size_t offset_bytes,
@@ -115,8 +181,19 @@ class RenderDevice {
   virtual TextureHandle create_texture2d(TextureDesc desc,
                                       std::span<const std::byte> rgba8) = 0;
   virtual void destroy_texture(TextureHandle handle) = 0;
+  virtual RenderTargetHandle create_render_target(OffscreenTargetDesc desc) = 0;
+  virtual void destroy_render_target(RenderTargetHandle handle) = 0;
+  // Borrowed color view: valid until target destruction, never separately owned.
+  virtual TextureHandle render_target_color(RenderTargetHandle handle) const = 0;
   virtual PipelineHandle create_pipeline(PipelineDesc desc) = 0;
   virtual void destroy_pipeline(PipelineHandle handle) = 0;
+  // Passes cannot nest; drawing requires an active pass. End preserves target
+  // attachments; swapping/presentation remains the platform's responsibility.
+  virtual void begin_render_pass(const RenderPassDesc& desc) = 0;
+  virtual void end_render_pass() = 0;
+  // Zero means inactive. Successful begins use monotonically increasing IDs;
+  // scoped cleanup must never end a different, subsequently started pass.
+  virtual std::uint64_t active_render_pass_id() const noexcept = 0;
   virtual void draw_indexed(const DrawIndexed& command) = 0;
 };
 
@@ -132,9 +209,20 @@ class ValidatingRenderDevice final : public RenderDevice {
   void orphan_storage_buffer(BufferHandle handle) override;
   TextureHandle create_texture2d(TextureDesc desc, std::span<const std::byte> rgba8) override;
   void destroy_texture(TextureHandle handle) override;
+  RenderTargetHandle create_render_target(OffscreenTargetDesc desc) override;
+  void destroy_render_target(RenderTargetHandle handle) override;
+  TextureHandle render_target_color(RenderTargetHandle handle) const override;
   PipelineHandle create_pipeline(PipelineDesc desc) override;
   void destroy_pipeline(PipelineHandle handle) override;
+  void begin_render_pass(const RenderPassDesc& desc) override;
+  void end_render_pass() override;
+  std::uint64_t active_render_pass_id() const noexcept override {return active_pass_id_;}
   void draw_indexed(const DrawIndexed& command) override;
+  ResourceBytes live_resource_bytes() const override;
+  ResourceTelemetry resource_telemetry() const override;
+  void reset_resource_telemetry() override;
+  void set_resource_byte_budget(std::uint64_t bytes) override {byte_budget_=bytes;}
+  std::size_t live_render_target_count() const {return render_targets_.size();}
   std::size_t draw_count() const { return draw_count_; }
   std::size_t live_buffer_count() const { return buffers_.size(); }
   std::size_t live_pipeline_count() const { return pipelines_.size(); }
@@ -145,6 +233,15 @@ class ValidatingRenderDevice final : public RenderDevice {
     BufferDesc desc;
     std::vector<std::byte> bytes;
   };
+  std::uint64_t active_pass_id_=0,next_pass_id_=1;
+  RenderTargetHandle active_target_{};
+  struct StoredTarget {OffscreenTargetDesc desc;TextureHandle color;};
+  std::unordered_map<std::uint32_t,StoredTarget> render_targets_;
+  std::unordered_map<std::uint32_t,RenderTargetHandle> borrowed_colors_;
+  ResourceTelemetry telemetry_;
+  void admit_bytes(std::uint64_t bytes);
+  void record_allocation();
+  std::uint64_t byte_budget_=std::numeric_limits<std::uint64_t>::max();
   std::uint32_t next_id_ = 1;
   std::unordered_map<std::uint32_t, StoredBuffer> buffers_;
   std::unordered_map<std::uint32_t, PipelineDesc> pipelines_;

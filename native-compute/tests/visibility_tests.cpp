@@ -48,6 +48,7 @@ void frustum_and_scaled_bounds(){
 }
 void batch_order_and_draw_validation(){
   graphics::ValidatingRenderDevice device;
+  device.begin_render_pass({{640,480}});
   graphics::RenderResourceOwner owner(device);
   std::array<std::byte,48*3> vertices{};
   std::array<std::byte,6*4> indices{};
@@ -61,7 +62,7 @@ void batch_order_and_draw_validation(){
   const auto ob2=owner.create_buffer({graphics::BufferUsage::Uniform,uniform.size()},uniform);
   const auto tex1=owner.create_texture2d({1,1},white);
   const auto tex2=owner.create_texture2d({1,1},white);
-  const auto pipeline=owner.create_pipeline({graphics::textured_object_shader_layout(),true});
+  const auto pipeline=owner.create_pipeline({terraflux::graphics::ShaderProgramId::TexturedObject,graphics::textured_object_shader_layout(),true});
   graphics::OpaqueRenderQueue queue;
   auto prepare=[&](graphics::TextureHandle tex,graphics::BufferHandle object){
     graphics::PreparedDraw out;
@@ -84,6 +85,7 @@ void batch_order_and_draw_validation(){
 
 void hardware_instance_batching() {
   graphics::ValidatingRenderDevice device;
+  device.begin_render_pass({{640,480}});
   graphics::RenderResourceOwner owner(device);
   std::array<std::byte,48*3> vertices{};
   std::array<std::byte,6*4> indices{};
@@ -98,8 +100,8 @@ void hardware_instance_batching() {
   const auto u2=owner.create_buffer({graphics::BufferUsage::Uniform,uniform.size()},uniform);
   const auto ssbo=owner.create_buffer({graphics::BufferUsage::Storage,records.size()},records);
   const auto tex=owner.create_texture2d({1,1},texture);
-  const auto flat=owner.create_pipeline({graphics::textured_object_shader_layout(),true});
-  const auto instanced=owner.create_pipeline({graphics::instanced_textured_object_shader_layout(),true});
+  const auto flat=owner.create_pipeline({terraflux::graphics::ShaderProgramId::TexturedObject,graphics::textured_object_shader_layout(),true});
+  const auto instanced=owner.create_pipeline({terraflux::graphics::ShaderProgramId::InstancedTexturedObject,graphics::instanced_textured_object_shader_layout(),true});
   graphics::OpaqueRenderQueue queue;
   for(int i=0;i<8;++i) {
     graphics::PreparedDraw draw;
@@ -131,6 +133,7 @@ void hardware_instance_batching() {
 
 void streaming_instance_ring() {
   graphics::ValidatingRenderDevice device;
+  device.begin_render_pass({{640,480}});
   graphics::RenderResourceOwner owner(device);
   std::array<std::byte,48*3> vertices{};
   std::array<std::byte,6*4> indices{};
@@ -142,8 +145,8 @@ void streaming_instance_ring() {
   const auto cb=owner.create_buffer({graphics::BufferUsage::Uniform,camera.size()},camera);
   const auto u1=owner.create_buffer({graphics::BufferUsage::Uniform,uniform.size()},uniform);
   const auto tex=owner.create_texture2d({1,1},texture);
-  const auto flat=owner.create_pipeline({graphics::textured_object_shader_layout(),true});
-  const auto instanced=owner.create_pipeline({graphics::instanced_textured_object_shader_layout(),true});
+  const auto flat=owner.create_pipeline({terraflux::graphics::ShaderProgramId::TexturedObject,graphics::textured_object_shader_layout(),true});
+  const auto instanced=owner.create_pipeline({terraflux::graphics::ShaderProgramId::InstancedTexturedObject,graphics::instanced_textured_object_shader_layout(),true});
   const auto add_scene=[&](graphics::OpaqueRenderQueue& queue,std::uint32_t count) {
     for(std::uint32_t i=0;i<count;++i){
       graphics::PreparedDraw draw;
@@ -186,17 +189,18 @@ void streaming_instance_ring() {
 }
 void transparent_sorting_and_pipeline() {
   graphics::ValidatingRenderDevice device;
+  device.begin_render_pass({{640,480}});
   rejected([&]{
     (void)device.create_pipeline(
-        {graphics::pbr_textured_object_shader_layout(false),true,true,true});
+        {terraflux::graphics::ShaderProgramId::PbrObject,graphics::pbr_textured_object_shader_layout(false),true,true,true});
   },"alpha blend cannot write depth");
   rejected([&]{
     (void)device.create_pipeline(
-        {graphics::pbr_textured_object_shader_layout(false),false,true,false});
+        {terraflux::graphics::ShaderProgramId::PbrObject,graphics::pbr_textured_object_shader_layout(false),false,true,false});
   },"alpha blend requires depth test");
   graphics::RenderResourceOwner owner(device);
   const auto alpha=owner.create_pipeline(
-      {graphics::pbr_textured_object_shader_layout(false),true,true,false});
+      {terraflux::graphics::ShaderProgramId::PbrObject,graphics::pbr_textured_object_shader_layout(false),true,true,false});
   std::array<std::byte,48*3> vertices{};
   std::array<std::uint32_t,3> indices{0,1,2};
   std::array<std::byte,80> camera{};

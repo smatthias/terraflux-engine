@@ -1,4 +1,9 @@
-# TerraFlux scene graph and OBJ assets
+# TerraFlux scene and asset development history
+
+This document records successive milestones. Early “not implemented” statements
+apply to their milestone and may be superseded below. For the current verified
+feature set and remaining work, start with [ENGINE_BASELINE.md](ENGINE_BASELINE.md)
+and the [README](../README.md).
 
 This milestone adds a portable C++20 **scene hierarchy** and a first standalone
 asset importer. The scene is an append-only node graph with stable integer IDs,
@@ -623,3 +628,176 @@ after the last drawable leaves. CI also covers pure OBJ, legacy scenes and
 non-instanced rendering. R reload restores the original authored references;
 selective reattachment and on-demand residency remain future work. CPU mesh
 loading is still eager; this milestone evicts GPU geometry/material resources.
+
+
+## Selective reattachment and on-demand GPU residency
+
+Press **A** to reattach the detached scene node with the lowest ID. Its saved
+model binding and expanded glTF instances are restored at the node's current
+transform. Nodes/children and Spin/Motion continue existing while detached;
+reattachment does not reset the scene clock or reread the scene file.
+
+Each GPU mesh now has an independent resource owner and a retained CPU recipe.
+Reattachment reuses still-resident geometry unchanged and uploads only missing
+meshes/material uniforms; texture leases reuse surviving allocations. New
+per-node uniform scopes are prepared before publishing draw instances. Failed
+preparation cleans up unused mesh resources and leaves the node detached.
+Initial scene-file loading uploads only meshes referenced by drawable nodes.
+CPU model parsing and decoded image recipes remain eager and retained; this
+is synchronous GPU residency, not asynchronous disk streaming or CPU eviction.
+
+`--smoke-test --scene-residency-test --scene examples/mixed_asset_scene.json`
+renders five frames covering shared-mesh reuse, complete drawable eviction,
+a terrain-only frame, cold reattachment and rendered recovery. It verifies
+unchanged handles for surviving geometry and a terrain-only buffer/texture
+baseline after full eviction. CI covers mixed, pure OBJ and legacy scenes,
+including non-instanced rendering. Physical GPU validation is outstanding.
+
+
+## Reusable headless residency API
+
+`runtime::SceneResidency<Instance>` in `terraflux/scene_residency.hpp` now owns
+saved bindings, CPU recipes and attach/detach transaction ordering. Instance
+records supply `node` and `mesh_index` plus host-specific resource fields.
+`reference_counts` validates mesh indices; the host supplies strip, resource
+retirement, preparation and unused-resource eviction callbacks. No window,
+OpenGL type or graphics context is required by this API.
+
+Preparation completes before draw instances are published. If it fails,
+staged instances are destroyed before the eviction callback runs, leaving the
+node detached. Instances must support noexcept move construction/assignment;
+retirement and eviction callbacks must not throw. The API is synchronous and
+single-threaded. The viewer still owns GPU upload recipes and scopes, using
+the same API exercised by headless tests. Those tests cover shared meshes,
+expanded model instances, failed preparation/cleanup, duplicate operations,
+hierarchy preservation, bounds validation and legacy primary-mesh bindings.
+Existing Mesa residency sweeps verify the viewer integration.
+
+
+## Residency diagnostics and admission budgets
+
+`SceneResidency::statistics` reports live instances, distinct referenced mesh
+indices, detached nodes and saved instance recipes. `ResidencyBudget` limits
+referenced meshes and expanded draw instances. `check_budget` supports initial
+admission; reattachment preflights the proposed complete draw set before any
+resource preparation callbacks. Exact-boundary admission and shared-mesh
+counting are tested; rejection preserves graph bindings and detached recipes.
+Changing a configured budget does not automatically evict existing instances.
+
+The viewer exposes `--max-resident-meshes` (0..512), `--max-scene-instances`
+(0..1024), and `--residency-report`. JSON diagnostics include all live OpenGL
+buffer/texture/pipeline counts alongside logical residency. CPU models and
+image recipes remain eager. This is admission control, not byte accounting,
+physical VRAM measurement, automatic victim selection or asynchronous loading.
+CI verifies the mixed scene at its exact 7-mesh/17-instance limits and rejects
+a 6-mesh limit, while headless tests cover reattachment rejection before callbacks.
+
+
+## Explicit selection and budget-aware activation
+
+SceneResidency exposes sorted/deduplicated `nodes`, `selected`, `select` and
+bidirectional wrapping `cycle`. Active and detached bindings are selectable;
+root/nonbinding IDs are rejected and empty scenes return no selection. Expanded
+glTF instances do not create duplicate selectable nodes. The viewer uses bracket
+keys to select, D to detach, and A to activate the selected binding. The title
+shows ID/name/activity; diagnostics include `selected_node` or null.
+
+`--start-inactive` preserves all authored binding recipes before initial GPU
+admission, enabling budgets smaller than the complete scene. `--select-node ID`
+sets the initial selection; `--activate-node ID` selects and activates once at
+startup. Admission preflight still counts the full expanded selected model.
+CPU parsing remains eager and the 1024 expanded-instance format bound still
+applies. R reload reapplies inactive startup but not one-time activation.
+Headless tests cover selection cycles and detach persistence; CI verifies a
+single OBJ node from a mixed scene at a one-mesh/one-instance budget and rejects
+a selected multi-mesh glTF model under a one-mesh limit.
+
+
+## Persisted residency state
+
+`runtime::ResidencyState` and the helpers in `terraflux/residency_state.hpp`
+serialize selection and inactive bindings independently of scene JSON. Format
+`terraflux.residency` version 1 is bounded to 64 KiB and validates IDs, duplicate
+inactive entries and signature syntax. Scene validation checks that referenced
+IDs were authored drawable bindings and that the canonical scene fingerprint
+matches, including the legacy primary OBJ argument. This is deterministic
+compatibility detection, not a cryptographic or asset-content integrity check.
+
+The viewer accepts `--load-state` and `--save-state`. Restore happens before
+GPU admission, so only active bindings upload geometry and budgets still apply.
+CLI selection overrides saved selection; inactive startup takes precedence over
+the saved active set; explicit startup activation runs last. Reload rereads the
+sidecar. Clean-exit save uses a same-directory temporary file and rename after
+successful flush/close, cleaning failed temporary writes. It does not fsync for
+power-loss durability. The authored scene is never the save destination.
+Runtime transforms, animation clocks, camera and configured budgets are outside
+this format. Tests cover canonical/null-selection roundtrips, mismatched scenes,
+invalid IDs, failed-save preservation and cleanup. Mesa CI saves and restores a
+partially active mixed scene under its one-mesh/one-instance admission limit.
+
+
+## Logical byte accounting and device allocation cap
+
+Both RenderDevice implementations expose `live_resource_bytes` and
+`set_resource_byte_budget`. Buffer storage counts declared capacity; RGBA8
+textures count complete generated mip chains, including non-power-of-two
+levels. Byte admission uses subtraction to avoid unsigned addition wrap and
+runs before new buffer/texture resource creation. Failed admission leaves maps
+and counts unchanged. Lowering a cap does not destroy existing resources;
+it prevents further allocation until usage falls within the limit. Updates and
+orphaning leave logical capacity unchanged, while final shared texture release
+and buffer destruction remove their bytes.
+
+OpenGL delegates accounting/admission to its validating resource mirror.
+`--resource-budget-mib` covers the whole device, including terrain and instance
+streams, unlike the scene-only mesh/instance budgets. Imported-scope unload
+checks both resource-count and byte baselines. JSON reports current totals,
+not peaks or physical VRAM. Shader/program overhead, driver padding, deferred
+orphan allocations, GPU query/framebuffer storage and CPU recipes are excluded.
+Native tests cover exact caps, mip chains, zero/lowered limits, failure cleanup,
+shared leases and overflow rejection. Mesa CI checks a bounded mixed scene
+and rejection of terrain allocation under a zero-byte cap.
+
+
+## Allocation peaks and budget-recovery telemetry
+
+`ResourceTelemetry` reports independent buffer/texture peaks, combined peak
+bytes, logical admission count, byte-budget rejection count and the last rejected
+request's used/requested/limit tuple. Snapshot headroom is clamped to zero when
+current usage exceeds a lowered cap. Deallocation preserves peak/history; an
+explicit `reset_resource_telemetry` rebases peaks to current storage and clears
+admission/rejection history. Per-category peaks need not occur simultaneously.
+Malformed resource requests fail validation without counting as budget rejection.
+
+OpenGL delegates telemetry to the validation mirror, so admissions include
+reservations preceding driver allocation and do not imply physical allocation
+success or actual VRAM residency. Orphaned in-flight storage remains excluded.
+Interactive failed reloads/activations emit retained-state diagnostics when
+reporting is enabled. The three-frame `--resource-recovery-test` deliberately
+rejects a new buffer at a full cap, evicts drawables, then reattaches/renders one
+model within that same cap. Normal runtime still leaves eviction/retry decisions
+to the caller. Native sanitizer tests cover recovery, historical peaks, lowered
+caps and explicit reset; Mesa CI validates rejection and rendered recovery.
+
+
+## Retained CPU recipe payload accounting
+
+`assets/cpu_recipe_budget.hpp` provides overflow-checked size arithmetic,
+`mesh_recipe_bytes`, `cpu_recipe_bytes` and `check_cpu_recipe_budget`. Counts
+cover used MeshVertex elements, uint32 indices and retained decoded image pixel
+vectors. They exclude vector capacity and container/material/string overhead,
+encoded source data, parser temporaries and transient GPU upload layouts.
+Canonical aliases are deduplicated before accounting. Different source files
+remain separate recipes even if their data matches.
+
+Both scene-loader entry points accept an optional retained-payload limit.
+Accumulated canonical models are checked before continuing to the next model;
+individual parser/decoder peaks are not bounded by this limit. The viewer also
+checks standalone assets and all completed recipes before GPU upload, exposing
+`--cpu-recipe-budget-mib` and CPU category/total diagnostics. CPU recipes remain
+resident across selective GPU eviction/detachment within a scope; full imported-scope
+release frees them. File-backed OBJ image decodes remain transient.
+Tests cover payload versus capacity, exact/zero/over limits, shared scene aliases,
+combined/size arithmetic overflow and preservation after failed accumulation.
+Mesa CI verifies positive accounting and rejection of a zero CPU cap even when
+all drawable nodes start inactive. This is not process heap/RSS accounting.

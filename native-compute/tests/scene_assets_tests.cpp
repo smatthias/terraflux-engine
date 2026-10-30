@@ -74,6 +74,13 @@ void mixed_models(const std::filesystem::path& fixture) {
   check(terraflux::scene::serialize_scene(terraflux::scene::deserialize_scene(text))==text,
         "mixed format schema roundtrip");
   const auto assets=load_scene_assets(graph,fixture);
+  const auto payload=terraflux::assets::cpu_recipe_bytes(assets.meshes,assets.images);
+  check(payload.vertex_bytes>0 && payload.index_bytes>0 && payload.image_bytes>0,
+        "mixed CPU recipes include mesh and decoded image payload");
+  const auto limited=load_scene_assets(graph,fixture,payload.total());
+  check(terraflux::assets::cpu_recipe_bytes(limited.meshes,limited.images).total()==payload.total(),
+        "exact CPU payload cap admits canonical shared recipes");
+  rejects([&]{(void)load_scene_assets(graph,fixture,payload.total()-1);},"CPU recipe cap rejects overage");
   check(assets.has_gltf && assets.model_instances.size()==4 && assets.meshes.size()==7,
         "mixed scene loads four canonical models and seven mesh definitions");
   check(assets.model_indices.at("gltf")==assets.model_indices.at("gltf_alias"),

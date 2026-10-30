@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <limits>
 #include <span>
 #include <stdexcept>
 #include <tuple>
@@ -98,6 +99,20 @@ Frustum Frustum::from_view_projection(const math::Mat4& vp) {
   }
   return result;
 }
+bool Frustum::intersects_aabb(math::Vec3 lo,math::Vec3 hi) const {
+  if(!finite(lo) || !finite(hi) || lo.x>hi.x || lo.y>hi.y || lo.z>hi.z)
+    throw std::invalid_argument("invalid frustum AABB");
+  const auto scale=std::max({1.0,std::abs(lo.x),std::abs(lo.y),std::abs(lo.z),
+                                 std::abs(hi.x),std::abs(hi.y),std::abs(hi.z)});
+  for(const auto& plane:planes_) {
+    const auto& n=plane.normal;
+    const math::Vec3 positive{n.x>=0?hi.x:lo.x,n.y>=0?hi.y:lo.y,n.z>=0?hi.z:lo.z};
+    const auto margin=64*std::numeric_limits<float>::epsilon()*std::max(scale,std::abs(plane.distance));
+    if(n.dot(positive)+plane.distance < -margin)return false;
+  }
+  return true;
+}
+
 bool Frustum::intersects(BoundingSphere sphere) const {
   if(!finite(sphere.center) || !(sphere.radius>=0) ||
      !std::isfinite(sphere.radius))

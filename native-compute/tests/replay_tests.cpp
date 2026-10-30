@@ -1,4 +1,8 @@
 #include <terraflux/replay.hpp>
+#include <terraflux/replay_clock.hpp>
+#include <array>
+#include <cmath>
+#include <limits>
 #include <terraflux/terrain_mesh.hpp>
 #include <terraflux/graphics/terrain_upload.hpp>
 
@@ -31,6 +35,46 @@ const std::string response = R"JSON({
     {"step":2,"active_cells":[],"burned_cells":[[0,0],[1,0]],"active_count":0,"burned_count":2}
   ]
 })JSON";
+void test_clock_rates() {
+  using terraflux::replay::ReplayClock;
+  const std::array<double,5> rates{0.25,0.5,1,2,4};
+  const std::array<std::size_t,5> expected{1,2,4,8,16};
+  for(std::size_t i=0;i<rates.size();++i) {
+    ReplayClock clock(720);clock.set_speed(rates[i]);
+    for(int tick=0;tick<84;++tick)clock.tick();
+    check(clock.frame()==expected[i] && clock.pending_seconds()==0 && clock.speed()==rates[i],"exact rational speed progression");
+  }
+  ReplayClock clock(20);for(int i=0;i<20;++i)clock.tick();
+  const auto phase=clock.pending_seconds();clock.set_playing(true);
+  check(clock.pending_seconds()==phase,"unchanged play state preserves partial progress");clock.set_speed(4);
+  check(clock.frame()==0 && clock.pending_seconds()==phase,"speed change retains fractional progress without seeking");
+  clock.tick();check(clock.frame()==1 && std::abs(clock.pending_seconds()-0.05)<1e-12,"new rate applies on next engine tick");
+  for(double invalid:{0.0,-1.0,0.3,8.0,std::numeric_limits<double>::infinity(),std::numeric_limits<double>::quiet_NaN()})
+    rejects([&]{clock.set_speed(invalid);},"unsupported replay speed rejected");
+  check(clock.speed()==4 && clock.frame()==1,"failed speed change preserves clock state");
+}
+void test_clock_controls() {
+  using terraflux::replay::ReplayClock;
+  rejects([]{ReplayClock invalid(0);},"empty clock rejected");
+  rejects([]{ReplayClock invalid(721);},"oversized clock rejected");
+  ReplayClock clock(3);clock.tick();clock.set_playing(false);
+  for(int i=0;i<100;++i)clock.tick();
+  check(clock.frame()==0 && clock.pending_seconds()==0 && !clock.playing(),"paused ticks have no replay backlog");
+  clock.toggle();for(int i=0;i<21;++i)clock.tick();
+  check(clock.frame()==1 && clock.playing(),"resume advances exactly one normal interval");
+  clock.step_forward();check(clock.frame()==2 && !clock.playing() && !clock.pending_seconds(),"manual frame step pauses and clears phase");
+  clock.step_forward();check(clock.frame()==2,"forward step clamps at end");
+  clock.toggle();check(clock.frame()==0 && clock.playing(),"play at end restarts from first frame");
+  clock.set_speed(4);for(int i=0;i<11;++i)clock.tick();
+  check(clock.frame()==2 && !clock.playing() && !clock.pending_seconds(),"arrival at final frame stops immediately");
+  clock.step_back();check(clock.frame()==1 && !clock.playing(),"backward step pauses");
+  clock.seek(0);clock.step_back();check(clock.frame()==0 && clock.speed()==4,"reset/back clamp preserve speed");
+  rejects([&]{clock.seek(3);},"invalid seek rejected");
+  check(clock.frame()==0 && !clock.playing(),"invalid seek leaves current frame unchanged");
+  ReplayClock single(1);single.toggle();single.tick();single.step_forward();
+  check(single.frame()==0 && !single.playing(),"single-frame replay remains bounded and paused");
+}
+
 void test_playback() {
   auto playback=terraflux::replay::load(request,response);
   check(playback.frames.size()==3 && playback.grid.cells.size()==4, "parsed request and frames");
@@ -103,7 +147,7 @@ void test_reject_invalid_counts() {
 int main(){
   try{
     test_playback(); test_grid_boundaries(); test_missing_cell_mask(); test_reject_mismatch(); test_reject_nonmonotonic();
-    test_reject_offgrid(); test_reject_invalid_counts();
-    std::cout<<"TerraFlux replay tests: 7 passed\n";
+    test_reject_offgrid(); test_reject_invalid_counts();test_clock_rates();test_clock_controls();
+    std::cout<<"TerraFlux replay tests: 9 passed\n";
   }catch(const std::exception& e){std::cerr<<e.what()<<'\n'; return 1;}
 }

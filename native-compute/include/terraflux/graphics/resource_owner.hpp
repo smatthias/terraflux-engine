@@ -12,8 +12,10 @@
 namespace terraflux::graphics {
 
 // Scope-bound owner of backend-neutral GPU handles. A RenderDevice must
-// outlive this scope. The destructor releases pipelines, textures then buffers,
+// outlive this scope. The destructor releases render targets, pipelines, textures then buffers,
 // including when asset loading or shader compilation throws partway through.
+// End render passes before destroying or resetting their target-owning scope.
+// Declare RenderPassScope after this owner to enforce that order during unwinding.
 // This object is deliberately not copyable or movable.
 class RenderResourceOwner {
  public:
@@ -36,6 +38,12 @@ class RenderResourceOwner {
     catch(...){device_.destroy_texture(handle);throw;}
     return handle;
   }
+  RenderTargetHandle create_render_target(OffscreenTargetDesc desc) {
+    auto handle=device_.create_render_target(desc);
+    try{render_targets_.push_back(handle);}
+    catch(...){device_.destroy_render_target(handle);throw;}
+    return handle;
+  }
   PipelineHandle create_pipeline(PipelineDesc desc) {
     auto handle=device_.create_pipeline(std::move(desc));
     try{pipelines_.push_back(handle);}
@@ -52,6 +60,9 @@ class RenderResourceOwner {
   // Best-effort cleanup. Backend-specific destroy failures must not escape
   // a destructor during unwinding. The device owns the underlying backend.
   void reset() noexcept {
+    for(auto it=render_targets_.rbegin();it!=render_targets_.rend();++it) {
+      try{device_.destroy_render_target(*it);}catch(...){}
+    }
     for(auto it=pipelines_.rbegin();it!=pipelines_.rend();++it) {
       try{device_.destroy_pipeline(*it);}catch(...){}
     }
@@ -61,14 +72,16 @@ class RenderResourceOwner {
     for(auto it=buffers_.rbegin();it!=buffers_.rend();++it) {
       try{device_.destroy_buffer(*it);}catch(...){}
     }
-    pipelines_.clear();textures_.clear();buffers_.clear();
+    render_targets_.clear();pipelines_.clear();textures_.clear();buffers_.clear();
   }
+  std::size_t tracked_render_target_count() const{return render_targets_.size();}
   std::size_t tracked_buffer_count() const{return buffers_.size();}
   std::size_t tracked_texture_count() const{return textures_.size();}
   std::size_t tracked_pipeline_count() const{return pipelines_.size();}
 
  private:
   RenderDevice& device_;
+  std::vector<RenderTargetHandle> render_targets_;
   std::vector<BufferHandle> buffers_;
   std::vector<TextureHandle> textures_;
   std::vector<PipelineHandle> pipelines_;

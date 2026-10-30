@@ -37,6 +37,7 @@ ShaderLayout wildfire_shader_layout() {
   layout.attributes.pop_back(); // FIRE_STATE is no longer a vertex input.
   layout.bindings.front().stages = kVertexStage | kFragmentStage;
   layout.bindings.push_back({"FireState", ShaderResourceKind::StorageBuffer, 1, kFragmentStage});
+  layout.bindings.push_back({"LayerVisibility",ShaderResourceKind::UniformBuffer,10,kFragmentStage});
   return layout;
 }
 

@@ -71,6 +71,19 @@ struct GL {
   PFNGLBLENDFUNCPROC BlendFunc = get_proc<PFNGLBLENDFUNCPROC>("glBlendFunc");
   PFNGLDEPTHMASKPROC DepthMask = get_proc<PFNGLDEPTHMASKPROC>("glDepthMask");
   PFNGLCLEARCOLORPROC ClearColor = get_proc<PFNGLCLEARCOLORPROC>("glClearColor");
+  PFNGLCLEARDEPTHPROC ClearDepth = get_proc<PFNGLCLEARDEPTHPROC>("glClearDepth");
+  PFNGLBINDFRAMEBUFFERPROC BindFramebuffer = get_proc<PFNGLBINDFRAMEBUFFERPROC>("glBindFramebuffer");
+  PFNGLGENFRAMEBUFFERSPROC GenFramebuffers = get_proc<PFNGLGENFRAMEBUFFERSPROC>("glGenFramebuffers");
+  PFNGLDELETEFRAMEBUFFERSPROC DeleteFramebuffers = get_proc<PFNGLDELETEFRAMEBUFFERSPROC>("glDeleteFramebuffers");
+  PFNGLCHECKFRAMEBUFFERSTATUSPROC CheckFramebufferStatus = get_proc<PFNGLCHECKFRAMEBUFFERSTATUSPROC>("glCheckFramebufferStatus");
+  PFNGLGENRENDERBUFFERSPROC GenRenderbuffers = get_proc<PFNGLGENRENDERBUFFERSPROC>("glGenRenderbuffers");
+  PFNGLDELETERENDERBUFFERSPROC DeleteRenderbuffers = get_proc<PFNGLDELETERENDERBUFFERSPROC>("glDeleteRenderbuffers");
+  PFNGLBINDRENDERBUFFERPROC BindRenderbuffer = get_proc<PFNGLBINDRENDERBUFFERPROC>("glBindRenderbuffer");
+  PFNGLRENDERBUFFERSTORAGEPROC RenderbufferStorage = get_proc<PFNGLRENDERBUFFERSTORAGEPROC>("glRenderbufferStorage");
+  PFNGLFRAMEBUFFERRENDERBUFFERPROC FramebufferRenderbuffer = get_proc<PFNGLFRAMEBUFFERRENDERBUFFERPROC>("glFramebufferRenderbuffer");
+  PFNGLFRAMEBUFFERTEXTURE2DPROC FramebufferTexture2D = get_proc<PFNGLFRAMEBUFFERTEXTURE2DPROC>("glFramebufferTexture2D");
+  PFNGLGETINTEGERVPROC GetIntegerv = get_proc<PFNGLGETINTEGERVPROC>("glGetIntegerv");
+  PFNGLGETERRORPROC GetError = get_proc<PFNGLGETERRORPROC>("glGetError");
   PFNGLCLEARPROC Clear = get_proc<PFNGLCLEARPROC>("glClear");
   PFNGLVIEWPORTPROC Viewport = get_proc<PFNGLVIEWPORTPROC>("glViewport");
   PFNGLREADPIXELSPROC ReadPixels = get_proc<PFNGLREADPIXELSPROC>("glReadPixels");
@@ -81,6 +94,19 @@ struct GL {
   PFNGLGETQUERYOBJECTIVPROC GetQueryObjectiv = get_proc<PFNGLGETQUERYOBJECTIVPROC>("glGetQueryObjectiv");
   PFNGLGETQUERYOBJECTUI64VPROC GetQueryObjectui64v = get_proc<PFNGLGETQUERYOBJECTUI64VPROC>("glGetQueryObjectui64v");
 };
+
+constexpr char kCompositeVertexShader[] = R"GLSL(#version 430 core
+layout(location=0) in vec2 POSITION;
+layout(location=1) in vec2 TEXCOORD;
+out vec2 uv;
+void main() {uv=TEXCOORD;gl_Position=vec4(POSITION,0.0,1.0);}
+)GLSL";
+constexpr char kCompositeFragmentShader[] = R"GLSL(#version 430 core
+in vec2 uv;
+layout(binding=0) uniform sampler2D SourceColor;
+out vec4 fragColor;
+void main() {fragColor=texture(SourceColor,uv);}
+)GLSL";
 
 constexpr char kVertexShader[] = R"GLSL(#version 430 core
 layout(location = 0) in vec3 POSITION;
@@ -147,6 +173,7 @@ layout(std140, binding = 0) uniform Camera {
   vec4 fireGrid; // x = cell size, y = width, z = height, w = animation seconds
 };
 layout(std430, binding = 1) readonly buffer FireState { uint fireStates[]; };
+layout(std140,binding=10) uniform LayerVisibility {vec4 layerFlags;};
 out vec4 fragColor;
 
 void main() {
@@ -155,6 +182,10 @@ void main() {
   vec3 ground = mix(vec3(0.11, 0.33, 0.20), vec3(0.60, 0.55, 0.42),
                     clamp(elevation / 140.0, 0.0, 1.0)) * light;
 
+  if(layerFlags.y<0.5) {
+    if(layerFlags.x<0.5)discard;
+    fragColor=vec4(ground,1.0);return;
+  }
   // Each cell contributes a rounded radial footprint, not a square block.
   // Look up neighboring cell centers so adjacent active fires merge smoothly.
   // Out-of-grid centers and holes never contribute; rasterization is already
@@ -182,7 +213,10 @@ void main() {
         burn = max(burn, 1.0 - smoothstep(0.55, 0.86, radius));
     }
   }
-  ground = mix(ground, vec3(0.13, 0.12, 0.13), 0.93 * burn);
+  if(layerFlags.x<0.5) {
+    if(max(burn,flame)<=0.001)discard; // Hidden ground writes neither color nor depth.
+    ground=vec3(0.13,0.12,0.13);
+  } else ground = mix(ground, vec3(0.13, 0.12, 0.13), 0.93 * burn);
   float pulse = 0.86 + 0.14 * sin(5.0 * fireGrid.w + gridPos.x * 1.3);
   vec3 fireColor = mix(vec3(0.79, 0.075, 0.01),
                        vec3(1.0, 0.46, 0.025), clamp(flame, 0.0, 1.0));
@@ -507,16 +541,18 @@ ShaderLayout reflect_program(const GL& gl, GLuint program, const ShaderLayout& e
         });
     if (name == "Camera" && values[4] != (is_fire ? 80 : 64))
       throw std::runtime_error("Camera UBO does not match expected std140 size");
+    if(name=="LayerVisibility" && values[4]!=16)
+      throw std::runtime_error("LayerVisibility UBO must contain one vec4");
     if (name == "PbrMaterial" && values[4] != 64)
       throw std::runtime_error("PbrMaterial UBO must have four vec4s");
     if (name == "Object" && values[4] != 144)
       throw std::runtime_error("Object UBO must contain model, normalMatrix and tint");
-    // PbrMaterial exists only in the fragment shader. Some Mesa drivers
+    // Material/layer blocks exist only in the fragment shader. Some Mesa drivers
     // return inconsistent GL_REFERENCED_BY_* flags for active UBOs; the
     // binding index and std140 block size are validated independently.
     std::uint32_t stages=(values[2]?kVertexStage:0U) |
                          (values[3]?kFragmentStage:0U);
-    if(name=="PbrMaterial")stages=kFragmentStage;
+    if(name=="PbrMaterial" || name=="LayerVisibility")stages=kFragmentStage;
     actual.bindings.push_back({name,ShaderResourceKind::UniformBuffer,
                               static_cast<std::uint32_t>(values[1]),stages});
   }
@@ -595,8 +631,11 @@ GLint components_for(VertexFormat format) {
 
 struct OpenGLRenderDevice::Impl {
   struct GpuBuffer { GLuint name=0; BufferUsage usage{}; std::size_t bytes=0; };
-  struct GpuTexture { GLuint name = 0; };
+  struct GpuTexture { GLuint name = 0; bool borrowed=false; };
   struct GpuPipeline { GLuint program = 0, vao = 0; PipelineDesc desc; };
+
+  struct GpuTarget {GLuint framebuffer=0,color=0,depth=0;};
+  std::unordered_map<std::uint32_t,GpuTarget> render_targets;
 
   GL gl;
   ValidatingRenderDevice validator;
@@ -643,6 +682,12 @@ struct OpenGLRenderDevice::Impl {
     // Destruction requires the OpenGL context used at creation to be current.
     if(timing_enabled)gl.DeleteQueries(static_cast<GLsizei>(kGpuQuerySlots),
                                        gpu_queries.data());
+    for(const auto& [id,target]:render_targets) {
+      (void)id;
+      gl.DeleteFramebuffers(1,&target.framebuffer);
+      gl.DeleteTextures(1,&target.color);
+      gl.DeleteRenderbuffers(1,&target.depth);
+    }
     for (const auto& [id, pipeline] : pipelines) {
       (void)id;
       gl.DeleteVertexArrays(1, &pipeline.vao);
@@ -650,7 +695,7 @@ struct OpenGLRenderDevice::Impl {
     }
     for (const auto& [id, texture] : textures) {
       (void)id;
-      gl.DeleteTextures(1,&texture.name);
+      if(!texture.borrowed)gl.DeleteTextures(1,&texture.name);
     }
     for (const auto& [id, buffer] : buffers) {
       (void)id;
@@ -815,72 +860,108 @@ void OpenGLRenderDevice::destroy_texture(TextureHandle handle) {
   impl_->texture_units.clear();
 }
 
+RenderTargetHandle OpenGLRenderDevice::create_render_target(OffscreenTargetDesc desc) {
+  (void)offscreen_storage_bytes(desc);
+  GLint maximum=0;
+  impl_->gl.GetIntegerv(GL_MAX_RENDERBUFFER_SIZE,&maximum);
+  GLint max_texture=0;
+  impl_->gl.GetIntegerv(GL_MAX_TEXTURE_SIZE,&max_texture);
+  maximum=std::min(maximum,max_texture);
+  if(desc.width>static_cast<std::uint32_t>(maximum) ||
+     desc.height>static_cast<std::uint32_t>(maximum))
+    throw std::invalid_argument("offscreen target exceeds device extent limit");
+  const auto handle=impl_->validator.create_render_target(desc);
+  Impl::GpuTarget target;
+  GLint previous_draw=0,previous_read=0,previous_renderbuffer=0,previous_texture=0;
+  impl_->gl.GetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING,&previous_draw);
+  impl_->gl.GetIntegerv(GL_READ_FRAMEBUFFER_BINDING,&previous_read);
+  impl_->gl.GetIntegerv(GL_RENDERBUFFER_BINDING,&previous_renderbuffer);
+  impl_->gl.GetIntegerv(GL_TEXTURE_BINDING_2D,&previous_texture);
+  const auto restore=[&] {
+    impl_->gl.BindFramebuffer(GL_DRAW_FRAMEBUFFER,static_cast<GLuint>(previous_draw));
+    impl_->gl.BindFramebuffer(GL_READ_FRAMEBUFFER,static_cast<GLuint>(previous_read));
+    impl_->gl.BindRenderbuffer(GL_RENDERBUFFER,static_cast<GLuint>(previous_renderbuffer));
+    impl_->gl.BindTexture(GL_TEXTURE_2D,static_cast<GLuint>(previous_texture));
+    impl_->texture_units.clear();
+  };
+  try {
+    impl_->gl.GenFramebuffers(1,&target.framebuffer);
+    impl_->gl.GenTextures(1,&target.color);
+    impl_->gl.GenRenderbuffers(1,&target.depth);
+    if(!target.framebuffer || !target.color || !target.depth)
+      throw std::runtime_error("offscreen GL object allocation failed");
+    impl_->gl.BindFramebuffer(GL_FRAMEBUFFER,target.framebuffer);
+    const auto attach=[&](GLuint name,GLenum format,GLenum point) {
+      impl_->gl.BindRenderbuffer(GL_RENDERBUFFER,name);
+      impl_->gl.RenderbufferStorage(GL_RENDERBUFFER,format,
+          static_cast<GLsizei>(desc.width),static_cast<GLsizei>(desc.height));
+      impl_->gl.FramebufferRenderbuffer(GL_FRAMEBUFFER,point,GL_RENDERBUFFER,name);
+    };
+    impl_->gl.BindTexture(GL_TEXTURE_2D,target.color);
+    impl_->gl.TexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);
+    impl_->gl.TexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
+    impl_->gl.TexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
+    impl_->gl.TexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+    impl_->gl.TexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,static_cast<GLsizei>(desc.width),
+        static_cast<GLsizei>(desc.height),0,GL_RGBA,GL_UNSIGNED_BYTE,nullptr);
+    impl_->gl.FramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,target.color,0);
+    attach(target.depth,GL_DEPTH_COMPONENT32F,GL_DEPTH_ATTACHMENT);
+    const auto complete=impl_->gl.CheckFramebufferStatus(GL_FRAMEBUFFER);
+    const auto error=impl_->gl.GetError();
+    if(complete!=GL_FRAMEBUFFER_COMPLETE || error!=GL_NO_ERROR)
+      throw std::runtime_error("offscreen framebuffer storage or completeness failed");
+    impl_->textures.emplace(impl_->validator.render_target_color(handle).id,
+                            Impl::GpuTexture{target.color,true});
+    impl_->render_targets.emplace(handle.id,target);
+  } catch(...) {
+    impl_->textures.erase(impl_->validator.render_target_color(handle).id);
+    impl_->render_targets.erase(handle.id);
+    restore();
+    impl_->gl.DeleteFramebuffers(1,&target.framebuffer);
+    impl_->gl.DeleteTextures(1,&target.color);
+    impl_->gl.DeleteRenderbuffers(1,&target.depth);
+    impl_->validator.destroy_render_target(handle);
+    throw;
+  }
+  restore();
+  return handle;
+}
+
+void OpenGLRenderDevice::destroy_render_target(RenderTargetHandle handle) {
+  const auto color=impl_->validator.render_target_color(handle);
+  impl_->validator.destroy_render_target(handle);
+  impl_->textures.erase(color.id);impl_->texture_units.clear();
+  const auto target=impl_->render_targets.at(handle.id);
+  impl_->gl.DeleteFramebuffers(1,&target.framebuffer);
+  impl_->gl.DeleteTextures(1,&target.color);
+  impl_->gl.DeleteRenderbuffers(1,&target.depth);
+  impl_->render_targets.erase(handle.id);
+}
+
+TextureHandle OpenGLRenderDevice::render_target_color(RenderTargetHandle handle) const {
+  return impl_->validator.render_target_color(handle);
+}
+
 PipelineHandle OpenGLRenderDevice::create_pipeline(PipelineDesc desc) {
-  validate_shader_layout(desc.layout);
-  const bool wildfire = std::any_of(desc.layout.bindings.begin(), desc.layout.bindings.end(),
-      [](const ShaderBinding& binding) {
-        return binding.kind == ShaderResourceKind::StorageBuffer &&
-               binding.name == "FireState";
-      });
-  const bool object = std::any_of(desc.layout.bindings.begin(), desc.layout.bindings.end(),
-      [](const ShaderBinding& binding) {
-        return binding.kind == ShaderResourceKind::UniformBuffer &&
-               binding.name == "Object" && binding.slot == 2;
-      });
-  const bool instanced = std::any_of(desc.layout.bindings.begin(),desc.layout.bindings.end(),
-      [](const ShaderBinding& binding) {
-        return binding.kind==ShaderResourceKind::StorageBuffer &&
-               binding.name=="InstanceData" && binding.slot==4;
-      });
-  const bool pbr = std::any_of(desc.layout.bindings.begin(),desc.layout.bindings.end(),
-      [](const ShaderBinding& binding) {
-        return binding.kind==ShaderResourceKind::UniformBuffer &&
-               binding.name=="PbrMaterial" && binding.slot==5;
-      });
-  const bool textured = std::any_of(desc.layout.bindings.begin(), desc.layout.bindings.end(),
-      [](const ShaderBinding& binding) {
-        return binding.kind==ShaderResourceKind::SampledTexture &&
-               binding.name=="AlbedoTexture" && binding.slot==3;
-      });
-  if(desc.alpha_blend && (!desc.depth_test || desc.depth_write || !pbr || instanced))
-    throw std::invalid_argument("OpenGL alpha blending requires noninstanced PBR and depth test");
-  if (textured && !object && !instanced)
-    throw std::invalid_argument("textured pipeline requires Object or InstanceData");
-  if(pbr && (!textured || wildfire))
-    throw std::invalid_argument("PBR requires textured object pipeline");
-  if(instanced && (!textured || object || wildfire))
-    throw std::invalid_argument("instancing requires textured geometry and no per-object UBO");
-  if (object && wildfire)
-    throw std::invalid_argument("object and fire shaders are separate pipelines");
-  for (const auto& binding : desc.layout.bindings)
-    if (binding.kind != ShaderResourceKind::UniformBuffer &&
-        !(textured && binding.kind == ShaderResourceKind::SampledTexture &&
-          binding.name=="AlbedoTexture") &&
-        !(pbr && binding.kind==ShaderResourceKind::SampledTexture &&
-          (binding.name=="MetallicRoughnessTexture" ||
-           binding.name=="NormalTexture" ||
-           binding.name=="OcclusionTexture" ||
-           binding.name=="EmissiveTexture")) &&
-        !(instanced && binding.kind==ShaderResourceKind::StorageBuffer &&
-          binding.name=="InstanceData" && binding.slot==4) &&
-        !(wildfire && binding.kind == ShaderResourceKind::StorageBuffer &&
-          binding.name == "FireState"))
-      throw std::invalid_argument("unsupported OpenGL shader resource");
+  validate_pipeline_desc(desc,false);
+  const char* vertex_source=nullptr;
+  const char* fragment_source=nullptr;
+  switch(desc.program) {
+    case ShaderProgramId::Composite:vertex_source=kCompositeVertexShader;fragment_source=kCompositeFragmentShader;break;
+    case ShaderProgramId::Terrain:vertex_source=kVertexShader;fragment_source=kFragmentShader;break;
+    case ShaderProgramId::Wildfire:vertex_source=kFireVertexShader;fragment_source=kFireFragmentShader;break;
+    case ShaderProgramId::Object:vertex_source=kObjectVertexShader;fragment_source=kObjectFragmentShader;break;
+    case ShaderProgramId::TexturedObject:vertex_source=kTexturedVertexShader;fragment_source=kTexturedFragmentShader;break;
+    case ShaderProgramId::InstancedTexturedObject:vertex_source=kInstancedTexturedVertexShader;fragment_source=kTexturedFragmentShader;break;
+    case ShaderProgramId::PbrObject:vertex_source=kPbrTexturedVertexShader;fragment_source=kPbrFragmentShader;break;
+    case ShaderProgramId::PbrInstanced:vertex_source=kPbrInstancedVertexShader;fragment_source=kPbrFragmentShader;break;
+    default:throw std::invalid_argument("unsupported OpenGL shader program identity");
+  }
 
   GLuint vertex = 0, fragment = 0, program = 0, vao = 0;
   try {
-    vertex = compile_shader(impl_->gl, GL_VERTEX_SHADER,
-                            wildfire ? kFireVertexShader :
-                            pbr && instanced ? kPbrInstancedVertexShader :
-                            pbr ? kPbrTexturedVertexShader :
-                            instanced ? kInstancedTexturedVertexShader :
-                            textured ? kTexturedVertexShader :
-                            object ? kObjectVertexShader : kVertexShader);
-    fragment = compile_shader(impl_->gl, GL_FRAGMENT_SHADER,
-                              wildfire ? kFireFragmentShader :
-                              pbr ? kPbrFragmentShader :
-                              textured ? kTexturedFragmentShader :
-                              object ? kObjectFragmentShader : kFragmentShader);
+    vertex = compile_shader(impl_->gl,GL_VERTEX_SHADER,vertex_source);
+    fragment = compile_shader(impl_->gl,GL_FRAGMENT_SHADER,fragment_source);
     program = impl_->gl.CreateProgram();
     if (!program) throw std::runtime_error("glCreateProgram failed");
     impl_->gl.AttachShader(program, vertex);
@@ -924,8 +1005,21 @@ void OpenGLRenderDevice::destroy_pipeline(PipelineHandle handle) {
     impl_->attribute_pipeline=impl_->attribute_vertex=impl_->attribute_index=0;
 }
 
+ResourceBytes OpenGLRenderDevice::live_resource_bytes() const {
+  return impl_->validator.live_resource_bytes();
+}
+ResourceTelemetry OpenGLRenderDevice::resource_telemetry() const {
+  return impl_->validator.resource_telemetry();
+}
+void OpenGLRenderDevice::reset_resource_telemetry() {
+  impl_->validator.reset_resource_telemetry();
+}
+void OpenGLRenderDevice::set_resource_byte_budget(std::uint64_t bytes) {
+  impl_->validator.set_resource_byte_budget(bytes);
+}
+
 OpenGLRenderDevice::ResourceCounts OpenGLRenderDevice::live_resource_counts() const {
-  return {impl_->buffers.size(),impl_->textures.size(),impl_->pipelines.size()};
+  return {impl_->buffers.size(),impl_->textures.size(),impl_->pipelines.size(),impl_->render_targets.size()};
 }
 
 void OpenGLRenderDevice::draw_indexed(const DrawIndexed& command) {
@@ -1010,18 +1104,39 @@ void OpenGLRenderDevice::draw_indexed(const DrawIndexed& command) {
   }
 }
 
-void OpenGLRenderDevice::clear_frame(int framebuffer_width, int framebuffer_height) {
-  if (framebuffer_width <= 0 || framebuffer_height <= 0) return;
-  // glClear(GL_DEPTH_BUFFER_BIT) respects DepthMask: a BLEND draw from the
-  // previous frame may have disabled depth writes. Restore writable depth
-  // before clearing, and keep the cached draw-state value synchronized.
-  if(!impl_->depth_write_state || !*impl_->depth_write_state) {
-    impl_->gl.DepthMask(GL_TRUE);
-    impl_->depth_write_state=true;
+void OpenGLRenderDevice::begin_render_pass(const RenderPassDesc& desc) {
+  // Validate the full descriptor/order before changing any OpenGL state.
+  impl_->validator.begin_render_pass(desc);
+  const auto framebuffer=desc.target.kind==RenderTargetKind::Window?0U:
+      impl_->render_targets.at(desc.target.handle.id).framebuffer;
+  impl_->gl.BindFramebuffer(GL_FRAMEBUFFER,framebuffer);
+  impl_->gl.Viewport(0,0,static_cast<GLsizei>(desc.target.width),
+                          static_cast<GLsizei>(desc.target.height));
+  GLbitfield mask=0;
+  if(desc.color_load==AttachmentLoadOp::Clear) {
+    const auto& c=desc.clear_color;
+    impl_->gl.ClearColor(c[0],c[1],c[2],c[3]);
+    mask|=GL_COLOR_BUFFER_BIT;
   }
-  impl_->gl.Viewport(0, 0, framebuffer_width, framebuffer_height);
-  impl_->gl.ClearColor(0.065f, 0.095f, 0.13f, 1.0f);
-  impl_->gl.Clear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+  if(desc.depth_load==AttachmentLoadOp::Clear) {
+    // A previous transparent draw may have disabled depth writes. glClear
+    // respects DepthMask; restore it and synchronize the draw-state cache.
+    if(!impl_->depth_write_state || !*impl_->depth_write_state) {
+      impl_->gl.DepthMask(GL_TRUE);
+      impl_->depth_write_state=true;
+    }
+    impl_->gl.ClearDepth(desc.clear_depth);
+    mask|=GL_DEPTH_BUFFER_BIT;
+  }
+  if(mask)impl_->gl.Clear(mask);
+}
+
+std::uint64_t OpenGLRenderDevice::active_render_pass_id() const noexcept {
+  return impl_->validator.active_render_pass_id();
+}
+
+void OpenGLRenderDevice::end_render_pass() {
+  impl_->validator.end_render_pass();
 }
 
 std::size_t OpenGLRenderDevice::count_fire_pixels(int width, int height) {

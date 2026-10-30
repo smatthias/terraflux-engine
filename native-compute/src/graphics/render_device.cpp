@@ -1,7 +1,10 @@
 #include <terraflux/graphics/render_device.hpp>
+#include <terraflux/graphics/terrain_upload.hpp>
+#include <terraflux/graphics/mesh_upload.hpp>
 
 #include <algorithm>
 #include <cstring>
+#include <cmath>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -9,6 +12,48 @@
 #include <utility>
 
 namespace terraflux::graphics {
+
+void validate_render_pass_desc(const RenderPassDesc& desc) {
+  if(desc.target.kind!=RenderTargetKind::Window && desc.target.kind!=RenderTargetKind::Offscreen)
+    throw std::invalid_argument("unsupported render target kind");
+  constexpr auto max_extent=static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max());
+  if(!desc.target.width || !desc.target.height ||
+     desc.target.width>max_extent || desc.target.height>max_extent)
+    throw std::invalid_argument("render target extents must be 1..INT32_MAX");
+  if((desc.target.kind==RenderTargetKind::Window && desc.target.handle) ||
+     (desc.target.kind==RenderTargetKind::Offscreen && !desc.target.handle))
+    throw std::invalid_argument("render target kind and handle disagree");
+  const auto valid_load=[](AttachmentLoadOp op) {
+    return op==AttachmentLoadOp::Load || op==AttachmentLoadOp::Clear;
+  };
+  if(!valid_load(desc.color_load) || !valid_load(desc.depth_load))
+    throw std::invalid_argument("unsupported attachment load operation");
+  for(const auto channel:desc.clear_color)
+    if(!std::isfinite(channel) || channel<0 || channel>1)
+      throw std::invalid_argument("clear color must be finite and normalized");
+  if(!std::isfinite(desc.clear_depth) || desc.clear_depth<0 || desc.clear_depth>1)
+    throw std::invalid_argument("clear depth must be finite and normalized");
+}
+
+void ValidatingRenderDevice::begin_render_pass(const RenderPassDesc& desc) {
+  if(active_pass_id_)throw std::logic_error("render passes cannot nest");
+  validate_render_pass_desc(desc);
+  if(desc.target.kind==RenderTargetKind::Offscreen) {
+    const auto it=render_targets_.find(desc.target.handle.id);
+    if(it==render_targets_.end() || it->second.desc.width!=desc.target.width ||
+       it->second.desc.height!=desc.target.height)
+      throw std::invalid_argument("unknown render target or mismatched pass extent");
+  }
+  if(!next_pass_id_)throw std::overflow_error("render pass identity space exhausted");
+  active_target_=desc.target.handle;
+  active_pass_id_=next_pass_id_++;
+}
+
+void ValidatingRenderDevice::end_render_pass() {
+  if(!active_pass_id_)throw std::logic_error("no active render pass");
+  active_pass_id_=0;
+  active_target_={};
+}
 
 std::uint32_t vertex_format_bytes(VertexFormat format) {
   switch (format) {
@@ -83,12 +128,108 @@ std::uint32_t ValidatingRenderDevice::allocate_id() {
   return next_id_++;
 }
 
+std::uint64_t rgba8_storage_bytes(TextureDesc desc) {
+  if(!desc.width || !desc.height || desc.width>4096 || desc.height>4096 ||
+     static_cast<std::uint64_t>(desc.width)*desc.height>4'000'000)
+    throw std::invalid_argument("invalid texture dimensions for byte accounting");
+  std::uint64_t bytes=0;
+  auto width=desc.width,height=desc.height;
+  while(true) {
+    bytes+=static_cast<std::uint64_t>(width)*height*4;
+    if(!desc.sampling.uses_mipmaps() || (width==1 && height==1))break;
+    width=std::max(1U,width/2);height=std::max(1U,height/2);
+  }
+  return bytes;
+}
+std::uint64_t offscreen_storage_bytes(OffscreenTargetDesc desc) {
+  if(!desc.width || !desc.height || desc.width>4096 || desc.height>4096 ||
+     static_cast<std::uint64_t>(desc.width)*desc.height>4'000'000 ||
+     desc.color!=ColorAttachmentFormat::Rgba8 ||
+     desc.depth!=DepthAttachmentFormat::Depth32Float)
+    throw std::invalid_argument("unsupported offscreen extent or attachment format");
+  return static_cast<std::uint64_t>(desc.width)*desc.height*8;
+}
+RenderTargetHandle ValidatingRenderDevice::create_render_target(OffscreenTargetDesc desc) {
+  admit_bytes(offscreen_storage_bytes(desc));
+  const auto id=allocate_id();
+  const auto color=TextureHandle{allocate_id()};
+  try {
+    render_targets_.emplace(id,StoredTarget{desc,color});
+    TextureDesc texture{desc.width,desc.height};
+    texture.sampling.wrap_s=texture.sampling.wrap_t=TextureWrap::ClampToEdge;
+    borrowed_colors_.emplace(color.id,RenderTargetHandle{id});
+    textures_.emplace(color.id,texture);
+  } catch(...) {
+    textures_.erase(color.id);borrowed_colors_.erase(color.id);render_targets_.erase(id);
+    throw;
+  }
+  record_allocation();
+  return {id};
+}
+TextureHandle ValidatingRenderDevice::render_target_color(RenderTargetHandle handle) const {
+  const auto it=render_targets_.find(handle.id);
+  if(it==render_targets_.end())throw std::invalid_argument("unknown render target color view");
+  return it->second.color;
+}
+void ValidatingRenderDevice::destroy_render_target(RenderTargetHandle handle) {
+  if(active_pass_id_ && handle==active_target_)
+    throw std::logic_error("cannot destroy the active render target");
+  const auto color=render_target_color(handle);
+  textures_.erase(color.id);borrowed_colors_.erase(color.id);render_targets_.erase(handle.id);
+}
+
+void check_resource_byte_budget(std::uint64_t used,std::uint64_t additional,std::uint64_t limit) {
+  if(used>limit || additional>limit-used)
+    throw std::length_error("resource byte budget exceeded");
+}
+ResourceBytes ValidatingRenderDevice::live_resource_bytes() const {
+  ResourceBytes result;
+  for(const auto& [id,buffer]:buffers_)result.buffer_bytes+=buffer.desc.size_bytes;
+  for(const auto& [id,texture]:textures_)
+    if(!borrowed_colors_.contains(id))result.texture_bytes+=rgba8_storage_bytes(texture);
+  for(const auto& [id,target]:render_targets_)result.render_target_bytes+=offscreen_storage_bytes(target.desc);
+  return result;
+}
+
+ResourceTelemetry ValidatingRenderDevice::resource_telemetry() const {
+  auto result=telemetry_;
+  const auto used=live_resource_bytes().total();
+  result.limit_bytes=byte_budget_;
+  result.over_budget=used>byte_budget_;
+  result.headroom_bytes=result.over_budget?0:byte_budget_-used;
+  return result;
+}
+void ValidatingRenderDevice::reset_resource_telemetry() {
+  telemetry_={};
+  telemetry_.peak_bytes=live_resource_bytes();
+  telemetry_.peak_total_bytes=telemetry_.peak_bytes.total();
+}
+void ValidatingRenderDevice::admit_bytes(std::uint64_t bytes) {
+  const auto used=live_resource_bytes().total();
+  try{check_resource_byte_budget(used,bytes,byte_budget_);}
+  catch(const std::length_error&){
+    ++telemetry_.budget_rejections;
+    telemetry_.last_rejection=BudgetRejection{used,bytes,byte_budget_};
+    throw;
+  }
+}
+void ValidatingRenderDevice::record_allocation() {
+  const auto used=live_resource_bytes();
+  ++telemetry_.allocation_count;
+  telemetry_.peak_bytes.buffer_bytes=std::max(telemetry_.peak_bytes.buffer_bytes,used.buffer_bytes);
+  telemetry_.peak_bytes.texture_bytes=std::max(telemetry_.peak_bytes.texture_bytes,used.texture_bytes);
+  telemetry_.peak_bytes.render_target_bytes=std::max(telemetry_.peak_bytes.render_target_bytes,used.render_target_bytes);
+  telemetry_.peak_total_bytes=std::max(telemetry_.peak_total_bytes,used.total());
+}
+
 BufferHandle ValidatingRenderDevice::create_buffer(
     BufferDesc desc, std::span<const std::byte> initial_data) {
   if (desc.size_bytes == 0 || initial_data.size() != desc.size_bytes)
     throw std::invalid_argument("buffer must have positive size and complete initialization");
+  admit_bytes(desc.size_bytes);
   const auto id = allocate_id();
   buffers_.emplace(id, StoredBuffer{desc, {initial_data.begin(), initial_data.end()}});
+  record_allocation();
   return {id};
 }
 
@@ -126,19 +267,49 @@ TextureHandle ValidatingRenderDevice::create_texture2d(
       static_cast<std::uint64_t>(desc.width)*desc.height>4'000'000 ||
       rgba8.size()!=static_cast<std::size_t>(desc.width)*desc.height*4)
     throw std::invalid_argument("invalid RGBA8 texture dimensions or pixels");
+  admit_bytes(rgba8_storage_bytes(desc));
   const auto id=allocate_id();
   textures_.emplace(id,desc);
+  record_allocation();
   return {id};
 }
 void ValidatingRenderDevice::destroy_texture(TextureHandle handle) {
+  if(borrowed_colors_.contains(handle.id))
+    throw std::invalid_argument("render target color cannot be destroyed separately");
   if (textures_.erase(handle.id)!=1)
     throw std::invalid_argument("unknown or destroyed texture");
 }
 
-PipelineHandle ValidatingRenderDevice::create_pipeline(PipelineDesc desc) {
-  if(desc.alpha_blend && (!desc.depth_test || desc.depth_write))
-    throw std::invalid_argument("transparent pipeline requires depth test and disabled depth writes");
+ShaderLayout shader_program_layout(ShaderProgramId program) {
+  switch(program) {
+    case ShaderProgramId::Composite:return {16,{{"POSITION",0,VertexFormat::Float2,0},
+        {"TEXCOORD",1,VertexFormat::Float2,8}},
+        {{"SourceColor",ShaderResourceKind::SampledTexture,0,kFragmentStage}}};
+    case ShaderProgramId::Terrain:return terrain_shader_layout();
+    case ShaderProgramId::Wildfire:return wildfire_shader_layout();
+    case ShaderProgramId::Object:return object_shader_layout();
+    case ShaderProgramId::TexturedObject:return textured_object_shader_layout();
+    case ShaderProgramId::InstancedTexturedObject:return instanced_textured_object_shader_layout();
+    case ShaderProgramId::PbrObject:return pbr_textured_object_shader_layout(false);
+    case ShaderProgramId::PbrInstanced:return pbr_textured_object_shader_layout(true);
+    default:throw std::invalid_argument("shader program has no built-in layout");
+  }
+}
+void validate_pipeline_desc(const PipelineDesc& desc,bool allow_contract_only) {
   validate_shader_layout(desc.layout);
+  if(desc.program==ShaderProgramId::Composite &&
+     (desc.depth_test || desc.depth_write || desc.alpha_blend))
+    throw std::invalid_argument("composite pipeline requires disabled depth and blend state");
+  if(desc.alpha_blend && (!desc.depth_test || desc.depth_write || desc.program!=ShaderProgramId::PbrObject))
+    throw std::invalid_argument("transparent pipeline requires noninstanced PBR, depth testing and no depth writes");
+  if(desc.program==ShaderProgramId::ContractOnly) {
+    if(!allow_contract_only)throw std::invalid_argument("contract-only shader program cannot render on a GPU");
+    return;
+  }
+  validate_shader_reflection(shader_program_layout(desc.program),desc.layout);
+}
+PipelineHandle ValidatingRenderDevice::create_pipeline(PipelineDesc desc) {
+  validate_pipeline_desc(desc);
   const auto id = allocate_id();
   pipelines_.emplace(id, std::move(desc));
   return {id};
@@ -150,6 +321,7 @@ void ValidatingRenderDevice::destroy_pipeline(PipelineHandle handle) {
 }
 
 void ValidatingRenderDevice::draw_indexed(const DrawIndexed& command) {
+  if(!active_pass_id_)throw std::logic_error("drawing requires an active render pass");
   const auto pipeline = pipelines_.find(command.pipeline.id);
   const auto vb = buffers_.find(command.vertex_buffer.id);
   const auto ib = buffers_.find(command.index_buffer.id);
@@ -198,6 +370,13 @@ void ValidatingRenderDevice::draw_indexed(const DrawIndexed& command) {
       throw std::invalid_argument("uniform buffer bound to undeclared slot");
   }
 
+  for(const auto& required:layout.bindings)if(required.kind==ShaderResourceKind::UniformBuffer && required.name=="LayerVisibility") {
+    const auto bound=std::find_if(command.uniform_buffers.begin(),command.uniform_buffers.end(),
+        [&](const auto& value){return value.slot==required.slot;});
+    if(bound==command.uniform_buffers.end() || buffers_.at(bound->buffer.id).desc.size_bytes<16)
+      throw std::invalid_argument("LayerVisibility requires a bound 16-byte uniform buffer");
+  }
+
   std::unordered_set<std::uint32_t> storage_slots;
   for (const auto& bound : command.storage_buffers) {
     if (!storage_slots.insert(bound.slot).second)
@@ -232,6 +411,9 @@ void ValidatingRenderDevice::draw_indexed(const DrawIndexed& command) {
       throw std::invalid_argument("duplicate texture slot");
     if (!textures_.contains(bound.texture.id))
       throw std::invalid_argument("unknown or destroyed texture binding");
+    const auto owner=borrowed_colors_.find(bound.texture.id);
+    if(owner!=borrowed_colors_.end() && owner->second==active_target_)
+      throw std::invalid_argument("cannot sample the active render target color");
     const auto& declared=pipeline->second.layout.bindings;
     const auto found=std::find_if(declared.begin(),declared.end(),
       [&](const ShaderBinding& binding) {

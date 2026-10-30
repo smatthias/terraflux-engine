@@ -17,6 +17,11 @@ class OpenGLRenderDevice final : public RenderDevice {
   OpenGLRenderDevice(const OpenGLRenderDevice&) = delete;
   OpenGLRenderDevice& operator=(const OpenGLRenderDevice&) = delete;
 
+  ResourceBytes live_resource_bytes() const override;
+  ResourceTelemetry resource_telemetry() const override;
+  void reset_resource_telemetry() override;
+  void set_resource_byte_budget(std::uint64_t bytes) override;
+
   BufferHandle create_buffer(BufferDesc desc, std::span<const std::byte> initial_data) override;
   void update_buffer(BufferHandle handle, std::size_t offset_bytes,
                      std::span<const std::byte> data) override;
@@ -24,12 +29,18 @@ class OpenGLRenderDevice final : public RenderDevice {
   void orphan_storage_buffer(BufferHandle handle) override;
   TextureHandle create_texture2d(TextureDesc desc, std::span<const std::byte> rgba8) override;
   void destroy_texture(TextureHandle handle) override;
+  RenderTargetHandle create_render_target(OffscreenTargetDesc desc) override;
+  void destroy_render_target(RenderTargetHandle handle) override;
+  TextureHandle render_target_color(RenderTargetHandle handle) const override;
   PipelineHandle create_pipeline(PipelineDesc desc) override;
   void destroy_pipeline(PipelineHandle handle) override;
+  void begin_render_pass(const RenderPassDesc& desc) override;
+  void end_render_pass() override;
+  std::uint64_t active_render_pass_id() const noexcept override;
   void draw_indexed(const DrawIndexed& command) override;
 
   struct ResourceCounts {
-    std::size_t buffers=0,textures=0,pipelines=0;
+    std::size_t buffers=0,textures=0,pipelines=0,render_targets=0;
     bool operator==(const ResourceCounts&) const=default;
   };
   // Live API resources, including streamed instance buffers; excludes driver
@@ -48,7 +59,6 @@ class OpenGLRenderDevice final : public RenderDevice {
   void end_gpu_timing();
   GpuTimingSummary gpu_timing_summary(bool drain=false);
 
-  void clear_frame(int framebuffer_width, int framebuffer_height);
   // Smoke-test diagnostic; inspect the back buffer before swapping it.
   // Counts bright red/orange pixels in the current render target.
   std::size_t count_fire_pixels(int framebuffer_width, int framebuffer_height);
