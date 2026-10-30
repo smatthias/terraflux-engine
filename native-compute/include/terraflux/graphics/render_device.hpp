@@ -105,6 +105,9 @@ class RenderDevice {
   virtual void destroy_buffer(BufferHandle handle) = 0;
   virtual void update_buffer(BufferHandle handle, std::size_t offset_bytes,
                              std::span<const std::byte> data) = 0;
+  // Discard storage-buffer contents before writing a new frame. OpenGL
+  // orphaning retains the old GPU allocation for in-flight draw commands.
+  virtual void orphan_storage_buffer(BufferHandle handle) = 0;
   virtual TextureHandle create_texture2d(TextureDesc desc,
                                       std::span<const std::byte> rgba8) = 0;
   virtual void destroy_texture(TextureHandle handle) = 0;
@@ -122,6 +125,7 @@ class ValidatingRenderDevice final : public RenderDevice {
   void destroy_buffer(BufferHandle handle) override;
   void update_buffer(BufferHandle handle, std::size_t offset_bytes,
                      std::span<const std::byte> data) override;
+  void orphan_storage_buffer(BufferHandle handle) override;
   TextureHandle create_texture2d(TextureDesc desc, std::span<const std::byte> rgba8) override;
   void destroy_texture(TextureHandle handle) override;
   PipelineHandle create_pipeline(PipelineDesc desc) override;

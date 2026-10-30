@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <array>
 #include <vector>
 
 namespace terraflux::graphics {
@@ -53,10 +54,37 @@ class OpaqueRenderQueue {
   // mesh/material/index ranges into a single indexed instance draw.
   QueueStats submit_instanced(RenderDevice& device, PipelineHandle instance_pipeline,
                               BufferHandle instance_buffer,std::uint32_t capacity);
+  class InstanceBufferRing;
+  QueueStats submit_instanced_streamed(RenderDevice& device,
+      PipelineHandle instance_pipeline,InstanceBufferRing& ring,
+      std::uint32_t max_instances_per_draw=256);
   std::size_t size() const {return pending_.size();}
 
  private:
   std::vector<PreparedDraw> pending_;
+};
+
+// Three frame slots with per-draw-group storage buffers. Each group receives
+// a distinct allocation in its frame, preventing earlier draws in that frame
+// from reading overwritten instance records. A reused frame slot is orphaned
+// (rather than waited on) before upload. Buffers grow only when necessary.
+class OpaqueRenderQueue::InstanceBufferRing {
+ public:
+  explicit InstanceBufferRing(RenderDevice& device):device_(device){}
+  ~InstanceBufferRing() noexcept;
+  InstanceBufferRing(const InstanceBufferRing&)=delete;
+  InstanceBufferRing& operator=(const InstanceBufferRing&)=delete;
+  void begin_frame();
+  BufferHandle acquire(std::uint32_t instance_count);
+  std::size_t live_buffers() const;
+  std::size_t orphan_count() const {return orphans_;}
+
+ private:
+  struct Slot {BufferHandle buffer; std::size_t bytes;};
+  RenderDevice& device_;
+  std::array<std::vector<Slot>,3> frames_;
+  std::size_t current_frame_=0,used_=0,orphans_=0;
+  bool started_=false;
 };
 
 } // namespace terraflux::graphics

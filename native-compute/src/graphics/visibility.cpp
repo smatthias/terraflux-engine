@@ -179,4 +179,100 @@ QueueStats OpaqueRenderQueue::submit_instanced(RenderDevice& device,
   return stats;
 }
 
+OpaqueRenderQueue::InstanceBufferRing::~InstanceBufferRing() noexcept {
+  for(auto& frame:frames_)
+    for(const auto& slot:frame)
+      try{device_.destroy_buffer(slot.buffer);}catch(...){}
+}
+void OpaqueRenderQueue::InstanceBufferRing::begin_frame(){
+  if(started_)current_frame_=(current_frame_+1)%frames_.size();
+  else started_=true;
+  used_=0;
+}
+BufferHandle OpaqueRenderQueue::InstanceBufferRing::acquire(std::uint32_t count){
+  if(!started_)throw std::logic_error("begin_frame required before acquire");
+  if(count==0 || count>65535)
+    throw std::invalid_argument("instance batch count must be 1..65535");
+  const std::size_t needed=static_cast<std::size_t>(count)*sizeof(ObjectUniform);
+  auto& slots=frames_[current_frame_];
+  if(used_==slots.size()){
+    std::vector<std::byte> zeros(needed);
+    const auto handle=device_.create_buffer({BufferUsage::Storage,needed},zeros);
+    try{slots.push_back({handle,needed});}
+    catch(...){device_.destroy_buffer(handle);throw;}
+  }else if(slots[used_].bytes<needed){
+    std::vector<std::byte> zeros(needed);
+    const auto handle=device_.create_buffer({BufferUsage::Storage,needed},zeros);
+    const auto old=slots[used_].buffer;
+    slots[used_]={handle,needed};
+    device_.destroy_buffer(old);
+  }else{
+    device_.orphan_storage_buffer(slots[used_].buffer);
+    ++orphans_;
+  }
+  return slots[used_++].buffer;
+}
+std::size_t OpaqueRenderQueue::InstanceBufferRing::live_buffers() const {
+  std::size_t count=0;
+  for(const auto& frame:frames_)count+=frame.size();
+  return count;
+}
+
+QueueStats OpaqueRenderQueue::submit_instanced_streamed(RenderDevice& device,
+    PipelineHandle pipeline,InstanceBufferRing& ring,std::uint32_t capacity){
+  if(!pipeline || capacity==0 || capacity>65535)
+    throw std::invalid_argument("instancing requires a pipeline and valid capacity");
+  for(const auto& item:pending_){
+    if(!item.object_uniform || item.command.uniform_buffers.size()!=2 ||
+       !item.command.storage_buffers.empty() || item.command.textures.size()!=1 ||
+       item.command.instance_count!=1)
+      throw std::invalid_argument("streamed queue requires ordinary textured object draws");
+    const auto& bindings=item.command.uniform_buffers;
+    const auto camera=std::find_if(bindings.begin(),bindings.end(),
+        [](const UniformBufferBinding& b){return b.slot==0;});
+    const auto object=std::find_if(bindings.begin(),bindings.end(),
+        [](const UniformBufferBinding& b){return b.slot==2;});
+    if(camera==bindings.end() || object==bindings.end() ||
+       object->buffer!=item.object_uniform || !camera->buffer)
+      throw std::invalid_argument("invalid camera/object binding for instancing");
+  }
+  std::stable_sort(pending_.begin(),pending_.end(),
+      [](const PreparedDraw& a,const PreparedDraw& b){return key(a)<key(b);});
+  ring.begin_frame();
+  QueueStats stats;
+  Key previous{};
+  bool first=true;
+  std::vector<ObjectUniform> batch;
+  batch.reserve(capacity);
+  const auto flush=[&](const PreparedDraw& leader){
+    const auto storage=ring.acquire(static_cast<std::uint32_t>(batch.size()));
+    device.update_buffer(storage,0,std::as_bytes(std::span(batch)));
+    auto cmd=leader.command;
+    cmd.pipeline=pipeline;
+    cmd.uniform_buffers.erase(std::remove_if(cmd.uniform_buffers.begin(),
+        cmd.uniform_buffers.end(),[](const UniformBufferBinding& b){return b.slot==2;}),
+        cmd.uniform_buffers.end());
+    cmd.storage_buffers={{4,storage}};
+    cmd.instance_count=static_cast<std::uint32_t>(batch.size());
+    device.draw_indexed(cmd);
+    ++stats.submitted;
+    stats.instances+=batch.size();
+  };
+  const PreparedDraw* leader=nullptr;
+  for(const auto& item:pending_){
+    const auto current=key(item);
+    if(first || current!=previous || batch.size()==capacity){
+      if(leader)flush(*leader);
+      batch.clear();
+      leader=&item;
+      ++stats.state_groups;
+    }
+    batch.push_back(item.material);
+    first=false;previous=current;
+  }
+  if(leader)flush(*leader);
+  pending_.clear();
+  return stats;
+}
+
 } // namespace terraflux::graphics

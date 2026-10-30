@@ -438,7 +438,7 @@ GLint components_for(VertexFormat format) {
 }  // namespace
 
 struct OpenGLRenderDevice::Impl {
-  struct GpuBuffer { GLuint name = 0; BufferUsage usage{}; };
+  struct GpuBuffer { GLuint name=0; BufferUsage usage{}; std::size_t bytes=0; };
   struct GpuTexture { GLuint name = 0; };
   struct GpuPipeline { GLuint program = 0, vao = 0; PipelineDesc desc; };
 
@@ -568,7 +568,7 @@ BufferHandle OpenGLRenderDevice::create_buffer(BufferDesc desc,
   impl_->gl.BindBuffer(target, name);
   impl_->gl.BufferData(target, static_cast<GLsizeiptr>(desc.size_bytes),
                        initial_data.data(), GL_DYNAMIC_DRAW);
-  impl_->buffers.emplace(handle.id, Impl::GpuBuffer{name, desc.usage});
+  impl_->buffers.emplace(handle.id, Impl::GpuBuffer{name, desc.usage, desc.size_bytes});
   return handle;
 }
 
@@ -580,6 +580,16 @@ void OpenGLRenderDevice::update_buffer(BufferHandle handle, std::size_t offset_b
   impl_->gl.BindBuffer(target, gpu.name);
   impl_->gl.BufferSubData(target, static_cast<GLintptr>(offset_bytes),
                           static_cast<GLsizeiptr>(data.size()), data.data());
+}
+
+void OpenGLRenderDevice::orphan_storage_buffer(BufferHandle handle) {
+  // Validate before calling OpenGL; BufferData(nullptr) creates fresh
+  // backing storage so draws using the old version can finish asynchronously.
+  impl_->validator.orphan_storage_buffer(handle);
+  const auto& gpu=impl_->buffers.at(handle.id);
+  impl_->gl.BindBuffer(GL_SHADER_STORAGE_BUFFER,gpu.name);
+  impl_->gl.BufferData(GL_SHADER_STORAGE_BUFFER,static_cast<GLsizeiptr>(gpu.bytes),
+                       nullptr,GL_STREAM_DRAW);
 }
 
 void OpenGLRenderDevice::destroy_buffer(BufferHandle handle) {

@@ -102,6 +102,13 @@ void ValidatingRenderDevice::update_buffer(BufferHandle handle, std::size_t offs
   std::copy(data.begin(), data.end(), bytes.begin() + static_cast<std::ptrdiff_t>(offset_bytes));
 }
 
+void ValidatingRenderDevice::orphan_storage_buffer(BufferHandle handle) {
+  const auto it=buffers_.find(handle.id);
+  if(it==buffers_.end() || it->second.desc.usage!=BufferUsage::Storage)
+    throw std::invalid_argument("orphan requires a live storage buffer");
+  std::fill(it->second.bytes.begin(),it->second.bytes.end(),std::byte{0});
+}
+
 void ValidatingRenderDevice::destroy_buffer(BufferHandle handle) {
   if (buffers_.erase(handle.id) != 1)
     throw std::invalid_argument("unknown or already destroyed buffer handle");
