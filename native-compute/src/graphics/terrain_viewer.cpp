@@ -75,7 +75,7 @@ std::filesystem::path asset_path(const std::filesystem::path& directory,
 struct Options {
   bool smoke_test=false, profile=false, no_culling=false, no_instancing=false,asset_preview=false;
   bool asset_lifecycle_test=false,scene_controls_test=false,scene_detach_test=false,scene_residency_test=false;
-  bool residency_report=false,start_inactive=false;
+  bool residency_report=false,start_inactive=false,resource_recovery_test=false;
   std::optional<terraflux::scene::NodeId> selected_node,activate_node;
   std::uint32_t max_resident_meshes=512,max_scene_instances=1024;
   std::optional<std::uint64_t> resource_budget_bytes;
@@ -89,6 +89,7 @@ Options parse_args(int argc, char** argv) {
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
     if (arg == "--smoke-test") options.smoke_test = true;
+    else if(arg=="--resource-recovery-test"){options.resource_recovery_test=true;options.scene_residency_test=true;}
     else if (arg == "--scene-residency-test") options.scene_residency_test=true;
     else if (arg == "--scene-detach-test") options.scene_detach_test=true;
     else if (arg == "--scene-controls-test") options.scene_controls_test=true;
@@ -806,6 +807,14 @@ int main(int argc, char** argv) {
       const auto selected=imported->residency.selected(imported->scene_instances);
       const auto resources=device.live_resource_counts();
       const auto bytes=device.live_resource_bytes();
+      const auto telemetry=device.resource_telemetry();
+      std::string rejected="null";
+      if(telemetry.last_rejection) {
+        const auto& failure=*telemetry.last_rejection;
+        rejected="{\"used_bytes\":"+std::to_string(failure.used_bytes)+
+            ",\"requested_bytes\":"+std::to_string(failure.requested_bytes)+
+            ",\"limit_bytes\":"+std::to_string(failure.limit_bytes)+"}";
+      }
       std::cout<<"RESIDENCY_JSON={\"instances\":"<<stats.instances
           <<",\"referenced_meshes\":"<<stats.referenced_meshes
           <<",\"selected_node\":"<<(selected?std::to_string(*selected):"null")
@@ -816,7 +825,15 @@ int main(int argc, char** argv) {
           <<",\"live_pipelines\":"<<resources.pipelines
           <<",\"buffer_bytes\":"<<bytes.buffer_bytes<<",\"texture_bytes\":"<<bytes.texture_bytes
           <<",\"total_resource_bytes\":"<<bytes.total()
-          <<",\"resource_budget_bytes\":"<<(options.resource_budget_bytes?std::to_string(*options.resource_budget_bytes):"null")
+          <<",\"peak_buffer_bytes\":"<<telemetry.peak_bytes.buffer_bytes
+          <<",\"peak_texture_bytes\":"<<telemetry.peak_bytes.texture_bytes
+          <<",\"peak_total_bytes\":"<<telemetry.peak_total_bytes
+          <<",\"allocation_count\":"<<telemetry.allocation_count
+          <<",\"budget_rejections\":"<<telemetry.budget_rejections
+          <<",\"headroom_bytes\":"<<telemetry.headroom_bytes
+          <<",\"over_byte_budget\":"<<(telemetry.over_budget?"true":"false")
+          <<",\"last_byte_rejection\":"<<rejected
+          <<",\"resource_budget_bytes\":"<<(telemetry.limit_bytes==std::numeric_limits<std::uint64_t>::max()?"null":std::to_string(telemetry.limit_bytes))
           <<"}\n";
     };
     report_residency();
@@ -914,7 +931,7 @@ int main(int argc, char** argv) {
             report_residency();
           }
           catch(const std::exception& error){
-            std::cerr<<"Asset reload failed; current asset preserved: "<<error.what()<<'\n';
+            std::cerr<<"Asset reload failed; current asset preserved: "<<error.what()<<'\n';report_residency();
           }
           previous_time=glfwGetTime(); // disk/shader loading isn't simulated time
         }
@@ -934,7 +951,7 @@ int main(int argc, char** argv) {
         if(selected && detach && !previous_detach)detach_node(*selected);
         if(selected && attach && !previous_attach) {
           try{reattach_node(*selected);}
-          catch(const std::exception& error){std::cerr<<"Node activation rejected; state preserved: "<<error.what()<<'\n';}
+          catch(const std::exception& error){std::cerr<<"Node activation rejected; state preserved: "<<error.what()<<'\n';report_residency();}
           previous_time=glfwGetTime();
         }
       }
@@ -1286,7 +1303,34 @@ int main(int argc, char** argv) {
       }
       glfwSwapBuffers(window.get());
       ++rendered_frames;
-      if(options.scene_residency_test) {
+      if(options.resource_recovery_test) {
+        if(rendered_frames==1) {
+          const auto before=device.live_resource_bytes();
+          const auto counts=device.live_resource_counts();
+          device.set_resource_byte_budget(before.total());
+          std::array<std::byte,16> probe{};
+          bool rejected=false;
+          try{
+            const auto unexpected=device.create_buffer({BufferUsage::Storage,probe.size()},probe);
+            device.destroy_buffer(unexpected);
+          }catch(const std::length_error&){rejected=true;}
+          if(!rejected || device.live_resource_bytes()!=before || device.live_resource_counts()!=counts)
+            throw std::runtime_error("byte budget rejection changed current scene resources");
+          report_residency();
+          residency_node=imported->scene_instances.front().node;
+          while(!imported->scene_instances.empty())detach_node(imported->scene_instances.front().node);
+        }else if(rendered_frames==2) {
+          reattach_node(residency_node);
+        }else if(rendered_frames==3) {
+          const auto telemetry=device.resource_telemetry();
+          if(!telemetry.budget_rejections || telemetry.over_budget || !telemetry.headroom_bytes)
+            throw std::runtime_error("resource budget did not recover headroom after eviction");
+          report_residency();
+          std::cout<<"Resource recovery passed: rejected safely, evicted, reallocated, rendered within cap\n";
+          unload_imported();
+          break;
+        }
+      }else if(options.scene_residency_test) {
         if(rendered_frames==1) {
           residency_node=imported->scene_instances.front().node;
           // Prefer a node sharing a mesh with another node, if available.

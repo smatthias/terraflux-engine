@@ -927,6 +927,12 @@ void OpenGLRenderDevice::destroy_pipeline(PipelineHandle handle) {
 ResourceBytes OpenGLRenderDevice::live_resource_bytes() const {
   return impl_->validator.live_resource_bytes();
 }
+ResourceTelemetry OpenGLRenderDevice::resource_telemetry() const {
+  return impl_->validator.resource_telemetry();
+}
+void OpenGLRenderDevice::reset_resource_telemetry() {
+  impl_->validator.reset_resource_telemetry();
+}
 void OpenGLRenderDevice::set_resource_byte_budget(std::uint64_t bytes) {
   impl_->validator.set_resource_byte_budget(bytes);
 }

@@ -178,6 +178,20 @@ jobs:
           fi
           grep -q "resource byte budget exceeded" /tmp/terraflux-byte-rejected.log
           xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --resource-recovery-test \
+            --residency-report --scene examples/mixed_asset_scene.json \
+            | tee /tmp/terraflux-resource-recovery.log
+          grep -q "Resource recovery passed" /tmp/terraflux-resource-recovery.log
+          python3 - <<'PYRECOVERY'
+          import json
+          from pathlib import Path
+          stats=[json.loads(s.split("=",1)[1]) for s in Path("/tmp/terraflux-resource-recovery.log").read_text().splitlines()
+                 if s.startswith("RESIDENCY_JSON=")]
+          assert any(s["budget_rejections"]>=1 and s["last_byte_rejection"] for s in stats)
+          assert stats[-1]["headroom_bytes"]>0 and not stats[-1]["over_byte_budget"]
+          assert stats[-1]["peak_total_bytes"]>=stats[-1]["total_resource_bytes"]
+          PYRECOVERY
+          xvfb-run -a -s "-screen 0 1280x800x24" \
             ./build-gl/terraflux-terrain-viewer --smoke-test --residency-report \
             --start-inactive --max-resident-meshes 1 --max-scene-instances 1 \
             --activate-node 2 --save-state /tmp/terraflux-residency-state.json --scene examples/mixed_asset_scene.json \

@@ -298,6 +298,48 @@ void test_resource_bytes() {
   must_throw([&]{check_resource_byte_budget(maximum-1,2,maximum);},"budget addition cannot wrap");
 }
 
+void test_resource_telemetry() {
+  ValidatingRenderDevice device;
+  std::array<std::byte,32> bytes{};
+  device.set_resource_byte_budget(64);
+  const auto first=device.create_buffer({BufferUsage::Storage,bytes.size()},bytes);
+  const auto texture=device.create_texture2d({2,2},std::span(bytes).first(16));
+  auto stats=device.resource_telemetry();
+  require(stats.allocation_count==2 && stats.peak_total_bytes==48 && stats.headroom_bytes==16,
+          "initial allocations update peaks and headroom");
+  must_throw([&]{(void)device.create_buffer({BufferUsage::Storage,bytes.size()},bytes);},
+             "telemetry observes rejected allocation");
+  stats=device.resource_telemetry();
+  require(stats.budget_rejections==1 && stats.allocation_count==2 && stats.last_rejection &&
+          stats.last_rejection->used_bytes==48 && stats.last_rejection->requested_bytes==32 &&
+          stats.last_rejection->limit_bytes==64,"rejection diagnostic preserves exact request and prior usage");
+  device.destroy_buffer(first);
+  const auto recovered=device.create_buffer({BufferUsage::Storage,bytes.size()},bytes);
+  device.orphan_storage_buffer(recovered);
+  stats=device.resource_telemetry();
+  require(stats.allocation_count==3 && stats.budget_rejections==1 && stats.headroom_bytes==16,
+          "successful retry recovers without erasing failure history or counting orphan twice");
+  device.destroy_texture(texture);
+  const auto second=device.create_buffer({BufferUsage::Uniform,bytes.size()},bytes);
+  stats=device.resource_telemetry();
+  require(stats.peak_bytes.buffer_bytes==64 && stats.peak_bytes.texture_bytes==16 &&
+          stats.peak_total_bytes==64,"category peaks need not occur at same time");
+  device.set_resource_byte_budget(16);
+  require(device.resource_telemetry().over_budget && !device.resource_telemetry().headroom_bytes,
+          "lowered cap exposes over-budget state without unsigned headroom wrap");
+  device.reset_resource_telemetry();
+  stats=device.resource_telemetry();
+  require(stats.peak_total_bytes==64 && !stats.budget_rejections && !stats.last_rejection &&
+          !stats.allocation_count && stats.over_budget,"reset rebases peaks to live usage and clears history");
+  device.destroy_buffer(recovered);device.destroy_buffer(second);
+  require(device.resource_telemetry().peak_total_bytes==64 && device.resource_telemetry().headroom_bytes==16,
+          "freeing resources restores headroom while retaining historical peak");
+  device.reset_resource_telemetry();
+  require(!device.resource_telemetry().peak_total_bytes,"empty reset clears byte peaks");
+  must_throw([&]{(void)device.create_buffer({BufferUsage::Vertex,0},{});},"malformed request rejected");
+  require(!device.resource_telemetry().budget_rejections,"validation error is not a budget rejection");
+}
+
 }  // namespace
 
 int main() {
@@ -315,7 +357,8 @@ int main() {
     test_object_uniform_bindings();
     test_texture_resources();
     test_resource_bytes();
-    std::cout << "TerraFlux graphics contracts: 13 tests passed\n";
+    test_resource_telemetry();
+    std::cout << "TerraFlux graphics contracts: 14 tests passed\n";
   } catch (const std::exception& error) {
     std::cerr << "TerraFlux graphics test failed: " << error.what() << '\n';
     return 1;

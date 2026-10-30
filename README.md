@@ -155,6 +155,30 @@ alignment/metadata, shader programs, query/framebuffer storage, deferred orphan
 copies and retained CPU data are excluded. No hardware memory availability or
 performance improvement is inferred from these counts.
 
+### Peaks, rejection history and recovery
+
+Residency reports include independent buffer/texture byte peaks, a combined
+`peak_total_bytes`, allocation-admission count, rejection count, remaining logical
+headroom and whether current usage exceeds a lowered cap. `last_byte_rejection`
+records the usage, request size and limit at the last rejection, or null.
+Freeing resources restores headroom without erasing history. Per-category peaks
+may occur at different times and must not be summed into a combined peak.
+
+RenderDevice telemetry can be reset explicitly: peaks rebase to current usage
+and admission/rejection history clears. These are validation-mirror admissions,
+including temporary reservations before driver creation; not physical VRAM peaks.
+Orphaning does not count as a new logical allocation.
+
+```bash
+./build-gl/terraflux-terrain-viewer --smoke-test --resource-recovery-test \
+  --residency-report --scene examples/mixed_asset_scene.json
+```
+
+The recovery check sets a cap at current logical usage, verifies a rejection
+preserves all active resource counts/bytes, detaches all drawables, then
+reattaches and renders one model within the same cap. It reports recovery;
+it does not introduce automatic eviction or retry policy into normal operation.
+
 ### Persist selection and inactive bindings
 
 ```bash
@@ -443,7 +467,7 @@ hours or release-readiness guarantees. The PS4 backend is unimplemented.
 
 | Desktop engine — Phases 1–9 | Full roadmap including PS4 |
 | --- | --- |
-| **~81%** (previously ~80%) | **~53%** (previously ~52%) |
+| **~82%** (previously ~81%) | **~53%** |
 
 | Phase | Component | Estimated completion |
 | --- | --- | ---: |
@@ -455,7 +479,7 @@ hours or release-readiness guarantees. The PS4 backend is unimplemented.
 | 6 | Shader system | 76% |
 | 7 | Scene and asset system | ~90% (previously 86%) |
 | 8 | Engine runtime | ~86% |
-| 9 | Performance | ~65% (previously ~58%) |
+| 9 | Performance | ~70% (previously ~65%) |
 | 10 | PS4 backend | 0% |
 
 Latest milestones: selective node reattachment and on-demand GPU mesh residency,
@@ -469,7 +493,7 @@ OBJ, glTF, GLB, transparent materials and repeated model references. Native test
 CTest suites and 71 simulation parity fixtures; CI also exercises the viewer
 under Mesa/Xvfb. See the branch's CI results for validation of each commit.
 
-Next planned work: peak-allocation telemetry and memory-budget recovery diagnostics. GPU meshes are created on demand; CPU model data
+Next planned work: bounded retained CPU recipe/image accounting. GPU meshes are created on demand; CPU model data
 and decoded image recipes remain eager and retained for reattachment. Asynchronous streaming, skeletal animation
 and full glTF/IBL support remain future work.
 This desktop-engine breakdown is separate from the earlier simulation-focused

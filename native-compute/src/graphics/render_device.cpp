@@ -107,13 +107,44 @@ ResourceBytes ValidatingRenderDevice::live_resource_bytes() const {
   return result;
 }
 
+ResourceTelemetry ValidatingRenderDevice::resource_telemetry() const {
+  auto result=telemetry_;
+  const auto used=live_resource_bytes().total();
+  result.limit_bytes=byte_budget_;
+  result.over_budget=used>byte_budget_;
+  result.headroom_bytes=result.over_budget?0:byte_budget_-used;
+  return result;
+}
+void ValidatingRenderDevice::reset_resource_telemetry() {
+  telemetry_={};
+  telemetry_.peak_bytes=live_resource_bytes();
+  telemetry_.peak_total_bytes=telemetry_.peak_bytes.total();
+}
+void ValidatingRenderDevice::admit_bytes(std::uint64_t bytes) {
+  const auto used=live_resource_bytes().total();
+  try{check_resource_byte_budget(used,bytes,byte_budget_);}
+  catch(const std::length_error&){
+    ++telemetry_.budget_rejections;
+    telemetry_.last_rejection=BudgetRejection{used,bytes,byte_budget_};
+    throw;
+  }
+}
+void ValidatingRenderDevice::record_allocation() {
+  const auto used=live_resource_bytes();
+  ++telemetry_.allocation_count;
+  telemetry_.peak_bytes.buffer_bytes=std::max(telemetry_.peak_bytes.buffer_bytes,used.buffer_bytes);
+  telemetry_.peak_bytes.texture_bytes=std::max(telemetry_.peak_bytes.texture_bytes,used.texture_bytes);
+  telemetry_.peak_total_bytes=std::max(telemetry_.peak_total_bytes,used.total());
+}
+
 BufferHandle ValidatingRenderDevice::create_buffer(
     BufferDesc desc, std::span<const std::byte> initial_data) {
   if (desc.size_bytes == 0 || initial_data.size() != desc.size_bytes)
     throw std::invalid_argument("buffer must have positive size and complete initialization");
-  check_resource_byte_budget(live_resource_bytes().total(),desc.size_bytes,byte_budget_);
+  admit_bytes(desc.size_bytes);
   const auto id = allocate_id();
   buffers_.emplace(id, StoredBuffer{desc, {initial_data.begin(), initial_data.end()}});
+  record_allocation();
   return {id};
 }
 
@@ -151,9 +182,10 @@ TextureHandle ValidatingRenderDevice::create_texture2d(
       static_cast<std::uint64_t>(desc.width)*desc.height>4'000'000 ||
       rgba8.size()!=static_cast<std::size_t>(desc.width)*desc.height*4)
     throw std::invalid_argument("invalid RGBA8 texture dimensions or pixels");
-  check_resource_byte_budget(live_resource_bytes().total(),rgba8_storage_bytes(desc),byte_budget_);
+  admit_bytes(rgba8_storage_bytes(desc));
   const auto id=allocate_id();
   textures_.emplace(id,desc);
+  record_allocation();
   return {id};
 }
 void ValidatingRenderDevice::destroy_texture(TextureHandle handle) {

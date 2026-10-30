@@ -752,3 +752,24 @@ orphan allocations, GPU query/framebuffer storage and CPU recipes are excluded.
 Native tests cover exact caps, mip chains, zero/lowered limits, failure cleanup,
 shared leases and overflow rejection. Mesa CI checks a bounded mixed scene
 and rejection of terrain allocation under a zero-byte cap.
+
+
+## Allocation peaks and budget-recovery telemetry
+
+`ResourceTelemetry` reports independent buffer/texture peaks, combined peak
+bytes, logical admission count, byte-budget rejection count and the last rejected
+request's used/requested/limit tuple. Snapshot headroom is clamped to zero when
+current usage exceeds a lowered cap. Deallocation preserves peak/history; an
+explicit `reset_resource_telemetry` rebases peaks to current storage and clears
+admission/rejection history. Per-category peaks need not occur simultaneously.
+Malformed resource requests fail validation without counting as budget rejection.
+
+OpenGL delegates telemetry to the validation mirror, so admissions include
+reservations preceding driver allocation and do not imply physical allocation
+success or actual VRAM residency. Orphaned in-flight storage remains excluded.
+Interactive failed reloads/activations emit retained-state diagnostics when
+reporting is enabled. The three-frame `--resource-recovery-test` deliberately
+rejects a new buffer at a full cap, evicts drawables, then reattaches/renders one
+model within that same cap. Normal runtime still leaves eviction/retry decisions
+to the caller. Native sanitizer tests cover recovery, historical peaks, lowered
+caps and explicit reset; Mesa CI validates rejection and rendered recovery.

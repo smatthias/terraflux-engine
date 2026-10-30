@@ -3,6 +3,7 @@
 #include <terraflux/texture_sampling.hpp>
 #include <cstddef>
 #include <limits>
+#include <optional>
 #include <cstdint>
 #include <span>
 #include <string>
@@ -107,6 +108,16 @@ struct ResourceBytes {
   std::uint64_t total() const {return buffer_bytes+texture_bytes;}
   bool operator==(const ResourceBytes&) const=default;
 };
+struct BudgetRejection {
+  std::uint64_t used_bytes=0,requested_bytes=0,limit_bytes=0;
+};
+struct ResourceTelemetry {
+  ResourceBytes peak_bytes{};
+  std::uint64_t peak_total_bytes=0,allocation_count=0,budget_rejections=0,headroom_bytes=0;
+  std::uint64_t limit_bytes=std::numeric_limits<std::uint64_t>::max();
+  bool over_budget=false;
+  std::optional<BudgetRejection> last_rejection;
+};
 std::uint64_t rgba8_storage_bytes(TextureDesc desc);
 void check_resource_byte_budget(std::uint64_t used,std::uint64_t additional,std::uint64_t limit);
 
@@ -116,6 +127,8 @@ class RenderDevice {
  public:
   virtual ~RenderDevice() = default;
   virtual ResourceBytes live_resource_bytes() const = 0;
+  virtual ResourceTelemetry resource_telemetry() const = 0;
+  virtual void reset_resource_telemetry() = 0;
   virtual void set_resource_byte_budget(std::uint64_t bytes) = 0;
   virtual BufferHandle create_buffer(BufferDesc desc, std::span<const std::byte> initial_data) = 0;
   virtual void destroy_buffer(BufferHandle handle) = 0;
@@ -148,6 +161,8 @@ class ValidatingRenderDevice final : public RenderDevice {
   void destroy_pipeline(PipelineHandle handle) override;
   void draw_indexed(const DrawIndexed& command) override;
   ResourceBytes live_resource_bytes() const override;
+  ResourceTelemetry resource_telemetry() const override;
+  void reset_resource_telemetry() override;
   void set_resource_byte_budget(std::uint64_t bytes) override {byte_budget_=bytes;}
   std::size_t draw_count() const { return draw_count_; }
   std::size_t live_buffer_count() const { return buffers_.size(); }
@@ -159,6 +174,9 @@ class ValidatingRenderDevice final : public RenderDevice {
     BufferDesc desc;
     std::vector<std::byte> bytes;
   };
+  ResourceTelemetry telemetry_;
+  void admit_bytes(std::uint64_t bytes);
+  void record_allocation();
   std::uint64_t byte_budget_=std::numeric_limits<std::uint64_t>::max();
   std::uint32_t next_id_ = 1;
   std::unordered_map<std::uint32_t, StoredBuffer> buffers_;
