@@ -120,7 +120,7 @@ hardware measurements; do not infer performance from software-renderer timings.
 | Priority / phase | Remaining gap | Concrete next deliverable / acceptance |
 | --- | --- | --- |
 | P0 — 3/9 | Physical hardware evidence | Run smoke/material/residency checks and repeated benchmarks on a physical GPU; record GPU, driver, commands and results |
-| P1 — 4 | Terrain LOD | Specify reduction, hole preservation, seam handling and selection budgets; add CPU invariants before viewer integration |
+| P1 — 4 | Terrain LOD | [Design complete](TERRAIN_LOD.md); implement bounded CPU variants, measured error and invariant tests before viewer integration |
 | P1 — 2/6 | Broader shader modules and attachment formats | Define one bounded extension with descriptor, lifetime and failure tests; retain existing built-ins |
 | P1 — 5 | Replay UI composition | Specify the next scoped display control; preserve exact timing, layer isolation and fire-grid identity |
 | P1 — 6/7 | Direct-light PBR subset | Scope IBL or shadows separately with reference fixtures; do not claim full glTF compatibility |
@@ -143,12 +143,14 @@ can continue while that evidence is pending.
 
 Completed: [physical-GPU validation checklist](GPU_VALIDATION.md), including logging,
 acceptance criteria and repeated benchmark commands. Hardware execution remains pending.
+Also completed: [terrain LOD specification](TERRAIN_LOD.md). ↑ Design milestone;
+implementation percentages remain unchanged.
 
 1. Execute hardware smoke checks and record GPU/driver/results.
 2. Run the interactive hardware review, including resize and lifecycle controls.
 3. Run repeated hardware benchmarks and record frame-time and resource behavior.
-4. Specify terrain LOD geometry, holes, seams and selection acceptance criteria.
-5. Implement bounded CPU LOD generation with invariant tests.
+4. Implement level-0 preservation and eligible CPU LOD patch generation.
+5. Add geometric error, seam/hole invariants and aggregate-budget tests.
 6. Integrate LOD selection with transactional terrain residency.
 7. Verify LOD rendering, layer isolation and replay across direct/offscreen paths.
 8. Specify cancellable CPU loading and context-thread upload ownership.
