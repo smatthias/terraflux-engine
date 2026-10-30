@@ -149,8 +149,8 @@ implementation percentages remain unchanged.
 1. Execute hardware smoke checks and record GPU/driver/results.
 2. Run the interactive hardware review, including resize and lifecycle controls.
 3. Run repeated hardware benchmarks and record frame-time and resource behavior.
-4. Generate boundary-preserving simplified patches; level-0 preservation and eligibility detection are complete.
-5. Add geometric error, seam/hole invariants and aggregate-budget tests.
+4. Implement overlay-based geometric error measurement; CPU simplification is complete.
+5. Expand error, seam/hole and aggregate-budget invariants.
 6. Integrate LOD selection with transactional terrain residency.
 7. Verify LOD rendering, layer isolation and replay across direct/offscreen paths.
 8. Specify cancellable CPU loading and context-thread upload ownership.
@@ -176,7 +176,9 @@ preservation and a combined logical recipe-byte cap. It registers a sixteenth
 native suite. The pinned checkpoint and its 15-suite evidence above remain
 historical; they do not certify this later change. Simplification and GPU LOD
 selection remain pending. Deterministic patch eligibility is now implemented,
-with explicit fallback reasons and no geometry reduction yet. See [LOD implementation status](TERRAIN_LOD.md).
+with explicit fallback reasons. Opt-in CPU simplification now preserves every
+patch boundary while reducing eligible patches from 32 to 16 triangles.
+Both levels count toward element/byte caps; measured error and GPU integration remain pending. See [LOD implementation status](TERRAIN_LOD.md).
 
 ## Implementation references
 
