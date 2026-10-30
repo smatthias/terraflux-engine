@@ -229,8 +229,8 @@ void textured_materials(const std::string& json) {
     replace_first(json,"\"strength\": 0.65","\"strength\": 1.4"));},
     "occlusion strength out of range rejected");
   rejects([&]{(void)terraflux::assets::import_gltf(
-    replace_first(json,"\"alphaMode\": \"MASK\"","\"alphaMode\": \"BLEND\""));},
-    "unsupported alpha blend mode rejected");
+    replace_first(json,"\"alphaMode\": \"MASK\"","\"alphaMode\": \"ADD\""));},
+    "unsupported alpha ADD mode rejected");
   rejects([&]{(void)terraflux::assets::import_gltf(
     replace_first(json,"\"alphaCutoff\": 0.4","\"alphaCutoff\": -0.2"));},
     "negative alpha cutoff rejected");
