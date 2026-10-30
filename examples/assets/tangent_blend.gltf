@@ -1,0 +1,338 @@
+{
+  "asset": {
+    "version": "2.0",
+    "generator": "TerraFlux native glTF fixture"
+  },
+  "buffers": [
+    {
+      "byteLength": 216,
+      "uri": "data:application/octet-stream;base64,mpkZvwAAAAAAAAC/mpkZPwAAAAAAAAC/AAAAAAAAAABmZiY/AAAAAAAAgD8AAAAAzcwMvwAAgD4AAEC/zcwMPwAAgD4AAEC/AAAAAJqZmT4zM3M/AAAAAAAAgD8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAAD8AAIA/AAAAPwAAAD8AAAIAAQAAAAEAAwABAAIAAwACAAAAAwCcJVI/5u04PmyyCr8AAIA/nCVSP+btOL5ssgo/AACAvwAAgD8AAAAAAAAAAAAAgD8AAIA/AAAAAAAAAAAAAIC/"
+    }
+  ],
+  "bufferViews": [
+    {
+      "buffer": 0,
+      "byteOffset": 0,
+      "byteLength": 48
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 48,
+      "byteLength": 48
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 96,
+      "byteLength": 32
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 128,
+      "byteLength": 12
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 140,
+      "byteLength": 12
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 152,
+      "byteLength": 64
+    }
+  ],
+  "accessors": [
+    {
+      "bufferView": 0,
+      "componentType": 5126,
+      "count": 4,
+      "type": "VEC3"
+    },
+    {
+      "bufferView": 1,
+      "componentType": 5126,
+      "count": 4,
+      "type": "VEC3"
+    },
+    {
+      "bufferView": 2,
+      "componentType": 5126,
+      "count": 4,
+      "type": "VEC2"
+    },
+    {
+      "bufferView": 3,
+      "componentType": 5123,
+      "count": 6,
+      "type": "SCALAR"
+    },
+    {
+      "bufferView": 4,
+      "componentType": 5123,
+      "count": 6,
+      "type": "SCALAR"
+    },
+    {
+      "bufferView": 5,
+      "componentType": 5126,
+      "count": 4,
+      "type": "VEC4"
+    }
+  ],
+  "materials": [
+    {
+      "name": "Blue",
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [
+          0.3,
+          0.7,
+          1,
+          0.45
+        ],
+        "baseColorTexture": {
+          "index": 0,
+          "texCoord": 0
+        },
+        "metallicFactor": 0.2,
+        "roughnessFactor": 0.7,
+        "metallicRoughnessTexture": {
+          "index": 2,
+          "texCoord": 0
+        }
+      },
+      "normalTexture": {
+        "index": 3,
+        "texCoord": 0,
+        "scale": 0.75
+      },
+      "occlusionTexture": {
+        "index": 2,
+        "texCoord": 0,
+        "strength": 0.65
+      },
+      "emissiveTexture": {
+        "index": 0,
+        "texCoord": 0
+      },
+      "emissiveFactor": [
+        0.1,
+        0.3,
+        0.2
+      ],
+      "alphaMode": "BLEND",
+      "alphaCutoff": 0.4
+    },
+    {
+      "name": "Coral",
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [
+          1,
+          0.48,
+          0.3,
+          1
+        ],
+        "baseColorTexture": {
+          "index": 1
+        },
+        "metallicFactor": 0,
+        "roughnessFactor": 0.85,
+        "metallicRoughnessTexture": {
+          "index": 2
+        }
+      },
+      "normalTexture": {
+        "index": 3
+      }
+    }
+  ],
+  "meshes": [
+    {
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 0,
+            "NORMAL": 1,
+            "TEXCOORD_0": 2,
+            "TANGENT": 5
+          },
+          "indices": 3,
+          "material": 0,
+          "mode": 4
+        },
+        {
+          "attributes": {
+            "POSITION": 0,
+            "NORMAL": 1,
+            "TEXCOORD_0": 2
+          },
+          "indices": 4,
+          "material": 1,
+          "mode": 4
+        }
+      ]
+    },
+    {
+      "name": "Separate roof",
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 0,
+            "NORMAL": 1,
+            "TEXCOORD_0": 2
+          },
+          "indices": 4,
+          "material": 1,
+          "mode": 4
+        }
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "name": "Assembly",
+      "translation": [
+        0,
+        0,
+        0
+      ],
+      "children": [
+        1,
+        2,
+        4,
+        5
+      ]
+    },
+    {
+      "name": "Left tilted tetra",
+      "mesh": 0,
+      "translation": [
+        -1.15,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0.382683432365,
+        0,
+        0.923879532511
+      ]
+    },
+    {
+      "name": "Right tall tetra",
+      "mesh": 0,
+      "translation": [
+        1.15,
+        0,
+        0
+      ],
+      "scale": [
+        0.75,
+        1.2,
+        0.75
+      ]
+    },
+    {
+      "name": "Unused alternate scene",
+      "mesh": 0,
+      "translation": [
+        0,
+        0,
+        10
+      ]
+    },
+    {
+      "name": "Roof left",
+      "mesh": 1,
+      "translation": [
+        -0.5,
+        1.1,
+        0.3
+      ],
+      "scale": [
+        0.8,
+        0.8,
+        0.8
+      ]
+    },
+    {
+      "name": "Roof right",
+      "mesh": 1,
+      "translation": [
+        0.5,
+        1.1,
+        0.3
+      ],
+      "rotation": [
+        0,
+        0.70710678118,
+        0,
+        0.70710678118
+      ]
+    }
+  ],
+  "scenes": [
+    {
+      "name": "Main assembly",
+      "nodes": [
+        0
+      ]
+    },
+    {
+      "name": "Other",
+      "nodes": [
+        3
+      ]
+    }
+  ],
+  "scene": 0,
+  "images": [
+    {
+      "uri": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAANElEQVR4nGP87ybHAAMqUXfg7DvLVLCKMzGQCGivgVF5wS84B5e7kcUHox9G44EWTiJZAwA9CBhdjiu9JAAAAABJRU5ErkJggg==",
+      "mimeType": "image/png"
+    },
+    {
+      "uri": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/2wBDAQMDAwQDBAgEBAgQCwkLEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBD/wAARCAAQABADASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwDpf+T1v+pN/wCEN/7iP2v7X/358vZ9m/2s7+2OT/k9b/qTf+EN/wC4j9r+1/8Afny9n2b/AGs7+2OT/k9b/qTf+EN/7iP2v7X/AN+fL2fZv9rO/tjk/wCT1v8AqTf+EN/7iP2v7X/358vZ9m/2s7+2OfE/5Ev/AFA/Uf8AuP8A2X7f7/rv12/976tzdLHX/G/v8/8A277Xl/8ASOT/AMmP/9k=",
+      "mimeType": "image/jpeg"
+    },
+    {
+      "mimeType": "image/png",
+      "uri": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAACp8Z5+AAAAFUlEQVR4nGOUW3XnPwMSYGJAA4QFAKyeAqs0Yc5LAAAAAElFTkSuQmCC"
+    },
+    {
+      "mimeType": "image/png",
+      "uri": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAACp8Z5+AAAAFUlEQVR4nGNsaPj/nwEJMDGgAcICAMRTAwYdD1eCAAAAAElFTkSuQmCC"
+    }
+  ],
+  "textures": [
+    {
+      "source": 0,
+      "sampler": 0
+    },
+    {
+      "source": 1,
+      "sampler": 1
+    },
+    {
+      "source": 2,
+      "sampler": 0
+    },
+    {
+      "source": 3,
+      "sampler": 1
+    }
+  ],
+  "samplers": [
+    {
+      "minFilter": 9987,
+      "magFilter": 9729,
+      "wrapS": 33071,
+      "wrapT": 33648
+    },
+    {
+      "minFilter": 9729,
+      "magFilter": 9728,
+      "wrapS": 10497,
+      "wrapT": 33071
+    }
+  ]
+}

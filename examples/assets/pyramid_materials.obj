@@ -1,0 +1,21 @@
+# Multi-material pyramid demonstration
+mtllib pyramid_materials.mtl
+o MultiMaterialPyramid
+v -0.5 0 -0.5
+v 0.5 0 -0.5
+v 0.5 0 0.5
+v -0.5 0 0.5
+v 0 1 0
+vt 0 0
+vt 1 0
+vt 1 1
+vt 0 1
+vt 0.5 0.5
+usemtl CoolStone
+f 4/4 3/3 2/2 1/1
+f 1/1 2/2 5/5
+usemtl WarmStone
+f 2/2 3/3 5/5
+f 3/3 4/4 5/5
+usemtl CoolStone
+f 4/4 1/1 5/5

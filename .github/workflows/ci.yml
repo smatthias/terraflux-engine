@@ -20,10 +20,16 @@ jobs:
       - name: Install Python dependencies
         run: pip install -r intelligence/requirements.txt
 
+      - name: Install image libraries
+        run: sudo apt-get update && sudo apt-get install -y libpng-dev libjpeg-dev
+
       - name: Build native engine
         run: |
           cmake -S native-compute -B build -DCMAKE_BUILD_TYPE=Release
           cmake --build build --parallel 2
+
+      - name: Run native grid tests
+        run: ctest --test-dir build --output-on-failure
 
       - name: Run Python tests
         env:
@@ -37,3 +43,224 @@ jobs:
           python intelligence/scripts/verify_native_parity.py \
             --runner build/terraflux-compute-runner \
             --fixtures intelligence/tests/fixtures/grid_spread_cases.json
+
+  clang-debug-native:
+    name: Clang Debug and parity
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install Python dependencies
+        run: pip install -r intelligence/requirements.txt
+
+      - name: Install image libraries
+        run: sudo apt-get update && sudo apt-get install -y libpng-dev libjpeg-dev
+
+      - name: Build with Clang (Debug)
+        run: |
+          cmake -S native-compute -B build-clang \
+            -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_FLAGS="-Wall -Wextra -Wpedantic"
+          cmake --build build-clang --parallel 2
+
+      - name: Run native grid tests
+        run: ctest --test-dir build-clang --output-on-failure
+
+      - name: Verify native parity with Clang
+        env:
+          PYTHONPATH: intelligence
+        run: |
+          python intelligence/scripts/verify_native_parity.py \
+            --runner build-clang/terraflux-compute-runner \
+            --fixtures intelligence/tests/fixtures/grid_spread_cases.json
+
+  opengl-desktop:
+    name: OpenGL 4.3 desktop and Xvfb smoke
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install OpenGL and GLFW
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libglfw3-dev libgl-dev xvfb libpng-dev libjpeg-dev
+
+      - name: Compile OpenGL viewer
+        run: |
+          cmake -S native-compute -B build-gl -DCMAKE_BUILD_TYPE=Release \
+            -DTERRAFLUX_WITH_OPENGL=ON
+          cmake --build build-gl --parallel 2
+
+      - name: Run native tests with OpenGL enabled
+        run: ctest --test-dir build-gl --output-on-failure
+
+      - name: Generate wildfire scenario and native simulation frames
+        run: |
+          python3 examples/generate_wildfire_scenario.py > /tmp/terraflux-request.json
+          ./build-gl/terraflux-compute-runner < /tmp/terraflux-request.json > /tmp/terraflux-response.json
+
+      - name: Render one frame with Mesa under Xvfb
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test \
+            --obj examples/assets/pyramid.obj --texture examples/assets/checker.ppm
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test \
+            --obj examples/assets/pyramid_materials.obj
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test \
+            --obj examples/assets/pyramid.obj \
+            --scene examples/scenes/twin_pyramids.json
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test \
+            --scene examples/asset_scene.json | tee /tmp/terraflux-scene-assets.log
+          grep -q "2 meshes" /tmp/terraflux-scene-assets.log
+          grep -q "3 instances" /tmp/terraflux-scene-assets.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test \
+            --scene examples/mixed_asset_scene.json | tee /tmp/terraflux-mixed-scene.log
+          grep -q "7 meshes" /tmp/terraflux-mixed-scene.log
+          grep -q "17 instances" /tmp/terraflux-mixed-scene.log
+          for source in "--scene examples/asset_scene.json" \
+                        "--scene examples/mixed_asset_scene.json" \
+                        "--obj examples/assets/pyramid.obj --scene examples/scenes/twin_pyramids.json"; do
+            xvfb-run -a -s "-screen 0 1280x800x24" \
+              ./build-gl/terraflux-terrain-viewer --smoke-test --scene-detach-test \
+              $source | tee /tmp/terraflux-detach.log
+            grep -q "Scene detach passed" /tmp/terraflux-detach.log
+          done
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --scene-detach-test \
+            --no-instancing --scene examples/mixed_asset_scene.json
+          grep -Eq '[1-9][0-9]* transparent draws' /tmp/terraflux-mixed-scene.log
+          for mode in "--scene-controls-test" "--asset-lifecycle-test"; do
+            xvfb-run -a -s "-screen 0 1280x800x24" \
+              ./build-gl/terraflux-terrain-viewer --smoke-test $mode \
+              --scene examples/mixed_asset_scene.json
+          done
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --no-instancing \
+            --scene examples/mixed_asset_scene.json
+          for source in "--scene examples/asset_scene.json" \
+                        "--obj examples/assets/pyramid.obj --scene examples/scenes/twin_pyramids.json"; do
+            xvfb-run -a -s "-screen 0 1280x800x24" \
+              ./build-gl/terraflux-terrain-viewer --smoke-test --scene-controls-test \
+              $source | tee /tmp/terraflux-scene-controls.log
+            grep -q "Scene controls passed" /tmp/terraflux-scene-controls.log
+          done
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --scene-controls-test \
+            --scene examples/asset_scene.json \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json \
+            | tee /tmp/terraflux-scene-controls-replay.log
+          grep -q "Scene controls passed" /tmp/terraflux-scene-controls-replay.log
+          for source in "--scene examples/asset_scene.json" \
+                        "--obj examples/assets/pyramid.obj" \
+                        "--gltf examples/assets/tangent_blend.gltf --asset-preview"; do
+            xvfb-run -a -s "-screen 0 1280x800x24" \
+              ./build-gl/terraflux-terrain-viewer --smoke-test --asset-lifecycle-test \
+              $source | tee /tmp/terraflux-lifecycle.log
+            grep -q "Asset lifecycle passed" /tmp/terraflux-lifecycle.log
+            grep -q "rendered 4 frame(s)" /tmp/terraflux-lifecycle.log
+          done
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --asset-lifecycle-test \
+            --no-instancing --scene examples/asset_scene.json
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --no-instancing \
+            --scene examples/asset_scene.json
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test \
+            --obj examples/assets/pyramid.obj \
+            --scene examples/scenes/culling_demo.json | tee /tmp/terraflux-culling.log
+          grep -q "Visibility: 2 visible, 1 culled" /tmp/terraflux-culling.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer \
+            --obj examples/assets/pyramid.obj \
+            --scene examples/scenes/benchmark_culling.json \
+            --benchmark-frames 8 --no-instancing > /tmp/terraflux-benchmark-on.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer \
+            --obj examples/assets/pyramid.obj \
+            --scene examples/scenes/benchmark_culling.json \
+            --benchmark-frames 8 --no-culling --no-instancing > /tmp/terraflux-benchmark-off.log
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          def record(path):
+              line=next(s.partition("=")[2] for s in Path(path).read_text().splitlines()
+                        if s.startswith("BENCHMARK_JSON="))
+              return json.loads(line)
+          on=record("/tmp/terraflux-benchmark-on.log")
+          off=record("/tmp/terraflux-benchmark-off.log")
+          assert on["culling"] is True and off["culling"] is False
+          assert on["frames"]==8 and off["frames"]==8
+          assert on["gpu_samples"]>0 and off["gpu_samples"]>0
+          assert on["culled_per_frame"]>=75 and off["culled_per_frame"]==0
+          assert on["draws_per_frame"]<off["draws_per_frame"]
+          print("GPU timer and on/off comparison verified:",on,off)
+          PY
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer \
+            --obj examples/assets/pyramid.obj \
+            --scene examples/scenes/benchmark_culling.json \
+            --benchmark-frames 8 > /tmp/terraflux-instanced.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer \
+            --obj examples/assets/pyramid.obj \
+            --scene examples/scenes/benchmark_culling.json \
+            --benchmark-frames 8 --no-instancing > /tmp/terraflux-legacy.log
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          def read(name):
+              return json.loads(next(line.split("=",1)[1]
+                  for line in Path(name).read_text().splitlines()
+                  if line.startswith("BENCHMARK_JSON=")))
+          inst=read("/tmp/terraflux-instanced.log")
+          legacy=read("/tmp/terraflux-legacy.log")
+          assert inst["instancing"] is True and legacy["instancing"] is False
+          assert inst["visible_per_frame"]==legacy["visible_per_frame"]==20
+          assert inst["culled_per_frame"]==legacy["culled_per_frame"]==80
+          assert inst["draws_per_frame"]==2 and legacy["draws_per_frame"]==21
+          assert inst["gpu_samples"]>0 and legacy["gpu_samples"]>0
+          print("Hardware instancing verified:",inst,legacy)
+          PY
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test \
+            --gltf examples/assets/tetra.gltf
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test \
+            --gltf examples/assets/multi_mesh.gltf
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test \
+            --gltf examples/assets/textured_multi_mesh.gltf
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --asset-preview \
+            --gltf examples/assets/textured_multi_mesh.gltf
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --asset-preview \
+            --gltf examples/assets/tangent_blend.gltf | tee /tmp/terraflux-blend.log
+          grep -Eq '[1-9][0-9]* transparent draws' /tmp/terraflux-blend.log
+          grep -q 'Visible glTF changed pixels' /tmp/terraflux-blend.log
+          python3 examples/pack_gltf_fixture.py \
+            examples/assets/textured_multi_mesh.gltf /tmp/terraflux-textured.glb
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test \
+            --gltf /tmp/terraflux-textured.glb

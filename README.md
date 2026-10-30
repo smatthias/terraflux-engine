@@ -14,13 +14,22 @@ twin applications.
 - Versioned simulation contracts
 - Deterministic simulation fixtures
 - C++/Python parity verification
+- Optional OpenGL 4.3 desktop terrain and wildfire-replay viewer
+- OBJ/MTL and static glTF/GLB assets, textures and a direct-light PBR subset
+- Scene hierarchies, shared OBJ/glTF/GLB asset references and deterministic Spin/Motion
+- Scene pause/resume, single stepping and transactional asset unload/reload
+- Reusable CPU material/path/image resolution and sampler-aware texture keys
+- Reference-counted GPU texture leases; final material release evicts the allocation
+- Frustum culling, opaque hardware instancing, CPU/GPU timing and benchmarks
 
 ## Requirements
 
 - C++20-compatible compiler
-- CMake 3.16 or newer
+- CMake 3.20 or newer
 - Python 3.10 or newer
 - Pydantic 2.x
+- libpng and libjpeg development libraries (native builds)
+- Optional viewer: GLFW 3.3+, OpenGL 4.3 driver and a display server
 
 ## Build the native engine
 
@@ -30,6 +39,94 @@ cmake --build build
 ```
 
 The executable is located at `build/terraflux-compute-runner`.
+
+## Desktop 3D viewer
+
+On Ubuntu, install the native image and optional graphics dependencies:
+
+```bash
+sudo apt-get install cmake g++ libpng-dev libjpeg-dev libglfw3-dev libgl-dev
+cmake -S native-compute -B build-gl -DCMAKE_BUILD_TYPE=Release \
+  -DTERRAFLUX_WITH_OPENGL=ON
+cmake --build build-gl --parallel 2
+ctest --test-dir build-gl --output-on-failure
+```
+
+Launch terrain alone, a shared multi-model OBJ scene, or a glTF material preview:
+
+```bash
+./build-gl/terraflux-terrain-viewer
+./build-gl/terraflux-terrain-viewer --scene examples/asset_scene.json
+./build-gl/terraflux-terrain-viewer --scene examples/mixed_asset_scene.json
+./build-gl/terraflux-terrain-viewer \
+  --gltf examples/assets/tangent_blend.gltf --asset-preview
+```
+
+Version 2 scene JSON declares named OBJ, glTF or GLB paths relative to the
+scene file. Canonical path aliases share model geometry, materials and images.
+A referenced glTF/GLB expands its active authored hierarchy beneath the scene
+node transform; Spin/Motion therefore move the complete referenced model.
+Mixed scenes use the direct-light PBR subset, with diffuse OBJ materials
+approximated as nonmetallic. Pure OBJ scenes retain the original diffuse path. Legacy version 1 scenes require their primary OBJ:
+
+```bash
+./build-gl/terraflux-terrain-viewer \
+  --obj examples/assets/pyramid.obj --scene examples/scenes/twin_pyramids.json
+```
+
+### Viewer controls
+
+| Key | Action |
+| --- | --- |
+| Arrow keys / + / - | Orbit camera / zoom |
+| P | Pause/resume OBJ demo or scene Spin/Motion; camera and fire replay continue |
+| N | Advance one 1/60-second scene tick and remain paused |
+| D | Detach the first remaining drawable scene node and evict its unused mesh resources |
+| U | Unload the imported asset/scene; retain terrain and wildfire playback |
+| R | Reload the original asset/scene; failed loads preserve the current asset |
+| Space | Pause/resume wildfire replay |
+| Home | Reset wildfire replay to its first frame and pause |
+| Comma / period | Previous / next wildfire frame, pausing replay |
+| Escape | Exit |
+
+P/N are edge-triggered: holding a key does not repeat it. Paused wall time
+never accumulates; N discards a fractional pending tick. Successful reload
+resets scene animation to authored transforms and resumes its clock. Reload
+is synchronous and temporarily holds the old and new GPU scopes together.
+Static glTF hierarchies have no animation for P/N to advance.
+
+### Wildfire replay and runtime checks
+
+```bash
+python3 examples/generate_wildfire_scenario.py > /tmp/terraflux-request.json
+./build-gl/terraflux-compute-runner < /tmp/terraflux-request.json > /tmp/terraflux-response.json
+./build-gl/terraflux-terrain-viewer \
+  --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json \
+  --scene examples/asset_scene.json
+```
+
+For automated viewer checks, use these with a display or `xvfb-run -a`:
+
+```bash
+./build-gl/terraflux-terrain-viewer --smoke-test --scene-controls-test \
+  --scene examples/asset_scene.json
+./build-gl/terraflux-terrain-viewer --smoke-test --asset-lifecycle-test \
+  --scene examples/asset_scene.json
+```
+
+The controls check verifies pause, one tick, a paused hold and resume against
+expected serialized scene state, while the engine clock advances independently.
+The lifecycle check covers failed replacement, preserved rendering, unload,
+a terrain-only frame, reload, replacement and final cleanup. Imported GPU
+resources and streamed instance buffers return to the terrain-only baseline.
+Live API resource counts are not physical VRAM measurements.
+
+`--profile` reports CPU and asynchronous GPU timings. See
+[scene/assets documentation](docs/SCENE_ASSETS.md) for supported material
+features, scene formats and culling/instancing benchmarks, and
+[graphics backends](docs/GRAPHICS_BACKENDS.md) for backend boundaries.
+Mesa/Xvfb CI verifies functionality; physical GPU validation and representative
+hardware performance measurements remain outstanding.
 
 ## Python setup
 
@@ -42,6 +139,7 @@ pip install -r intelligence/requirements.txt
 ## Run tests
 
 ```bash
+ctest --test-dir build --output-on-failure
 PYTHONPATH=intelligence \
   python -m unittest discover -s intelligence/tests -v
 ```
@@ -255,11 +353,44 @@ and all weights are modelling parameters, not calibrated constants. Constants li
 `intelligence/app/spread_kernel.py` and `native-compute/include/terraflux/contracts.hpp`
 and must be kept in sync.
 
-## Project status
+## Current development status
 
-TerraFlux is an early-stage simulation engine currently focused on
-deterministic grid-based wildfire propagation. Additional environmental
-models and visualization capabilities may be added later.
+Planning snapshot: 30 October 2026, desktop viewer feature branch.
+Percentages are rough engineering estimates, not measured coverage, approved
+hours or release-readiness guarantees. The PS4 backend is unimplemented.
+
+| Desktop engine — Phases 1–9 | Full roadmap including PS4 |
+| --- | --- |
+| **~76%** (previously ~75%) | **~50%** (previously ~49%) |
+
+| Phase | Component | Estimated completion |
+| --- | --- | ---: |
+| 1 | Core extraction | 100% |
+| 2 | Rendering abstraction | 65% |
+| 3 | OpenGL backend | 85% |
+| 4 | 3D terrain renderer | 75% |
+| 5 | Simulation visualization | 65% |
+| 6 | Shader system | 76% |
+| 7 | Scene and asset system | ~90% (previously 86%) |
+| 8 | Engine runtime | ~70% (previously ~65%) |
+| 9 | Performance | 55% |
+| 10 | PS4 backend | 0% |
+
+Latest milestones: selective scene-node detachment and geometry eviction,
+shared GPU texture leases, reusable CPU material/texture
+resolution, serializable Motion,
+shared mixed-format scene assets, isolated
+GPU asset lifetimes, unload/reload with failure recovery, and independent
+scene pause/resume and single-step controls. The mixed-format example includes
+OBJ, glTF, GLB, transparent materials and repeated model references. Native testing comprises 13
+CTest suites and 71 simulation parity fixtures; CI also exercises the viewer
+under Mesa/Xvfb. See the branch's CI results for validation of each commit.
+
+Next planned work: selective node reattachment and on-demand model residency.
+Detached nodes retain their transform hierarchy; R reload restores authored scene references. Asynchronous streaming, skeletal animation
+and full glTF/IBL support remain future work.
+This desktop-engine breakdown is separate from the earlier simulation-focused
+[220-hour planning backlog](docs/ROADMAP.md).
 
 ## License
 
