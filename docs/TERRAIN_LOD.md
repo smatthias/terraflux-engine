@@ -1,6 +1,6 @@
 # Terrain LOD design — first bounded increment
 
-Status: **level-0 foundation and patch eligibility implemented; simplification pending**.
+Status: **opt-in CPU simplification implemented; error measurement and GPU integration pending**.
 Reviewed against the CPU tile partitioner and TerrainTileRenderer interfaces on
 30 October 2026. Existing defaults and simulation behavior remain unchanged.
 
@@ -8,8 +8,8 @@ Reviewed against the CPU tile partitioner and TerrainTileRenderer interfaces on
 
 `terraflux/terrain_lod.hpp` now exposes `TerrainTileLod`, `TerrainLodOptions`,
 `TerrainLodSet` and `build_terrain_lods`. Level 0 owns the exact existing partition;
-`level1` and `max_vertical_error` are empty. No simplification, selector or GPU
-integration is claimed. Stable IDs are vector indices in tile (Y,X) order.
+`level1` is empty by default; opt-in generation is described below.
+`max_vertical_error` remains empty. No selector or GPU integration is claimed. Stable IDs are vector indices in tile (Y,X) order.
 
 The default 512 MiB logical recipe cap includes used TerrainVertex elements,
 indices and source-map entries. It excludes vector capacity, container overhead,
@@ -49,6 +49,26 @@ Tests cover full/partial/one-quad tiles, holes and missing triangles, duplicate
 vertices/triangles, winding, alternate diagonals, irregular coordinates, stable
 report order, reordered/cyclic triangles and both signed coordinate extremes.
 
+## Implemented opt-in level 1
+
+Set `TerrainLodOptions::enable_level1=true` to generate compact coarse recipes.
+Each eligible patch replaces 32 triangles with a 16-triangle center fan. All 16
+perimeter vertices and the existing center retain source positions, normals and
+grid identity. Unsupported patches retain their original triangles. A tile with
+no eligible patch stores no level-1 allocation; callers use level 0.
+
+Level 0 remains exact and defaults are unchanged. Both variants count toward
+aggregate vertex/index and logical recipe-byte budgets; candidate rejection
+publishes no partial result. The analyzer reuses the existing partition rather
+than allocating a second partition. Simplification uses temporary grouping and
+compaction maps, which are outside the retained payload budget.
+
+Coarse bounds conservatively retain the source tile extent. Error measurement is
+still absent, not zero. The viewer does not consume these variants yet. Tests
+verify 32-to-16 reduction, boundary segmentation, winding/projected area, hole
+fallback, adjacent-tile packed attributes, source mappings, reordered input,
+coordinate extremes and exact/over budgets covering both levels.
+
 ## Scope and integration points
 
 The current CPU partitioner preserves every source triangle and returns stable
@@ -56,7 +76,7 @@ coordinate-sorted tile IDs, source vertex mappings and global normals. The GPU
 renderer retains one packed recipe per tile and stages replacements between passes.
 LOD adds an optional recipe variant, not a new simulation mesh.
 
-First increment: CPU generation of two levels per tile:
+Implemented CPU generation supports two levels per tile:
 level 0 is the existing exact mesh; level 1 simplifies eligible complete 4x4-quad
 patches. No viewer flag is implemented by this design. Screen-space selection,
 GPU integration and benchmark conclusions are subsequent increments.
@@ -203,6 +223,6 @@ implementation change. This design does not yet freeze an automatic selector API
 7. Add camera selection with hysteresis and explicit diagnostics.
 8. Measure actual hardware impact.
 
-Item 1 is implemented, including eligibility detection. Simplification, error
-measurement and expanded invariants remain next. Shader modules, animation,
+Items 1 and 2 are implemented. Error measurement and further geometric
+invariants remain next; GPU integration is still pending. Shader modules, animation,
 general asynchronous loading and PS4 remain separate workstreams.
