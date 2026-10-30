@@ -87,4 +87,21 @@ class OpaqueRenderQueue::InstanceBufferRing {
   bool started_=false;
 };
 
+// Draw alpha-blended primitives back-to-front with depth testing enabled
+// and depth writes disabled at the pipeline level. Intentionally never
+// batches/instances transparent geometry: correct blending needs ordering.
+struct TransparentDraw {
+  PreparedDraw draw;
+  double distance_squared=0;
+};
+class TransparentRenderQueue {
+ public:
+  void add(TransparentDraw item);
+  void sort_back_to_front();
+  std::size_t submit(RenderDevice& device);
+  const std::vector<TransparentDraw>& entries() const {return draws_;}
+ private:
+  std::vector<TransparentDraw> draws_;
+};
+
 } // namespace terraflux::graphics

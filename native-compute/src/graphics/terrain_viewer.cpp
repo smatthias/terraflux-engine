@@ -274,7 +274,7 @@ int main(int argc, char** argv) {
         BufferHandle pbr_uniform{};
         float metallic=1,roughness=1,normal_scale=1,occlusion_strength=1;
         float alpha_factor=1,alpha_cutoff=.5f;
-        bool alpha_mask=false;
+        bool alpha_mask=false,alpha_blend=false;
         terraflux::math::Vec3 emissive_factor{};
       };
       std::map<std::string,TextureHandle> textures;
@@ -285,7 +285,7 @@ int main(int argc, char** argv) {
         std::uint32_t indices=0;
       };
       std::vector<AdditionalMesh> additional_meshes;
-      PipelineHandle pipeline,instanced_pipeline;
+      PipelineHandle pipeline,instanced_pipeline,transparent_pipeline;
       std::unique_ptr<OpaqueRenderQueue::InstanceBufferRing> instance_ring;
       std::uint32_t indices = 0;
       terraflux::scene::Scene scene;
@@ -496,7 +496,7 @@ int main(int argc, char** argv) {
           terraflux::TextureSampling sampling{};
           double metallic=1,roughness=1,normal_scale=1,occlusion_strength=1;
           double alpha_factor=1,alpha_cutoff=.5;
-          bool alpha_mask=false;
+          bool alpha_mask=false,alpha_blend=false;
           terraflux::math::Vec3 emissive_factor{};
           std::filesystem::path texture_file,metallic_file,normal_file,occlusion_file,emissive_file;
           terraflux::TextureSampling metallic_sampling{},normal_sampling{},occlusion_sampling{},emissive_sampling{};
@@ -515,6 +515,8 @@ int main(int argc, char** argv) {
             alpha_cutoff=it->second.material.alpha_cutoff;
             alpha_mask=it->second.material.alpha_mode==
                 terraflux::assets::Material::AlphaMode::Mask;
+            alpha_blend=it->second.material.alpha_mode==
+                terraflux::assets::Material::AlphaMode::Blend;
             occlusion_sampling=it->second.material.occlusion_sampling;
             emissive_sampling=it->second.material.emissive_sampling;
             if(!it->second.material.occlusion_map.empty())
@@ -558,7 +560,8 @@ int main(int argc, char** argv) {
                           static_cast<float>(emissive_factor.y),
                           static_cast<float>(emissive_factor.z),
                           static_cast<float>(alpha_cutoff)};
-            pbr.options={static_cast<float>(alpha_factor),alpha_mask?1.0f:0.0f,0,0};
+            pbr.options={static_cast<float>(alpha_factor),
+                         alpha_blend?2.0f:(alpha_mask?1.0f:0.0f),0,0};
             const auto bytes=std::as_bytes(std::span(&pbr,1));
             pbr_uniform=owned.create_buffer({BufferUsage::Uniform,bytes.size()},bytes);
           }
@@ -568,7 +571,7 @@ int main(int argc, char** argv) {
                             static_cast<float>(roughness),static_cast<float>(normal_scale),
                             static_cast<float>(occlusion_strength),
                             static_cast<float>(alpha_factor),static_cast<float>(alpha_cutoff),
-                            alpha_mask,emissive_factor});
+                            alpha_mask,alpha_blend,emissive_factor});
         }
         if(result.empty())throw std::invalid_argument("mesh has no drawable material sections");
         return result;
@@ -621,6 +624,9 @@ int main(int argc, char** argv) {
       obj.pipeline = owned.create_pipeline({
           use_gltf?pbr_textured_object_shader_layout(false):
                    textured_object_shader_layout(),true});
+      if(use_gltf)
+        obj.transparent_pipeline=owned.create_pipeline({
+            pbr_textured_object_shader_layout(false),true,true,false});
       if(!options.no_instancing){
         obj.instanced_pipeline=owned.create_pipeline(
             {use_gltf?pbr_textured_object_shader_layout(true):
@@ -764,7 +770,12 @@ int main(int argc, char** argv) {
       const auto terrain_snapshot=(options.smoke_test && imported && imported->is_gltf)?
           device.capture_rgba(width,height):std::vector<std::uint8_t>{};
       OpaqueRenderQueue draw_queue;
+      TransparentRenderQueue transparent_queue;
       std::size_t visible_instances=0,culled_instances=0;
+      const terraflux::math::Vec3 camera_eye{
+        scene_camera.target.x+distance*std::sin(yaw)*std::cos(pitch),
+        scene_camera.target.y+distance*std::sin(pitch),
+        scene_camera.target.z+distance*std::cos(yaw)*std::cos(pitch)};
       if(imported && imported->is_gltf) {
         // Keep view vector in material UBO, not the terrain camera UBO,
         // whose 80-byte fire-grid layout is shared by existing shaders.
@@ -780,7 +791,8 @@ int main(int argc, char** argv) {
             pbr.emissive={static_cast<float>(s.emissive_factor.x),
                           static_cast<float>(s.emissive_factor.y),
                           static_cast<float>(s.emissive_factor.z),s.alpha_cutoff};
-            pbr.options={s.alpha_factor,s.alpha_mask?1.0f:0.0f,0,0};
+            pbr.options={s.alpha_factor,
+                         s.alpha_blend?2.0f:(s.alpha_mask?1.0f:0.0f),0,0};
             pbr.eye={static_cast<float>(eye.x),static_cast<float>(eye.y),
                      static_cast<float>(eye.z),1};
             device.update_buffer(s.pbr_uniform,0,std::as_bytes(std::span(&pbr,1)));
@@ -816,10 +828,16 @@ int main(int argc, char** argv) {
               textures.push_back({8,section.occlusion});
               textures.push_back({9,section.emissive});
             }
-            draw_queue.add({{imported->pipeline,vertex,index,
+            PreparedDraw draw{{section.alpha_blend?imported->transparent_pipeline:
+                                imported->pipeline,vertex,index,
                 section.first,section.count,
                 std::move(uniforms),{},std::move(textures)},
-                object_uniform,material});
+                object_uniform,material};
+            if(section.alpha_blend) {
+              const auto center=world_bounds(bounds,model).center;
+              const auto offset=center-camera_eye;
+              transparent_queue.add({std::move(draw),offset.dot(offset)});
+            }else draw_queue.add(std::move(draw));
           }
         };
         if(imported->is_gltf) {
@@ -866,12 +884,18 @@ int main(int argc, char** argv) {
                                                *imported->instance_ring,256):
           draw_queue.submit(device);
       frame_draws+=static_cast<std::uint32_t>(queue_stats.submitted);
+      // Transparent draws must follow terrain and all opaque geometry.
+      // Per-object depth sorting does not solve intersecting triangles
+      // within one mesh, but is correct for distinct primitive/instance layers.
+      const auto transparent_draws=transparent_queue.submit(device);
+      frame_draws+=static_cast<std::uint32_t>(transparent_draws);
       if(options.smoke_test || (options.profile && profile_frames%120==0)) {
         std::cout << "Visibility: " << visible_instances << " visible, "
                   << culled_instances << " culled, "
                   << queue_stats.submitted << " opaque draws, "
                   << queue_stats.instances << " object instances, "
-                  << queue_stats.state_groups << " state groups\n";
+                  << queue_stats.state_groups << " state groups, "
+                  << transparent_draws << " transparent draws\n";
       }
       if(record_gpu)device.end_gpu_timing();
       if(options.smoke_test && imported) {

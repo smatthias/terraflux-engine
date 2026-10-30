@@ -288,4 +288,28 @@ QueueStats OpaqueRenderQueue::submit_instanced_streamed(RenderDevice& device,
   return stats;
 }
 
+void TransparentRenderQueue::add(TransparentDraw item) {
+  if(!item.draw.object_uniform ||
+     !std::isfinite(item.distance_squared) || item.distance_squared<0)
+    throw std::invalid_argument("invalid transparent item or distance");
+  draws_.push_back(std::move(item));
+}
+void TransparentRenderQueue::sort_back_to_front() {
+  std::stable_sort(draws_.begin(),draws_.end(),
+      [](const TransparentDraw& a,const TransparentDraw& b){
+        return a.distance_squared>b.distance_squared;
+      });
+}
+std::size_t TransparentRenderQueue::submit(RenderDevice& device) {
+  sort_back_to_front();
+  for(const auto& item:draws_) {
+    device.update_buffer(item.draw.object_uniform,0,
+        std::as_bytes(std::span(&item.draw.material,1)));
+    device.draw_indexed(item.draw.command);
+  }
+  const auto count=draws_.size();
+  draws_.clear();
+  return count;
+}
+
 } // namespace terraflux::graphics
