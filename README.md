@@ -10,7 +10,7 @@ twin applications.
 ## Verified engine checkpoint
 
 The [desktop baseline checkpoint](docs/ENGINE_BASELINE.md) pins implementation
-revision `c64cb0470c28b2eb73dc81e0b01fedc8386676b8`, records its validation,
+revision `9196da2632abb408d93d7842453d9dc1a8fc48df`, records its validation,
 provides an isolated-worktree reproduction guide and lists remaining renderer
 gaps in priority order. It is a development baseline, not a completed roadmap
 or physical-GPU certification.
@@ -697,7 +697,9 @@ and must be kept in sync.
 
 Planning snapshot: 30 October 2026, desktop viewer feature branch.
 Percentages are rough engineering estimates, not measured coverage, approved
-hours or release-readiness guarantees. The PS4 backend is unimplemented.
+hours or release-readiness guarantees. Overall figures preserve the existing
+planning estimates; their weighting is undocumented and they are not arithmetic
+averages of the phase percentages. The PS4 backend is unimplemented.
 
 | Desktop engine — Phases 1–9 | Full roadmap including PS4 |
 | --- | --- |
@@ -774,7 +776,9 @@ Replay now uses an exact fixed-tick controller with 0.25x/0.5x/1x/2x/4x rates,
 pause/resume, bounded stepping and endpoint restart. A seven-frame Mesa check
 verifies displayed fire data, backward/reset pixel restoration and independent
 engine timing. Native replay tests now cover nine groups.
-Next planned implementation: refresh the baseline checkpoint and remaining-work list.
+Baseline checkpoint and remaining-work list refreshed against successful CI.
+Next: prepare the physical-GPU validation checklist; terrain LOD design is the
+next independent implementation workstream.
 See the [prioritized gaps and acceptance criteria](docs/ENGINE_BASELINE.md#remaining-renderer-work-in-priority-order). GPU meshes are created on demand; CPU model data
 and decoded image recipes remain eager and retained for reattachment. Asynchronous streaming, skeletal animation
 and full glTF/IBL support remain future work.
