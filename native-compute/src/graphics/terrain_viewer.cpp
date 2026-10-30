@@ -266,10 +266,13 @@ int main(int argc, char** argv) {
       std::vector<BoundingSphere> additional_bounds;
       struct Section {
         std::uint32_t first=0,count=0;
-        TextureHandle albedo{},metallic_roughness{},normal{};
+        TextureHandle albedo{},metallic_roughness{},normal{},occlusion{},emissive{};
         terraflux::math::Vec3 base_color{1,1,1};
         BufferHandle pbr_uniform{};
-        float metallic=1,roughness=1,normal_scale=1;
+        float metallic=1,roughness=1,normal_scale=1,occlusion_strength=1;
+        float alpha_factor=1,alpha_cutoff=.5f;
+        bool alpha_mask=false;
+        terraflux::math::Vec3 emissive_factor{};
       };
       std::map<std::string,TextureHandle> textures;
       std::vector<Section> sections;
@@ -456,6 +459,10 @@ int main(int argc, char** argv) {
           image={1,1,{255,255,255,255}}; // roughness G=1, metallic B=1
         else if(source.generic_string()=="__default_normal__")
           image={1,1,{128,128,255,255}}; // tangent-space +Z
+        else if(source.generic_string()=="__default_occlusion__")
+          image={1,1,{255,255,255,255}}; // full ambient visibility
+        else if(source.generic_string()=="__default_emissive__")
+          image={1,1,{255,255,255,255}}; // emissive factor provides black default
         else if(use_gltf && gltf_images.contains(source.generic_string())) {
           image=gltf_images.at(source.generic_string());
         } else {
@@ -483,9 +490,12 @@ int main(int argc, char** argv) {
         for(const auto& section:mesh.sections) {
           terraflux::math::Vec3 color{1,1,1};
           terraflux::TextureSampling sampling{};
-          double metallic=1,roughness=1,normal_scale=1;
-          std::filesystem::path texture_file,metallic_file,normal_file;
-          terraflux::TextureSampling metallic_sampling{},normal_sampling{};
+          double metallic=1,roughness=1,normal_scale=1,occlusion_strength=1;
+          double alpha_factor=1,alpha_cutoff=.5;
+          bool alpha_mask=false;
+          terraflux::math::Vec3 emissive_factor{};
+          std::filesystem::path texture_file,metallic_file,normal_file,occlusion_file,emissive_file;
+          terraflux::TextureSampling metallic_sampling{},normal_sampling{},occlusion_sampling{},emissive_sampling{};
           if(!section.material_name.empty()) {
             const auto it=material_files.find(section.material_name);
             if(it==material_files.end())
@@ -495,6 +505,18 @@ int main(int argc, char** argv) {
             metallic=it->second.material.metallic_factor;
             roughness=it->second.material.roughness_factor;
             normal_scale=it->second.material.normal_scale;
+            occlusion_strength=it->second.material.occlusion_strength;
+            emissive_factor=it->second.material.emissive_factor;
+            alpha_factor=it->second.material.alpha_factor;
+            alpha_cutoff=it->second.material.alpha_cutoff;
+            alpha_mask=it->second.material.alpha_mode==
+                terraflux::assets::Material::AlphaMode::Mask;
+            occlusion_sampling=it->second.material.occlusion_sampling;
+            emissive_sampling=it->second.material.emissive_sampling;
+            if(!it->second.material.occlusion_map.empty())
+              occlusion_file=it->second.material.occlusion_map;
+            if(!it->second.material.emissive_map.empty())
+              emissive_file=it->second.material.emissive_map;
             metallic_sampling=it->second.material.metallic_roughness_sampling;
             normal_sampling=it->second.material.normal_sampling;
             if(!it->second.material.metallic_roughness_map.empty())
@@ -508,7 +530,7 @@ int main(int argc, char** argv) {
           }
           if(!options.texture_file.empty())texture_file=options.texture_file;
           const auto handle=cached_texture(texture_file,sampling);
-          TextureHandle mr_handle{},normal_handle{};
+          TextureHandle mr_handle{},normal_handle{},occlusion_handle{},emissive_handle{};
           if(use_gltf) {
             mr_handle=cached_texture(metallic_file.empty()?
                     std::filesystem::path("__default_mr__"):metallic_file,
@@ -516,19 +538,33 @@ int main(int argc, char** argv) {
             normal_handle=cached_texture(normal_file.empty()?
                     std::filesystem::path("__default_normal__"):normal_file,
                     normal_sampling);
+            occlusion_handle=cached_texture(occlusion_file.empty()?
+                    std::filesystem::path("__default_occlusion__"):occlusion_file,
+                    occlusion_sampling);
+            emissive_handle=cached_texture(emissive_file.empty()?
+                    std::filesystem::path("__default_emissive__"):emissive_file,
+                    emissive_sampling);
           }
           BufferHandle pbr_uniform{};
           if(use_gltf) {
             PbrMaterialUniform pbr{};
             pbr.factors={static_cast<float>(metallic),static_cast<float>(roughness),
-                         static_cast<float>(normal_scale),0};
+                         static_cast<float>(normal_scale),static_cast<float>(occlusion_strength)};
+            pbr.emissive={static_cast<float>(emissive_factor.x),
+                          static_cast<float>(emissive_factor.y),
+                          static_cast<float>(emissive_factor.z),
+                          static_cast<float>(alpha_cutoff)};
+            pbr.options={static_cast<float>(alpha_factor),alpha_mask?1.0f:0.0f,0,0};
             const auto bytes=std::as_bytes(std::span(&pbr,1));
             pbr_uniform=owned.create_buffer({BufferUsage::Uniform,bytes.size()},bytes);
           }
           result.push_back({section.first_index,section.index_count,
-                            handle,mr_handle,normal_handle,color,
+                            handle,mr_handle,normal_handle,occlusion_handle,emissive_handle,color,
                             pbr_uniform,static_cast<float>(metallic),
-                            static_cast<float>(roughness),static_cast<float>(normal_scale)});
+                            static_cast<float>(roughness),static_cast<float>(normal_scale),
+                            static_cast<float>(occlusion_strength),
+                            static_cast<float>(alpha_factor),static_cast<float>(alpha_cutoff),
+                            alpha_mask,emissive_factor});
         }
         if(result.empty())throw std::invalid_argument("mesh has no drawable material sections");
         return result;
@@ -730,7 +766,11 @@ int main(int argc, char** argv) {
         const auto upload_pbr=[&](const std::vector<ImportedGpu::Section>& sections) {
           for(const auto& s:sections) {
             PbrMaterialUniform pbr{};
-            pbr.factors={s.metallic,s.roughness,s.normal_scale,0};
+            pbr.factors={s.metallic,s.roughness,s.normal_scale,s.occlusion_strength};
+            pbr.emissive={static_cast<float>(s.emissive_factor.x),
+                          static_cast<float>(s.emissive_factor.y),
+                          static_cast<float>(s.emissive_factor.z),s.alpha_cutoff};
+            pbr.options={s.alpha_factor,s.alpha_mask?1.0f:0.0f,0,0};
             pbr.eye={static_cast<float>(eye.x),static_cast<float>(eye.y),
                      static_cast<float>(eye.z),1};
             device.update_buffer(s.pbr_uniform,0,std::as_bytes(std::span(&pbr,1)));
@@ -763,6 +803,8 @@ int main(int argc, char** argv) {
             if(imported->is_gltf){
               textures.push_back({6,section.metallic_roughness});
               textures.push_back({7,section.normal});
+              textures.push_back({8,section.occlusion});
+              textures.push_back({9,section.emissive});
             }
             draw_queue.add({{imported->pipeline,vertex,index,
                 section.first,section.count,
