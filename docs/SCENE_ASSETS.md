@@ -1,4 +1,9 @@
-# TerraFlux scene graph and OBJ assets
+# TerraFlux scene and asset development history
+
+This document records successive milestones. Early “not implemented” statements
+apply to their milestone and may be superseded below. For the current verified
+feature set and remaining work, start with [ENGINE_BASELINE.md](ENGINE_BASELINE.md)
+and the [README](../README.md).
 
 This milestone adds a portable C++20 **scene hierarchy** and a first standalone
 asset importer. The scene is an append-only node graph with stable integer IDs,

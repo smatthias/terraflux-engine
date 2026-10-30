@@ -7,6 +7,14 @@ TerraFlux provides a deterministic grid-based simulation foundation
 for environmental modeling, spatial computation, and future digital
 twin applications.
 
+## Verified engine checkpoint
+
+The [desktop baseline checkpoint](docs/ENGINE_BASELINE.md) pins implementation
+revision `c64cb0470c28b2eb73dc81e0b01fedc8386676b8`, records its validation,
+provides an isolated-worktree reproduction guide and lists remaining renderer
+gaps in priority order. It is a development baseline, not a completed roadmap
+or physical-GPU certification.
+
 ## Current capabilities
 
 - Native C++20 grid-based wildfire spread simulation
@@ -515,7 +523,8 @@ OBJ, glTF, GLB, transparent materials and repeated model references. Native test
 CTest suites and 71 simulation parity fixtures; CI also exercises the viewer
 under Mesa/Xvfb. See the branch's CI results for validation of each commit.
 
-Next planned work: checkpoint the engine baseline and document remaining renderer gaps. GPU meshes are created on demand; CPU model data
+Next planned implementation: explicit shader/pipeline identity in the rendering abstraction.
+See the [prioritized gaps and acceptance criteria](docs/ENGINE_BASELINE.md#remaining-renderer-work-in-priority-order). GPU meshes are created on demand; CPU model data
 and decoded image recipes remain eager and retained for reattachment. Asynchronous streaming, skeletal animation
 and full glTF/IBL support remain future work.
 This desktop-engine breakdown is separate from the earlier simulation-focused

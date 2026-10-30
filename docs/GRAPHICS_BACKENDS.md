@@ -15,10 +15,11 @@ double precision, then deliberately packed into interleaved `float32`
 position/normal attributes, with `uint32` CCW triangle indices. The renderer
 must respect the local terrain-grid origin and the existing `cell_size_meters`.
 
-The first vertex layout is:
+The current terrain upload layout is:
 - `POSITION`, location 0, three floats at byte offset 0
 - `NORMAL`, location 1, three floats at byte offset 12
-- stride 24 bytes
+- `FIRE_STATE`, location 2, one float at byte offset 24 (legacy terrain input)
+- stride 28 bytes; wildfire rendering uses the same upload stride but reads fire state from an SSBO
 - `Camera` uniform buffer at vertex-stage binding slot 0
 
 Buffers are initialized fully at creation; subranges can subsequently be updated,
@@ -37,13 +38,17 @@ vertex/fragment shaders, reflects active vertex inputs and uniform blocks
 through GL_PROGRAM_INPUT / GL_UNIFORM_BLOCK, and compares them with
 ShaderLayout. Vertex stride and offsets are *not* properties that OpenGL
 shader reflection exposes: they are validated from the declared layout and
-configured in the vertex array. This backend currently supports the terrain
-pipeline and uniform-buffer binding only; texture/sampler pipelines will follow.
+configured in the vertex array. The backend also supports object and PBR pipelines, texture sampling,
+material uniforms, storage buffers, transparency and indexed instancing.
+Shader source selection remains coupled to the built-in layout families;
+explicit pipeline shader identity is a remaining abstraction gap.
 
 The GLFW demo creates a procedural elevation grid using the existing compute
 types, builds the shared TerrainMesh, uploads GPU buffers and renders the mesh
-with an orbit camera. It is an interactive native 3D preview, **not yet an
-importer for saved wildfire simulations or an animated fire visualizer**. Actual PS4 GNM/GNMX and
+with an orbit camera. The viewer also imports saved wildfire request/response frames, composes static
+OBJ/glTF/GLB assets and supports scene/runtime controls. See the pinned
+[engine baseline](ENGINE_BASELINE.md) for current evidence and outstanding gaps.
+Actual PS4 GNM/GNMX and
 PSSL support depends on authorized Sony SDK access and hardware validation.
 Do not assume that validating GLSL here proves PSSL compatibility.
 
@@ -58,7 +63,7 @@ but it does not render pixels.
 ## Desktop build and run (Linux)
 
 Install OpenGL development headers and GLFW 3.3+ (for example, on Ubuntu:
-`sudo apt install libglfw3-dev libgl-dev`). A GPU/driver supporting OpenGL 4.3
+`sudo apt install libglfw3-dev libgl-dev libpng-dev libjpeg-dev`). A GPU/driver supporting OpenGL 4.3
 is required (Mesa software rendering can be used for CI).
 
 ```bash
