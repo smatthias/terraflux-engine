@@ -943,6 +943,13 @@ std::size_t OpenGLRenderDevice::count_fire_pixels(int width, int height) {
 
 // Diagnostic only: recognize the saturated blue/purple colors assigned to
 // imported objects. The threshold excludes green/brown terrain and the sky.
+std::vector<std::uint8_t> OpenGLRenderDevice::capture_rgba(int width,int height) {
+  if(width<=0 || height<=0 || static_cast<std::uint64_t>(width)*height>4'000'000)
+    throw std::invalid_argument("invalid framebuffer dimensions for capture");
+  std::vector<std::uint8_t> pixels(static_cast<std::size_t>(width)*height*4);
+  impl_->gl.ReadPixels(0,0,width,height,GL_RGBA,GL_UNSIGNED_BYTE,pixels.data());
+  return pixels;
+}
 std::size_t OpenGLRenderDevice::count_asset_pixels(int width, int height) {
   if (width <= 0 || height <= 0 ||
       static_cast<std::uint64_t>(width) * static_cast<std::uint64_t>(height) > 4'000'000)

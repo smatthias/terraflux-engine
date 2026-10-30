@@ -761,6 +761,8 @@ int main(int argc, char** argv) {
       if (fire_buffer) command.storage_buffers.push_back({1, *fire_buffer});
       device.draw_indexed(command);
       ++frame_draws;
+      const auto terrain_snapshot=(options.smoke_test && imported && imported->is_gltf)?
+          device.capture_rgba(width,height):std::vector<std::uint8_t>{};
       OpaqueRenderQueue draw_queue;
       std::size_t visible_instances=0,culled_instances=0;
       if(imported && imported->is_gltf) {
@@ -872,11 +874,27 @@ int main(int argc, char** argv) {
                   << queue_stats.state_groups << " state groups\n";
       }
       if(record_gpu)device.end_gpu_timing();
-      if (options.smoke_test && imported) {
-        const auto visible_asset = device.count_asset_pixels(width, height);
-        if (visible_asset == 0)
-          throw std::runtime_error("smoke test found no visible imported-object pixels");
-        std::cout << "Visible OBJ pixels: " << visible_asset << '\n';
+      if(options.smoke_test && imported) {
+        if(imported->is_gltf) {
+          const auto frame=device.capture_rgba(width,height);
+          if(frame.size()!=terrain_snapshot.size())
+            throw std::runtime_error("glTF smoke framebuffer size mismatch");
+          std::size_t changed=0;
+          for(std::size_t i=0;i<frame.size();i+=4){
+            int difference=0;
+            for(int channel=0;channel<3;++channel)
+              difference+=std::abs(int(frame[i+channel])-int(terrain_snapshot[i+channel]));
+            if(difference>=6)++changed;
+          }
+          if(changed==0)
+            throw std::runtime_error("glTF smoke test rendered no pixels over terrain");
+          std::cout<<"Visible glTF changed pixels: "<<changed<<'\n';
+        }else{
+          const auto visible_asset=device.count_asset_pixels(width,height);
+          if(visible_asset==0)
+            throw std::runtime_error("smoke test found no visible OBJ pixels");
+          std::cout<<"Visible OBJ pixels: "<<visible_asset<<'\n';
+        }
       }
       if (options.smoke_test && playback && !playback->frames[playback_frame].active.empty()) {
         const auto visible_fire = device.count_fire_pixels(width, height);

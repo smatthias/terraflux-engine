@@ -45,6 +45,9 @@ class OpenGLRenderDevice final : public RenderDevice {
   // Counts bright red/orange pixels in the current render target.
   std::size_t count_fire_pixels(int framebuffer_width, int framebuffer_height);
   std::size_t count_asset_pixels(int framebuffer_width, int framebuffer_height);
+  // Compare the terrain-only back buffer with the completed glTF render in
+  // smoke tests. Avoid color-dependent assertions on PBR material appearance.
+  std::vector<std::uint8_t> capture_rgba(int width,int height);
 
  private:
   struct Impl;
