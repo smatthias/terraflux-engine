@@ -2,14 +2,15 @@
 #include <algorithm>
 #include <array>
 #include <map>
+#include <span>
 #include <limits>
 #include <stdexcept>
 #include <utility>
 
 namespace terraflux::terrain {
-std::vector<TerrainLodPatch> analyze_terrain_lod_patches(
-    const TerrainMesh& source,TerrainTileOptions options) {
-  const auto tiles=tile_terrain_mesh(source,options);
+namespace {
+std::vector<TerrainLodPatch> analyze_tiles(
+    const TerrainMesh& source,const std::vector<TerrainTile>& tiles,TerrainTileOptions options) {
   struct Patch {
     std::array<unsigned,16> mask{};
     std::map<std::pair<std::int32_t,std::int32_t>,std::uint32_t> vertices;
@@ -64,6 +65,70 @@ std::vector<TerrainLodPatch> analyze_terrain_lod_patches(
   }
   return result;
 }
+std::optional<TerrainTile> simplify_tile(const TerrainTile& tile,
+    std::span<const TerrainLodPatch> reports,std::uint32_t side) {
+  using Key=std::pair<std::uint32_t,std::uint32_t>;
+  std::map<Key,bool> eligible;
+  bool any=false;
+  for(const auto& p:reports) {
+    const bool ok=p.status==TerrainLodPatchStatus::Eligible;
+    eligible[{p.patch_y,p.patch_x}]=ok;any|=ok;
+  }
+  if(!any)return std::nullopt;
+  const auto ox=static_cast<std::int64_t>(tile.mesh.origin_grid_x)+static_cast<std::int64_t>(tile.x)*side;
+  const auto oy=static_cast<std::int64_t>(tile.mesh.origin_grid_y)+static_cast<std::int64_t>(tile.y)*side;
+  std::map<Key,std::vector<std::size_t>> groups;
+  for(std::size_t t=0;t<tile.mesh.indices.size();t+=3) {
+    auto x=std::numeric_limits<std::int32_t>::max(),y=x;
+    for(std::size_t j=0;j<3;++j) {
+      const auto& v=tile.mesh.vertices[tile.mesh.indices[t+j]];
+      x=std::min(x,v.grid_x);y=std::min(y,v.grid_y);
+    }
+    groups[{static_cast<std::uint32_t>((static_cast<std::int64_t>(y)-oy)/4),
+            static_cast<std::uint32_t>((static_cast<std::int64_t>(x)-ox)/4)}].push_back(t);
+  }
+  TerrainTile out;
+  out.x=tile.x;out.y=tile.y;out.bounds_min=tile.bounds_min;out.bounds_max=tile.bounds_max;
+  out.mesh.origin_grid_x=tile.mesh.origin_grid_x;out.mesh.origin_grid_y=tile.mesh.origin_grid_y;
+  out.mesh.cell_size_meters=tile.mesh.cell_size_meters;
+  std::map<std::uint32_t,std::uint32_t> compact;
+  const auto emit=[&](std::uint32_t old) {
+    auto [it,inserted]=compact.emplace(old,static_cast<std::uint32_t>(out.mesh.vertices.size()));
+    if(inserted) {
+      out.mesh.vertices.push_back(tile.mesh.vertices[old]);
+      out.source_vertex_indices.push_back(tile.source_vertex_indices[old]);
+    }
+    out.mesh.indices.push_back(it->second);
+  };
+  for(const auto& [key,triangles]:groups) {
+    if(!eligible.at(key)) {
+      for(auto t:triangles)for(std::size_t j=0;j<3;++j)emit(tile.mesh.indices[t+j]);
+      continue;
+    }
+    std::map<std::pair<std::int64_t,std::int64_t>,std::uint32_t> vertices;
+    for(auto t:triangles)for(std::size_t j=0;j<3;++j) {
+      const auto i=tile.mesh.indices[t+j];const auto& v=tile.mesh.vertices[i];
+      vertices[{v.grid_y,v.grid_x}]=i;
+    }
+    const auto px=ox+static_cast<std::int64_t>(key.second)*4;
+    const auto py=oy+static_cast<std::int64_t>(key.first)*4;
+    std::array<std::uint32_t,16> ring{};
+    for(int i=0;i<4;++i) {
+      ring[i]=vertices.at({py,px+i});
+      ring[4+i]=vertices.at({py+i,px+4});
+      ring[8+i]=vertices.at({py+4,px+4-i});
+      ring[12+i]=vertices.at({py+4-i,px});
+    }
+    const auto center=vertices.at({py+2,px+2});
+    for(std::size_t i=0;i<ring.size();++i) {emit(center);emit(ring[i]);emit(ring[(i+1)%ring.size()]);}
+  }
+  return out;
+}
+} // namespace
+std::vector<TerrainLodPatch> analyze_terrain_lod_patches(
+    const TerrainMesh& source,TerrainTileOptions options) {
+  return analyze_tiles(source,tile_terrain_mesh(source,options),options);
+}
 TerrainLodSet build_terrain_lods(const TerrainMesh& source,TerrainLodOptions options) {
   constexpr auto vertex_bytes=sizeof(TerrainVertex)+sizeof(std::uint32_t);
   // Necessary per-category limits reject oversized output during partitioning.
@@ -85,9 +150,29 @@ TerrainLodSet build_terrain_lods(const TerrainMesh& source,TerrainLodOptions opt
     charge(tile.mesh.indices.size(),sizeof(std::uint32_t));
     charge(tile.source_vertex_indices.size(),sizeof(std::uint32_t));
   }
+  const auto reports=options.enable_level1?analyze_tiles(source,partition,tile_options):std::vector<TerrainLodPatch>{};
+  std::size_t vertices=0,indices=0;
+  for(const auto& tile:partition) {vertices+=tile.mesh.vertices.size();indices+=tile.mesh.indices.size();}
   result.tiles.reserve(partition.size());
-  for(auto& tile:partition)
-    result.tiles.push_back({std::move(tile),std::nullopt,std::nullopt});
+  std::size_t report=0;
+  for(std::size_t id=0;id<partition.size();++id) {
+    auto& tile=partition[id];std::optional<TerrainTile> coarse;
+    if(options.enable_level1) {
+      const auto begin=report;
+      while(report<reports.size() && reports[report].tile_index==id)++report;
+      coarse=simplify_tile(tile,std::span<const TerrainLodPatch>(reports).subspan(begin,report-begin),tile_options.quads_per_side);
+    }
+    if(coarse) {
+      if(coarse->mesh.vertices.size()>options.tiles.max_total_vertices-vertices ||
+         coarse->mesh.indices.size()>options.tiles.max_total_indices-indices)
+        throw std::length_error("terrain LOD aggregate element budget exceeded");
+      vertices+=coarse->mesh.vertices.size();indices+=coarse->mesh.indices.size();
+      charge(coarse->mesh.vertices.size(),sizeof(TerrainVertex));
+      charge(coarse->mesh.indices.size(),sizeof(std::uint32_t));
+      charge(coarse->source_vertex_indices.size(),sizeof(std::uint32_t));
+    }
+    result.tiles.push_back({std::move(tile),std::move(coarse),std::nullopt});
+  }
   return result;
 }
 } // namespace terraflux::terrain
