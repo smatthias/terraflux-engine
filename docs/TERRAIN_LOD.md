@@ -1,6 +1,6 @@
 # Terrain LOD design — first bounded increment
 
-Status: **level-0 CPU foundation implemented; simplification pending**.
+Status: **level-0 foundation and patch eligibility implemented; simplification pending**.
 Reviewed against the CPU tile partitioner and TerrainTileRenderer interfaces on
 30 October 2026. Existing defaults and simulation behavior remain unchanged.
 
@@ -22,6 +22,32 @@ A new `terraflux-terrain-lod-tests` CTest target checks curved terrain with hole
 and partial edges, exact source maps/bounds/packed geometry, owned copies,
 permuted grid input, empty/exact/over budgets and invalid input rejection.
 Remaining API descriptions below are design proposals for later increments.
+
+## Implemented patch eligibility
+
+`analyze_terrain_lod_patches(source, tile_options)` returns reports sorted by
+stable tile index, patch Y and patch X. Patch coordinates are 4-quad blocks relative
+to the tile origin. Only blocks with triangles produce records; empty space is
+not enumerated. The function does not change geometry or populate level 1.
+
+A complete block requires both canonical oriented triangles in all 16 quads.
+Cyclic rotations and triangle ordering are accepted; duplicate triangles,
+reversed winding, alternate diagonals or distinct source vertices at the same
+grid coordinate are noncanonical. Horizontal X/Z coordinates must exactly match
+the source-origin/cell-size construction used by build_terrain_mesh. This strict
+check deliberately falls back for translated or perturbed custom input.
+
+Status precedence is irregular coordinates, noncanonical topology, incomplete
+coverage, then eligible. Partial tiles and holes remain incomplete. Malformed
+partition input still throws; unsupported but valid topology yields fallback.
+Grid arithmetic uses 64-bit intermediates. The existing tile count/element caps
+apply; reports and temporary maps are diagnostic allocations outside the recipe
+byte cap. At least one triangle is required per report, bounding report count by
+the source triangle count. This is not a peak-memory limit.
+
+Tests cover full/partial/one-quad tiles, holes and missing triangles, duplicate
+vertices/triangles, winding, alternate diagonals, irregular coordinates, stable
+report order, reordered/cyclic triangles and both signed coordinate extremes.
 
 ## Scope and integration points
 
@@ -177,6 +203,6 @@ implementation change. This design does not yet freeze an automatic selector API
 7. Add camera selection with hysteresis and explicit diagnostics.
 8. Measure actual hardware impact.
 
-Item 1's data structures and exact level-0 preservation are implemented. Eligibility
-detection, simplification, error measurement and expanded invariants remain next. Shader modules, animation,
+Item 1 is implemented, including eligibility detection. Simplification, error
+measurement and expanded invariants remain next. Shader modules, animation,
 general asynchronous loading and PS4 remain separate workstreams.
