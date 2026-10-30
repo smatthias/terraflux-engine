@@ -14,15 +14,19 @@ bool finite(math::Vec3 p) {
   return std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z);
 }
 using Key=std::tuple<std::uint32_t,std::uint32_t,std::uint32_t,
-                     std::uint32_t,std::uint32_t,std::uint32_t,std::uint32_t>;
+                     std::uint32_t,std::uint32_t,std::uint32_t,std::uint32_t,
+                     std::uint32_t>;
 Key key(const PreparedDraw& item) {
   const auto& cmd=item.command;
   const auto texture=cmd.textures.empty()?0:cmd.textures.front().texture.id;
   const auto camera=std::find_if(cmd.uniform_buffers.begin(),cmd.uniform_buffers.end(),
       [](const UniformBufferBinding& b){return b.slot==0;});
+  const auto pbr=std::find_if(cmd.uniform_buffers.begin(),cmd.uniform_buffers.end(),
+      [](const UniformBufferBinding& b){return b.slot==5;});
   return {cmd.pipeline.id,cmd.vertex_buffer.id,cmd.index_buffer.id,texture,
           cmd.first_index,cmd.index_count,
-          camera==cmd.uniform_buffers.end()?0:camera->buffer.id};
+          camera==cmd.uniform_buffers.end()?0:camera->buffer.id,
+          pbr==cmd.uniform_buffers.end()?0:pbr->buffer.id};
 }
 }
 BoundingSphere mesh_bounds(const assets::Mesh& mesh) {
@@ -128,7 +132,7 @@ QueueStats OpaqueRenderQueue::submit_instanced(RenderDevice& device,
     throw std::invalid_argument("instancing requires a pipeline, SSBO and valid capacity");
   // Validate the whole batch before any draw or writes.
   for(const auto& item:pending_){
-    if(!item.object_uniform || item.command.uniform_buffers.size()!=2 ||
+    if(!item.object_uniform || (item.command.uniform_buffers.size()!=2 && item.command.uniform_buffers.size()!=3) ||
        !item.command.storage_buffers.empty() || item.command.textures.size()!=1 ||
        item.command.instance_count!=1)
       throw std::invalid_argument("instanced queue requires ordinary textured object draws");
@@ -223,7 +227,7 @@ QueueStats OpaqueRenderQueue::submit_instanced_streamed(RenderDevice& device,
   if(!pipeline || capacity==0 || capacity>65535)
     throw std::invalid_argument("instancing requires a pipeline and valid capacity");
   for(const auto& item:pending_){
-    if(!item.object_uniform || item.command.uniform_buffers.size()!=2 ||
+    if(!item.object_uniform || (item.command.uniform_buffers.size()!=2 && item.command.uniform_buffers.size()!=3) ||
        !item.command.storage_buffers.empty() || item.command.textures.size()!=1 ||
        item.command.instance_count!=1)
       throw std::invalid_argument("streamed queue requires ordinary textured object draws");

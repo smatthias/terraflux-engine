@@ -232,7 +232,9 @@ layout(std140,binding=2) uniform Object {
 out vec3 surfaceNormal;
 out vec3 surfaceTint;
 out vec2 textureUv;
+out vec3 worldPosition;
 void main() {
+  worldPosition=(model*vec4(POSITION,1.0)).xyz;
   surfaceNormal = normalize(mat3(normalMatrix)*NORMAL);
   surfaceTint = tint.rgb;
   textureUv = TEXCOORD;
@@ -255,8 +257,10 @@ layout(std430,binding=4) readonly buffer InstanceData {
 out vec3 surfaceNormal;
 out vec3 surfaceTint;
 out vec2 textureUv;
+out vec3 worldPosition;
 void main() {
   InstanceRecord item=instances[gl_InstanceID];
+  worldPosition=(item.model*vec4(POSITION,1.0)).xyz;
   surfaceNormal=normalize(mat3(item.normalMatrix)*NORMAL);
   surfaceTint=item.tint.rgb;
   textureUv=TEXCOORD;
@@ -275,6 +279,55 @@ void main() {
   float shade=0.28+0.72*max(dot(normalize(surfaceNormal),sunlight),0.0);
   vec3 albedo=texture(AlbedoTexture,textureUv).rgb;
   fragColor=vec4(albedo*surfaceTint*shade,1.0);
+}
+)GLSL";
+
+constexpr char kPbrFragmentShader[] = R"GLSL(#version 430 core
+in vec3 surfaceNormal;
+in vec3 surfaceTint;
+in vec2 textureUv;
+in vec3 worldPosition;
+layout(binding=3) uniform sampler2D AlbedoTexture;
+layout(std140,binding=5) uniform PbrMaterial {
+  vec4 factors;
+  vec4 eye;
+};
+out vec4 fragColor;
+const float PI=3.14159265358979323846;
+// GGX NDF, Smith-Schlick visibility and Schlick Fresnel.
+float distributionGGX(vec3 N,vec3 H,float roughness){
+  float a=roughness*roughness;
+  float a2=a*a;
+  float nh=max(dot(N,H),0.0);
+  float denom=nh*nh*(a2-1.0)+1.0;
+  return a2/max(PI*denom*denom,1e-5);
+}
+float smithG1(float nd,float roughness){
+  float k=pow(roughness+1.0,2.0)/8.0;
+  return nd/max(nd*(1.0-k)+k,1e-5);
+}
+void main(){
+  vec3 N=normalize(surfaceNormal);
+  vec3 V=normalize(eye.xyz-worldPosition);
+  vec3 L=normalize(vec3(0.45,0.85,0.25));
+  vec3 H=normalize(V+L);
+  float metallic=clamp(factors.x,0.0,1.0);
+  float roughness=clamp(factors.y,0.045,1.0);
+  // Base-color texture and baseColorFactor use sRGB, light in linear RGB.
+  vec3 base=pow(max(texture(AlbedoTexture,textureUv).rgb,vec3(0.0)),vec3(2.2));
+  base*=pow(max(surfaceTint,vec3(0.0)),vec3(2.2));
+  vec3 F0=mix(vec3(0.04),base,metallic);
+  float nv=max(dot(N,V),0.0),nl=max(dot(N,L),0.0);
+  float vh=max(dot(V,H),0.0);
+  vec3 F=F0+(1.0-F0)*pow(1.0-vh,5.0);
+  float D=distributionGGX(N,H,roughness);
+  float G=smithG1(nv,roughness)*smithG1(nl,roughness);
+  vec3 spec=D*G*F/max(4.0*nv*nl,0.001);
+  vec3 diffuse=(1.0-F)*(1.0-metallic)*base/PI;
+  vec3 color=(diffuse+spec)*vec3(3.2)*nl + base*vec3(0.055)*(1.0-metallic);
+  // ACES approximation plus display conversion.
+  color=(color*(2.51*color+0.03))/(color*(2.43*color+0.59)+0.14);
+  fragColor=vec4(pow(clamp(color,0.0,1.0),vec3(1.0/2.2)),1.0);
 }
 )GLSL";
 
@@ -358,6 +411,8 @@ ShaderLayout reflect_program(const GL& gl, GLuint program, const ShaderLayout& e
         });
     if (name == "Camera" && values[4] != (is_fire ? 80 : 64))
       throw std::runtime_error("Camera UBO does not match expected std140 size");
+    if (name == "PbrMaterial" && values[4] != 32)
+      throw std::runtime_error("PbrMaterial UBO must have two vec4s");
     if (name == "Object" && values[4] != 144)
       throw std::runtime_error("Object UBO must contain model, normalMatrix and tint");
     actual.bindings.push_back({name, ShaderResourceKind::UniformBuffer,
@@ -673,6 +728,11 @@ PipelineHandle OpenGLRenderDevice::create_pipeline(PipelineDesc desc) {
         return binding.kind==ShaderResourceKind::StorageBuffer &&
                binding.name=="InstanceData" && binding.slot==4;
       });
+  const bool pbr = std::any_of(desc.layout.bindings.begin(),desc.layout.bindings.end(),
+      [](const ShaderBinding& binding) {
+        return binding.kind==ShaderResourceKind::UniformBuffer &&
+               binding.name=="PbrMaterial" && binding.slot==5;
+      });
   const bool textured = std::any_of(desc.layout.bindings.begin(), desc.layout.bindings.end(),
       [](const ShaderBinding& binding) {
         return binding.kind==ShaderResourceKind::SampledTexture &&
@@ -680,6 +740,8 @@ PipelineHandle OpenGLRenderDevice::create_pipeline(PipelineDesc desc) {
       });
   if (textured && !object && !instanced)
     throw std::invalid_argument("textured pipeline requires Object or InstanceData");
+  if(pbr && (!textured || wildfire))
+    throw std::invalid_argument("PBR requires textured object pipeline");
   if(instanced && (!textured || object || wildfire))
     throw std::invalid_argument("instancing requires textured geometry and no per-object UBO");
   if (object && wildfire)
@@ -703,6 +765,7 @@ PipelineHandle OpenGLRenderDevice::create_pipeline(PipelineDesc desc) {
                             object ? kObjectVertexShader : kVertexShader);
     fragment = compile_shader(impl_->gl, GL_FRAGMENT_SHADER,
                               wildfire ? kFireFragmentShader :
+                              pbr ? kPbrFragmentShader :
                               textured ? kTexturedFragmentShader :
                               object ? kObjectFragmentShader : kFragmentShader);
     program = impl_->gl.CreateProgram();

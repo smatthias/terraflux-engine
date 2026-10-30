@@ -120,6 +120,14 @@ ShaderLayout instanced_textured_object_shader_layout() {
   return layout;
 }
 
+ShaderLayout pbr_textured_object_shader_layout(bool instanced) {
+  auto layout=instanced?instanced_textured_object_shader_layout():
+                       textured_object_shader_layout();
+  layout.bindings.push_back({"PbrMaterial",ShaderResourceKind::UniformBuffer,5,kFragmentStage});
+  validate_shader_layout(layout);
+  return layout;
+}
+
 ObjectUniform make_object_uniform(const math::Mat4& world, math::Vec3 tint) {
   const auto normal = normal_matrix(world);
   ObjectUniform out;
