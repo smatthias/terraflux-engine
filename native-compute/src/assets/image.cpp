@@ -1,6 +1,8 @@
 #include <terraflux/assets/material.hpp>
 
 #include <png.h>
+#include <cstddef>
+#include <cstdio>
 #include <jpeglib.h>
 
 #include <algorithm>
@@ -56,6 +58,7 @@ struct JpegError {
   jmp_buf jump;
   char message[JMSG_LENGTH_MAX]{};
   unsigned char* pixels=nullptr;
+  unsigned char* scanline=nullptr;
 };
 extern "C" void jpeg_failure(j_common_ptr common){
   auto* error=reinterpret_cast<JpegError*>(common->err);
@@ -74,12 +77,14 @@ ImageRgba8 decode_jpeg(std::span<const std::uint8_t> encoded){
   if(setjmp(error.jump)){
     jpeg_destroy_decompress(&decoder);
     std::free(error.pixels);
+    std::free(error.scanline);
     throw std::invalid_argument(std::string("JPEG decode failed: ")+error.message);
   }
   jpeg_mem_src(&decoder,encoded.data(),static_cast<unsigned long>(encoded.size()));
   if(jpeg_read_header(&decoder,TRUE)!=JPEG_HEADER_OK)
     jpeg_failure(reinterpret_cast<j_common_ptr>(&decoder));
-  dimensions(decoder.image_width,decoder.image_height);
+  try{ dimensions(decoder.image_width,decoder.image_height); }
+  catch(...){jpeg_destroy_decompress(&decoder);throw;}
   decoder.out_color_space=JCS_RGB;
   jpeg_start_decompress(&decoder);
   if(decoder.output_components!=3 ||
@@ -95,26 +100,25 @@ ImageRgba8 decode_jpeg(std::span<const std::uint8_t> encoded){
   }
   // JPEG delivers top-first RGB. Convert each scanline directly to RGBA8.
   // Reuse a small malloc-backed scanline; no C++ stack destructors cross setjmp.
-  unsigned char* scanline=static_cast<unsigned char*>(std::malloc(width*3));
-  if(!scanline) {
+  error.scanline=static_cast<unsigned char*>(std::malloc(width*3));
+  if(!error.scanline) {
     jpeg_destroy_decompress(&decoder);
     std::free(error.pixels);
     throw std::bad_alloc();
   }
   while(decoder.output_scanline<decoder.output_height){
-    JSAMPROW rows[1]={scanline};
-    if(jpeg_read_scanlines(&decoder,rows,1)!=1) {
-      std::free(scanline);
+    JSAMPROW rows[1]={error.scanline};
+    if(jpeg_read_scanlines(&decoder,rows,1)!=1)
       jpeg_failure(reinterpret_cast<j_common_ptr>(&decoder));
-    }
     const auto y=static_cast<std::size_t>(decoder.output_scanline-1);
     for(std::size_t x=0;x<width;++x) {
       for(std::size_t k=0;k<3;++k)
-        error.pixels[y*stride+x*4+k]=scanline[x*3+k];
+        error.pixels[y*stride+x*4+k]=error.scanline[x*3+k];
       error.pixels[y*stride+x*4+3]=255;
     }
   }
-  std::free(scanline);
+  std::free(error.scanline);
+  error.scanline=nullptr;
   jpeg_finish_decompress(&decoder);
   jpeg_destroy_decompress(&decoder);
   auto result=flipped(static_cast<std::uint32_t>(width),
