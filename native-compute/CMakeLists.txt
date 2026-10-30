@@ -59,7 +59,8 @@ if(BUILD_TESTING)
   add_executable(terraflux-scene-assets-tests tests/scene_assets_tests.cpp)
   target_link_libraries(terraflux-scene-assets-tests PRIVATE terraflux_compute)
   add_test(NAME terraflux-scene-assets-tests COMMAND terraflux-scene-assets-tests
-      "${CMAKE_SOURCE_DIR}/../examples/asset_scene.json")
+      "${CMAKE_SOURCE_DIR}/../examples/asset_scene.json"
+      "${CMAKE_SOURCE_DIR}/../examples/mixed_asset_scene.json")
 
   add_executable(terraflux-gltf-tests tests/gltf_tests.cpp)
   target_link_libraries(terraflux-gltf-tests PRIVATE terraflux_graphics)

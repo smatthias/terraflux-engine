@@ -277,10 +277,11 @@ int main(int argc, char** argv) {
         BufferHandle uniform;
         terraflux::scene::NodeId node=0;
         std::uint32_t mesh_index=0;
+        terraflux::math::Mat4 asset_local=terraflux::math::Mat4::identity();
       };
       std::vector<SceneInstance> scene_instances;
       terraflux::math::Mat4 scene_anchor=terraflux::math::Mat4::identity();
-      bool is_gltf=false, uses_scene_file=false;
+      bool is_gltf=false, uses_pbr=false, uses_scene_file=false;
       BoundingSphere primary_bounds{};
       std::vector<BoundingSphere> additional_bounds;
       struct Section {
@@ -313,7 +314,7 @@ int main(int argc, char** argv) {
     const auto terrain_resources=device.live_resource_counts();
     const auto load_imported=[&]()->std::unique_ptr<ImportedGpu> {
       std::optional<terraflux::scene::Scene> loaded_scene;
-      terraflux::assets::SceneObjAssets scene_assets;
+      terraflux::assets::SceneModelAssets scene_assets;
       if(!options.scene_file.empty()) {
         loaded_scene=terraflux::scene::deserialize_scene(read_file(options.scene_file));
         if(loaded_scene->mesh_assets().empty()) {
@@ -321,12 +322,13 @@ int main(int argc, char** argv) {
         }else{
           if(!options.obj_file.empty())
             throw std::invalid_argument("asset scenes declare their models; omit --obj");
-          scene_assets=terraflux::assets::load_scene_obj_assets(*loaded_scene,options.scene_file);
+          scene_assets=terraflux::assets::load_scene_assets(*loaded_scene,options.scene_file);
         }
       }
       const bool asset_scene=!scene_assets.meshes.empty();
       if (!options.obj_file.empty() || !options.gltf_file.empty() || asset_scene) {
         const bool use_gltf=!options.gltf_file.empty();
+        const bool use_pbr=use_gltf || scene_assets.has_gltf;
         const auto source_file=use_gltf?options.gltf_file:
             asset_scene?scene_assets.sources.front().string():options.obj_file;
         const auto source_folder=std::filesystem::path(source_file).parent_path();
@@ -368,7 +370,11 @@ int main(int argc, char** argv) {
         } else if(asset_scene) {
           // Keep per-file material names distinct even when OBJ libraries reuse
           // names. Each mesh and its material sections are uploaded only once.
+          gltf_images=std::move(scene_assets.images);
+          for(const auto& [name,material]:scene_assets.materials)
+            material_files.emplace(name,LocatedMaterial{material,scene_assets.material_folders.at(name)});
           for(std::size_t i=0;i<scene_assets.meshes.size();++i) {
+            if(scene_assets.gltf_meshes[i])continue;
             auto& mesh=scene_assets.meshes[i];
             const auto prefix="scene/"+std::to_string(i)+"/";
             for(auto& section:mesh.sections)
@@ -377,9 +383,12 @@ int main(int argc, char** argv) {
               const auto path=asset_path(scene_assets.sources[i].parent_path(),reference);
               std::ifstream file(path);
               if(!file)throw std::runtime_error("cannot open material library: "+path.string());
-              for(const auto& [name,material]:terraflux::assets::parse_mtl(file))
+              for(auto [name,material]:terraflux::assets::parse_mtl(file)) {
+                // OBJ has no metallic factor: approximate diffuse MTL in mixed PBR scenes.
+                material.metallic_factor=0;
                 if(!material_files.emplace(prefix+name,LocatedMaterial{material,path.parent_path()}).second)
                   throw std::invalid_argument("duplicate material in scene asset: "+name);
+              }
             }
           }
           object=std::move(scene_assets.meshes.front());
@@ -388,8 +397,14 @@ int main(int argc, char** argv) {
           for(std::size_t id=1;id<loaded_scene->size();++id) {
             const auto node=static_cast<terraflux::scene::NodeId>(id);
             const auto& reference=loaded_scene->get(node).mesh_asset;
-            if(reference)node_worlds.emplace_back(scene_assets.mesh_indices.at(*reference),
-                                                  loaded_scene->world_matrix(node));
+            if(reference) {
+              const auto model=scene_assets.model_indices.at(*reference);
+              for(const auto& instance:scene_assets.model_instances.at(model)) {
+                if(node_worlds.size()>=1024)throw std::length_error("scene exceeds 1024 expanded mesh instances");
+                node_worlds.emplace_back(instance.mesh_index,
+                    loaded_scene->world_matrix(node)*instance.local);
+              }
+            }
           }
         } else {
           std::ifstream model_file(options.obj_file);
@@ -456,7 +471,7 @@ int main(int argc, char** argv) {
                                         max_pos.z-min_pos.z});
         if (!(extent > 0.0)) throw std::runtime_error("imported model has no spatial extent");
         const double gltf_scale=options.asset_preview?0.43:0.22;
-        const double scale=(scene_camera.starting_distance*(use_gltf?gltf_scale:0.095))/extent;
+        const double scale=(scene_camera.starting_distance*(use_pbr?gltf_scale:0.095))/extent;
         const auto geometry = prepare_textured_asset_upload(object); // local + UV
         const auto vertex_bytes = bytes_of(geometry.vertices);
         const auto index_bytes = bytes_of(geometry.indices);
@@ -465,6 +480,7 @@ int main(int argc, char** argv) {
         obj.resources=std::make_unique<RenderResourceOwner>(device);
         auto& asset_owned=*obj.resources;
         obj.is_gltf=use_gltf;
+        obj.uses_pbr=use_pbr;
         obj.primary_bounds=mesh_bounds(object);
         for(const auto& mesh:extra_meshes)
           obj.additional_bounds.push_back(mesh_bounds(mesh));
@@ -482,8 +498,12 @@ int main(int argc, char** argv) {
             const auto& node=obj.scene.get(static_cast<terraflux::scene::NodeId>(id));
             if(node.mesh_instance) {
               // Hold node identifiers until the corresponding UBOs are created.
-              const auto mesh_index=asset_scene?scene_assets.mesh_indices.at(*node.mesh_asset):0;
-              obj.scene_instances.push_back({{},static_cast<terraflux::scene::NodeId>(id),mesh_index});
+              const auto scene_node=static_cast<terraflux::scene::NodeId>(id);
+              if(asset_scene) {
+                const auto model=scene_assets.model_indices.at(*node.mesh_asset);
+                for(const auto& instance:scene_assets.model_instances.at(model))
+                  obj.scene_instances.push_back({{},scene_node,instance.mesh_index,instance.local});
+              }else obj.scene_instances.push_back({{},scene_node,0});
             }
           }
           if(obj.scene_instances.empty() || obj.scene_instances.size()>1024)
@@ -504,7 +524,7 @@ int main(int argc, char** argv) {
         const auto cached_texture=[&](const std::filesystem::path& source,
                                        terraflux::TextureSampling sampling) {
           const std::string path_key=source.empty()?
-               (use_gltf?"__white__":"__checkerboard__"):
+               (use_pbr?"__white__":"__checkerboard__"):
                                 source.lexically_normal().generic_string();
           // Samplers belong to texture objects: same image with different
           // sampling settings must not alias one GL texture.
@@ -518,7 +538,7 @@ int main(int argc, char** argv) {
             return it->second;
           terraflux::assets::ImageRgba8 image;
           if(source.empty())
-            image=use_gltf?terraflux::assets::ImageRgba8{1,1,{255,255,255,255}}:
+            image=use_pbr?terraflux::assets::ImageRgba8{1,1,{255,255,255,255}}:
                            terraflux::assets::checkerboard_image();
           else if(source.generic_string()=="__default_mr__")
             image={1,1,{255,255,255,255}}; // roughness G=1, metallic B=1
@@ -528,7 +548,7 @@ int main(int argc, char** argv) {
             image={1,1,{255,255,255,255}}; // full ambient visibility
           else if(source.generic_string()=="__default_emissive__")
             image={1,1,{255,255,255,255}}; // emissive factor provides black default
-          else if(use_gltf && gltf_images.contains(source.generic_string())) {
+          else if(use_pbr && gltf_images.contains(source.generic_string())) {
             image=gltf_images.at(source.generic_string());
           } else {
             const auto path=source.string();
@@ -555,7 +575,7 @@ int main(int argc, char** argv) {
           for(const auto& section:mesh.sections) {
             terraflux::math::Vec3 color{1,1,1};
             terraflux::TextureSampling sampling{};
-            double metallic=1,roughness=1,normal_scale=1,occlusion_strength=1;
+            double metallic=use_gltf?1:0,roughness=1,normal_scale=1,occlusion_strength=1;
             double alpha_factor=1,alpha_cutoff=.5;
             bool alpha_mask=false,alpha_blend=false;
             terraflux::math::Vec3 emissive_factor{};
@@ -591,14 +611,14 @@ int main(int argc, char** argv) {
               if(!it->second.material.normal_map.empty())
                 normal_file=it->second.material.normal_map;
               if(!it->second.material.albedo_map.empty())
-                texture_file=(use_gltf && gltf_images.contains(it->second.material.albedo_map))?
+                texture_file=(use_pbr && gltf_images.contains(it->second.material.albedo_map))?
                     std::filesystem::path(it->second.material.albedo_map):
                     asset_path(it->second.folder,it->second.material.albedo_map);
             }
             if(!options.texture_file.empty())texture_file=options.texture_file;
             const auto handle=cached_texture(texture_file,sampling);
             TextureHandle mr_handle{},normal_handle{},occlusion_handle{},emissive_handle{};
-            if(use_gltf) {
+            if(use_pbr) {
               mr_handle=cached_texture(metallic_file.empty()?
                       std::filesystem::path("__default_mr__"):metallic_file,
                       metallic_sampling);
@@ -613,7 +633,7 @@ int main(int argc, char** argv) {
                       emissive_sampling);
             }
             BufferHandle pbr_uniform{};
-            if(use_gltf) {
+            if(use_pbr) {
               PbrMaterialUniform pbr{};
               pbr.factors={static_cast<float>(metallic),static_cast<float>(roughness),
                            static_cast<float>(normal_scale),static_cast<float>(occlusion_strength)};
@@ -671,7 +691,7 @@ int main(int argc, char** argv) {
           }
         }else if(obj.uses_scene_file){
           for(auto& instance:obj.scene_instances) {
-            const auto model=obj.scene_anchor*obj.scene.world_matrix(instance.node);
+            const auto model=obj.scene_anchor*obj.scene.world_matrix(instance.node)*instance.asset_local;
             const auto uniforms=make_object_uniform(model,{0.16,0.57,0.95});
             const auto bytes=std::as_bytes(std::span(&uniforms,1));
             instance.uniform=asset_owned.create_buffer({BufferUsage::Uniform,bytes.size()},bytes);
@@ -683,14 +703,14 @@ int main(int argc, char** argv) {
               {BufferUsage::Uniform,init_bytes.size()},init_bytes);
         }
         obj.pipeline = asset_owned.create_pipeline({
-            use_gltf?pbr_textured_object_shader_layout(false):
+            use_pbr?pbr_textured_object_shader_layout(false):
                      textured_object_shader_layout(),true});
-        if(use_gltf)
+        if(use_pbr)
           obj.transparent_pipeline=asset_owned.create_pipeline({
               pbr_textured_object_shader_layout(false),true,true,false});
         if(!options.no_instancing){
           obj.instanced_pipeline=asset_owned.create_pipeline(
-              {use_gltf?pbr_textured_object_shader_layout(true):
+              {use_pbr?pbr_textured_object_shader_layout(true):
                         instanced_textured_object_shader_layout(),true});
           obj.instance_ring=std::make_unique<OpaqueRenderQueue::InstanceBufferRing>(device);
         }
@@ -700,7 +720,7 @@ int main(int argc, char** argv) {
           triangle_count+=mesh.indices/3;
           sections_count+=mesh.sections.size();
         }
-        std::cout << (use_gltf?"Imported glTF: ":"Imported OBJ: ") << triangle_count
+        std::cout << (asset_scene?"Imported scene: ":use_gltf?"Imported glTF: ":"Imported OBJ: ") << triangle_count
                   << " triangles, " << (obj.additional_meshes.size()+1)
                   << " meshes, " << sections_count << " material ranges, "
                   << obj.textures.size() << " textures, "
@@ -915,7 +935,7 @@ int main(int argc, char** argv) {
       device.draw_indexed(command);
       ++frame_draws;
       const auto terrain_snapshot=(options.smoke_test &&
-          (options.asset_lifecycle_test || (imported && imported->is_gltf)))?
+          (options.asset_lifecycle_test || (imported && imported->uses_pbr)))?
           device.capture_rgba(width,height):std::vector<std::uint8_t>{};
       if(options.asset_lifecycle_test && !playback) {
         if(lifecycle_terrain.empty())lifecycle_terrain=terrain_snapshot;
@@ -929,7 +949,7 @@ int main(int argc, char** argv) {
         scene_camera.target.x+distance*std::sin(yaw)*std::cos(pitch),
         scene_camera.target.y+distance*std::sin(pitch),
         scene_camera.target.z+distance*std::cos(yaw)*std::cos(pitch)};
-      if(imported && imported->is_gltf) {
+      if(imported && imported->uses_pbr) {
         // Keep view vector in material UBO, not the terrain camera UBO,
         // whose 80-byte fire-grid layout is shared by existing shaders.
         const auto& t=scene_camera.target;
@@ -973,9 +993,9 @@ int main(int argc, char** argv) {
             const auto material=make_object_uniform(model,{
                 tint.x*color.x,tint.y*color.y,tint.z*color.z});
             std::vector<UniformBufferBinding> uniforms{{0,camera},{2,object_uniform}};
-            if(imported->is_gltf)uniforms.push_back({5,section.pbr_uniform});
+            if(imported->uses_pbr)uniforms.push_back({5,section.pbr_uniform});
             std::vector<TextureBinding> textures{{3,section.albedo}};
-            if(imported->is_gltf){
+            if(imported->uses_pbr){
               textures.push_back({6,section.metallic_roughness});
               textures.push_back({7,section.normal});
               textures.push_back({8,section.occlusion});
@@ -1010,7 +1030,7 @@ int main(int argc, char** argv) {
         }else if(imported->uses_scene_file) {
           for(const auto& instance:imported->scene_instances) {
             const auto model=imported->scene_anchor*
-                imported->scene.world_matrix(instance.node);
+                imported->scene.world_matrix(instance.node)*instance.asset_local;
             auto vertex=imported->vb,index=imported->ib;
             const auto* sections=&imported->sections;
             auto bounds=imported->primary_bounds;
@@ -1020,7 +1040,8 @@ int main(int argc, char** argv) {
               bounds=imported->additional_bounds.at(instance.mesh_index-1);
             }
             enqueue(vertex,index,*sections,instance.uniform,
-                    model,bounds,{0.16,0.57,0.95});
+                    model,bounds,imported->uses_pbr?terraflux::math::Vec3{1,1,1}:
+                        terraflux::math::Vec3{0.16,0.57,0.95});
           }
         }else {
           using terraflux::scene::Transform;
@@ -1060,7 +1081,7 @@ int main(int argc, char** argv) {
       }
       if(record_gpu)device.end_gpu_timing();
       if(options.smoke_test && imported) {
-        if(imported->is_gltf) {
+        if(imported->uses_pbr) {
           const auto frame=device.capture_rgba(width,height);
           if(frame.size()!=terrain_snapshot.size())
             throw std::runtime_error("glTF smoke framebuffer size mismatch");
@@ -1073,7 +1094,7 @@ int main(int argc, char** argv) {
           }
           if(changed==0)
             throw std::runtime_error("glTF smoke test rendered no pixels over terrain");
-          std::cout<<"Visible glTF changed pixels: "<<changed<<'\n';
+          std::cout<<(imported->is_gltf?"Visible glTF changed pixels: ":"Visible PBR scene changed pixels: ")<<changed<<'\n';
         }else{
           const auto visible_asset=device.count_asset_pixels(width,height);
           if(visible_asset==0)

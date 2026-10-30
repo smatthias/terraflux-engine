@@ -16,7 +16,7 @@ twin applications.
 - C++/Python parity verification
 - Optional OpenGL 4.3 desktop terrain and wildfire-replay viewer
 - OBJ/MTL and static glTF/GLB assets, textures and a direct-light PBR subset
-- Scene hierarchies, shared OBJ asset references and deterministic Spin/Motion
+- Scene hierarchies, shared OBJ/glTF/GLB asset references and deterministic Spin/Motion
 - Scene pause/resume, single stepping and transactional asset unload/reload
 - Frustum culling, opaque hardware instancing, CPU/GPU timing and benchmarks
 
@@ -55,13 +55,17 @@ Launch terrain alone, a shared multi-model OBJ scene, or a glTF material preview
 ```bash
 ./build-gl/terraflux-terrain-viewer
 ./build-gl/terraflux-terrain-viewer --scene examples/asset_scene.json
+./build-gl/terraflux-terrain-viewer --scene examples/mixed_asset_scene.json
 ./build-gl/terraflux-terrain-viewer \
   --gltf examples/assets/tangent_blend.gltf --asset-preview
 ```
 
-Version 2 scene JSON declares named OBJ paths relative to the scene file.
-Canonical path aliases share one mesh allocation; materials and bounds remain
-specific to each model. Legacy version 1 scenes require their primary OBJ:
+Version 2 scene JSON declares named OBJ, glTF or GLB paths relative to the
+scene file. Canonical path aliases share model geometry, materials and images.
+A referenced glTF/GLB expands its active authored hierarchy beneath the scene
+node transform; Spin/Motion therefore move the complete referenced model.
+Mixed scenes use the direct-light PBR subset, with diffuse OBJ materials
+approximated as nonmetallic. Pure OBJ scenes retain the original diffuse path. Legacy version 1 scenes require their primary OBJ:
 
 ```bash
 ./build-gl/terraflux-terrain-viewer \
@@ -354,7 +358,7 @@ hours or release-readiness guarantees. The PS4 backend is unimplemented.
 
 | Desktop engine — Phases 1–9 | Full roadmap including PS4 |
 | --- | --- |
-| **~74%** (previously ~73%) | **~48%** |
+| **~75%** (previously ~74%) | **~49%** (previously ~48%) |
 
 | Phase | Component | Estimated completion |
 | --- | --- | ---: |
@@ -364,20 +368,21 @@ hours or release-readiness guarantees. The PS4 backend is unimplemented.
 | 4 | 3D terrain renderer | 75% |
 | 5 | Simulation visualization | 65% |
 | 6 | Shader system | 76% |
-| 7 | Scene and asset system | 86% |
-| 8 | Engine runtime | ~65% (previously ~60%) |
+| 7 | Scene and asset system | ~90% (previously 86%) |
+| 8 | Engine runtime | ~65% |
 | 9 | Performance | 55% |
 | 10 | PS4 backend | 0% |
 
-Latest milestones: serializable Motion, shared OBJ scene assets, isolated
+Latest milestones: serializable Motion, shared mixed-format scene assets, isolated
 GPU asset lifetimes, unload/reload with failure recovery, and independent
-scene pause/resume and single-step controls. Native testing comprises 13
+scene pause/resume and single-step controls. The mixed-format example includes
+OBJ, glTF, GLB, transparent materials and repeated model references. Native testing comprises 13
 CTest suites and 71 simulation parity fixtures; CI also exercises the viewer
 under Mesa/Xvfb. See the branch's CI results for validation of each commit.
 
-Next planned work: mixed OBJ/glTF scene references and reusable asset loading
-beyond the current OBJ-only scene registry. Per-model eviction, asynchronous
-streaming, skeletal animation and full glTF/IBL support remain future work.
+Next planned work: reusable material/texture resolution outside the viewer,
+then per-model resource eviction. Asynchronous streaming, skeletal animation
+and full glTF/IBL support remain future work.
 This desktop-engine breakdown is separate from the earlier simulation-focused
 [220-hour planning backlog](docs/ROADMAP.md).
 

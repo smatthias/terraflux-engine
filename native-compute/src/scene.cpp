@@ -73,8 +73,8 @@ void Scene::declare_mesh_asset(std::string name,std::string path) {
   const std::filesystem::path relative(path);
   if(path.empty() || path.size()>1024 || path.find('\0')!=std::string::npos ||
      path.find('\\')!=std::string::npos || path.find(':')!=std::string::npos ||
-     relative.has_root_path() || relative.extension()!=".obj")
-    throw std::invalid_argument("scene asset must be a relative .obj path");
+     relative.has_root_path() || (relative.extension()!=".obj" && relative.extension()!=".gltf" && relative.extension()!=".glb"))
+    throw std::invalid_argument("scene asset must be a relative .obj, .gltf or .glb path");
   for(const auto& part:relative)
     if(part=="..")throw std::invalid_argument("scene asset parent traversal forbidden");
   mesh_assets_.emplace(std::move(name),relative.lexically_normal().generic_string());

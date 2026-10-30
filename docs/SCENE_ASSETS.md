@@ -524,3 +524,43 @@ one tick. Each frame compares serialized scene transforms with expected
 fixed-step results and verifies that the engine clock advanced independently.
 CI covers both legacy and named-asset scenes, plus scene controls combined
 with wildfire replay, under Mesa/Xvfb. Physical GPU validation is still pending.
+
+
+## Phase 7/8: Mixed OBJ, glTF and GLB scene references
+
+The version 2 registry now accepts `.obj`, `.gltf` and `.glb` paths together:
+
+```bash
+./build-gl/terraflux-terrain-viewer --scene examples/mixed_asset_scene.json
+```
+
+Each referenced glTF/GLB model expands its active authored mesh instances
+beneath the referencing scene node: `scene_anchor * scene_world * model_world`.
+Repeated path aliases share a canonical model's mesh definitions, materials
+and decoded images. Separate files receive separate material/image namespaces,
+even when their internal names match. External glTF buffers/images resolve
+beneath their model directory, with size bounds and symlink containment checks.
+The registry allows at most 128 names, 512 total mesh definitions and 1024
+expanded drawable instances in the viewer.
+
+Mixed scenes use the existing direct-light PBR subset for every imported
+model. OBJ diffuse materials are approximated with metallic factor zero;
+pure OBJ scenes retain the previous diffuse renderer. glTF samplers, normal,
+metallic/roughness, occlusion, emissive, alpha MASK/BLEND and tangent data are
+preserved. Transparency still uses primitive/instance sorting, with the same
+limitations for intersecting surfaces. No skeletal or glTF animation is added.
+
+The fixture includes four canonical models (OBJ, glTF, GLB and a blended
+glTF), seven mesh definitions and seventeen drawable instances, including a
+repeated glTF reference. It also exercises scene controls, transactional
+reload/unload and non-instanced rendering. The checked-in GLB is reproducible:
+
+```bash
+python3 examples/pack_gltf_fixture.py \
+  examples/assets/textured_multi_mesh.gltf examples/assets/textured_multi_mesh.glb
+```
+
+`load_scene_assets` is the reusable CPU loader; the old `load_scene_obj_assets`
+entry point remains for callers explicitly requiring OBJ-only scenes. Scene
+JSON version 1 compatibility is retained. GPU resources remain shared within
+one imported scope; per-model eviction and asynchronous streaming are pending.
