@@ -269,6 +269,7 @@ Independent terrain/fire layer controls now skip surface submissions and explici
 release selective tile buffers when neither layer needs the surface; returning
 visibility rehydrates them. Layer-skipped tiles are reported separately from
 frustum rejections. See [Terrain/fire layer visibility](GRAPHICS_BACKENDS.md#terrainfire-layer-visibility).
-Fixed-tick replay speed controls now share these renderer paths. A baseline
-checkpoint refresh is next. Physical GPU timing,
+Fixed-tick replay speed controls now share these renderer paths. The baseline
+checkpoint has been refreshed. The [first LOD design](TERRAIN_LOD.md) specifies
+boundary-preserving patch fans and local fallback; implementation is pending. Physical GPU timing,
 LOD, source streaming and CPU recipe eviction remain outstanding.
