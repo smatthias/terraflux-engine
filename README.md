@@ -710,7 +710,7 @@ averages of the phase percentages. The PS4 backend is unimplemented.
 | 1 | Core extraction | 100% |
 | 2 | Rendering abstraction | ~89% (previously ~88%) |
 | 3 | OpenGL backend | ~91% (previously ~90%) |
-| 4 | 3D terrain renderer | ~89% (previously ~88%) |
+| 4 | 3D terrain renderer | ~90% ↑ (previously ~89%) |
 | 5 | Simulation visualization | ~80% (previously ~75%) |
 | 6 | Shader system | ~84% (previously ~82%) |
 | 7 | Scene and asset system | ~90% (previously 86%) |
@@ -782,11 +782,13 @@ logged smoke checks, interactive review and repeated benchmark commands.
 Hardware execution is pending. The [terrain LOD design](docs/TERRAIN_LOD.md)
 is complete: boundary-preserving 4x4 patch simplification, hole fallback,
 error measurement and transactional integration criteria. LOD implementation
-is underway; the next independent increment is eligible-patch simplification.
-Progress this task: ↑ deterministic CPU LOD patch eligibility implemented, with
-explicit incomplete/topology/coordinate fallback statuses and focused tests.
-Geometry is unchanged; simplified level-1 recipes and viewer integration remain
-pending. Registered native suites remain 16; phase and overall estimates are unchanged.
+now supports opt-in CPU simplification; geometric error measurement is next.
+Progress this task: ↑ opt-in CPU level-1 geometry now reduces each eligible 4x4
+patch from 32 to 16 triangles, preserving boundaries and source attributes.
+Fallback patches remain full resolution; combined budgets include both variants.
+Terrain renderer planning estimate rises from ~89% to ~90%. Overall estimates
+remain ~93% desktop / ~64% full roadmap; weighting remains undocumented.
+Geometric error measurement and viewer integration are next. Native suites remain 16.
 See the [prioritized gaps and acceptance criteria](docs/ENGINE_BASELINE.md#remaining-renderer-work-in-priority-order). GPU meshes are created on demand; CPU model data
 and decoded image recipes remain eager and retained for reattachment. Asynchronous streaming, skeletal animation
 and full glTF/IBL support remain future work.
