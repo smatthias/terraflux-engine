@@ -1,6 +1,7 @@
 #include <terraflux/graphics/mesh_upload.hpp>
 
 #include <cmath>
+#include <algorithm>
 #include <type_traits>
 #include <cstddef>
 #include <cstddef>
@@ -108,6 +109,15 @@ ShaderLayout textured_object_shader_layout() {
     {{"Camera",ShaderResourceKind::UniformBuffer,0,kVertexStage},
      {"Object",ShaderResourceKind::UniformBuffer,2,kVertexStage},
      {"AlbedoTexture",ShaderResourceKind::SampledTexture,3,kFragmentStage}}};
+}
+
+ShaderLayout instanced_textured_object_shader_layout() {
+  auto layout=textured_object_shader_layout();
+  layout.bindings.erase(std::remove_if(layout.bindings.begin(),layout.bindings.end(),
+      [](const ShaderBinding& b){return b.name=="Object";}),layout.bindings.end());
+  layout.bindings.push_back({"InstanceData",ShaderResourceKind::StorageBuffer,4,kVertexStage});
+  validate_shader_layout(layout);
+  return layout;
 }
 
 ObjectUniform make_object_uniform(const math::Mat4& world, math::Vec3 tint) {

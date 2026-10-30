@@ -93,6 +93,7 @@ struct DrawIndexed {
   std::vector<UniformBufferBinding> uniform_buffers;
   std::vector<StorageBufferBinding> storage_buffers;
   std::vector<TextureBinding> textures{};
+  std::uint32_t instance_count=1; // OpenGL glDrawElementsInstanced for instance shader
 };
 
 // The engine owns this interface; no OpenGL, GLFW, PSSL, or console types

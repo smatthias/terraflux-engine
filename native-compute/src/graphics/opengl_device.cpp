@@ -63,6 +63,8 @@ struct GL {
   PFNGLTEXIMAGE2DPROC TexImage2D = get_proc<PFNGLTEXIMAGE2DPROC>("glTexImage2D");
   PFNGLTEXPARAMETERIPROC TexParameteri = get_proc<PFNGLTEXPARAMETERIPROC>("glTexParameteri");
   PFNGLDRAWELEMENTSPROC DrawElements = get_proc<PFNGLDRAWELEMENTSPROC>("glDrawElements");
+  PFNGLDRAWELEMENTSINSTANCEDPROC DrawElementsInstanced =
+      get_proc<PFNGLDRAWELEMENTSINSTANCEDPROC>("glDrawElementsInstanced");
   PFNGLENABLEPROC Enable = get_proc<PFNGLENABLEPROC>("glEnable");
   PFNGLDISABLEPROC Disable = get_proc<PFNGLDISABLEPROC>("glDisable");
   PFNGLCLEARCOLORPROC ClearColor = get_proc<PFNGLCLEARCOLORPROC>("glClearColor");
@@ -236,6 +238,31 @@ void main() {
   gl_Position = viewProjection*model*vec4(POSITION,1.0);
 }
 )GLSL";
+constexpr char kInstancedTexturedVertexShader[] = R"GLSL(#version 430 core
+layout(location=0) in vec3 POSITION;
+layout(location=1) in vec3 NORMAL;
+layout(location=3) in vec2 TEXCOORD;
+layout(std140,binding=0) uniform Camera { mat4 viewProjection; };
+struct InstanceRecord {
+  mat4 model;
+  mat4 normalMatrix;
+  vec4 tint;
+};
+layout(std430,binding=4) readonly buffer InstanceData {
+  InstanceRecord instances[];
+};
+out vec3 surfaceNormal;
+out vec3 surfaceTint;
+out vec2 textureUv;
+void main() {
+  InstanceRecord item=instances[gl_InstanceID];
+  surfaceNormal=normalize(mat3(item.normalMatrix)*NORMAL);
+  surfaceTint=item.tint.rgb;
+  textureUv=TEXCOORD;
+  gl_Position=viewProjection*item.model*vec4(POSITION,1.0);
+}
+)GLSL";
+
 constexpr char kTexturedFragmentShader[] = R"GLSL(#version 430 core
 in vec3 surfaceNormal;
 in vec3 surfaceTint;
@@ -347,7 +374,7 @@ ShaderLayout reflect_program(const GL& gl, GLuint program, const ShaderLayout& e
                                     static_cast<GLuint>(i), values[0]);
     std::uint32_t stages = (values[2] ? kVertexStage : 0U) |
                            (values[3] ? kFragmentStage : 0U);
-    if (stages == 0 && name == "FireState") {
+    if (stages == 0 && (name == "FireState" || name == "InstanceData")) {
       // Certain Mesa software drivers report no stage flag on the block
       // even when it is active. Confirm that the block has active variables;
       // its known GLSL source is compiled only into the fragment stage.
@@ -356,7 +383,7 @@ ShaderLayout reflect_program(const GL& gl, GLuint program, const ShaderLayout& e
       gl.GetProgramResourceiv(program, GL_SHADER_STORAGE_BLOCK,
                               static_cast<GLuint>(i), 1, active_property,
                               1, nullptr, &active_variables);
-      if (active_variables > 0) stages = kFragmentStage;
+      if (active_variables > 0) stages = name=="InstanceData" ? kVertexStage : kFragmentStage;
     }
     actual.bindings.push_back({name, ShaderResourceKind::StorageBuffer,
                               static_cast<std::uint32_t>(values[1]), stages});
@@ -603,19 +630,28 @@ PipelineHandle OpenGLRenderDevice::create_pipeline(PipelineDesc desc) {
         return binding.kind == ShaderResourceKind::UniformBuffer &&
                binding.name == "Object" && binding.slot == 2;
       });
+  const bool instanced = std::any_of(desc.layout.bindings.begin(),desc.layout.bindings.end(),
+      [](const ShaderBinding& binding) {
+        return binding.kind==ShaderResourceKind::StorageBuffer &&
+               binding.name=="InstanceData" && binding.slot==4;
+      });
   const bool textured = std::any_of(desc.layout.bindings.begin(), desc.layout.bindings.end(),
       [](const ShaderBinding& binding) {
         return binding.kind==ShaderResourceKind::SampledTexture &&
                binding.name=="AlbedoTexture" && binding.slot==3;
       });
-  if (textured && !object)
-    throw std::invalid_argument("textured pipeline requires Object uniform");
+  if (textured && !object && !instanced)
+    throw std::invalid_argument("textured pipeline requires Object or InstanceData");
+  if(instanced && (!textured || object || wildfire))
+    throw std::invalid_argument("instancing requires textured geometry and no per-object UBO");
   if (object && wildfire)
     throw std::invalid_argument("object and fire shaders are separate pipelines");
   for (const auto& binding : desc.layout.bindings)
     if (binding.kind != ShaderResourceKind::UniformBuffer &&
         !(textured && binding.kind == ShaderResourceKind::SampledTexture &&
           binding.name=="AlbedoTexture") &&
+        !(instanced && binding.kind==ShaderResourceKind::StorageBuffer &&
+          binding.name=="InstanceData" && binding.slot==4) &&
         !(wildfire && binding.kind == ShaderResourceKind::StorageBuffer &&
           binding.name == "FireState"))
       throw std::invalid_argument("unsupported OpenGL shader resource");
@@ -624,6 +660,7 @@ PipelineHandle OpenGLRenderDevice::create_pipeline(PipelineDesc desc) {
   try {
     vertex = compile_shader(impl_->gl, GL_VERTEX_SHADER,
                             wildfire ? kFireVertexShader :
+                            instanced ? kInstancedTexturedVertexShader :
                             textured ? kTexturedVertexShader :
                             object ? kObjectVertexShader : kVertexShader);
     fragment = compile_shader(impl_->gl, GL_FRAGMENT_SHADER,
@@ -731,9 +768,17 @@ void OpenGLRenderDevice::draw_indexed(const DrawIndexed& command) {
     else impl_->gl.Disable(GL_DEPTH_TEST);
     impl_->depth_test_state=pipeline.desc.depth_test;
   }
-  impl_->gl.DrawElements(GL_TRIANGLES, static_cast<GLsizei>(command.index_count),
-      GL_UNSIGNED_INT, reinterpret_cast<const void*>(
-          static_cast<std::uintptr_t>(command.first_index) * sizeof(std::uint32_t)));
+  const auto offset=reinterpret_cast<const void*>(
+      static_cast<std::uintptr_t>(command.first_index)*sizeof(std::uint32_t));
+  if(std::any_of(layout.bindings.begin(),layout.bindings.end(),[](const ShaderBinding& b){
+      return b.kind==ShaderResourceKind::StorageBuffer && b.name=="InstanceData";
+    })) {
+    impl_->gl.DrawElementsInstanced(GL_TRIANGLES,static_cast<GLsizei>(command.index_count),
+        GL_UNSIGNED_INT,offset,static_cast<GLsizei>(command.instance_count));
+  }else{
+    impl_->gl.DrawElements(GL_TRIANGLES,static_cast<GLsizei>(command.index_count),
+        GL_UNSIGNED_INT,offset);
+  }
 }
 
 void OpenGLRenderDevice::clear_frame(int framebuffer_width, int framebuffer_height) {

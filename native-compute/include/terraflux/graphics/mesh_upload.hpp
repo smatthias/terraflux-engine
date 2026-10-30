@@ -34,6 +34,7 @@ struct TexturedMeshUpload {
 };
 TexturedMeshUpload prepare_textured_asset_upload(const assets::Mesh& mesh);
 ShaderLayout textured_object_shader_layout();
+ShaderLayout instanced_textured_object_shader_layout();
 
 ObjectUniform make_object_uniform(const math::Mat4& world,
                                   math::Vec3 tint = {0.19, 0.55, 0.94});

@@ -141,6 +141,14 @@ void ValidatingRenderDevice::draw_indexed(const DrawIndexed& command) {
   const auto ib = buffers_.find(command.index_buffer.id);
   if (pipeline == pipelines_.end() || vb == buffers_.end() || ib == buffers_.end())
     throw std::invalid_argument("draw references nonexistent graphics resources");
+  if(command.instance_count==0 || command.instance_count>65535)
+    throw std::invalid_argument("instance count must be 1..65535");
+  const auto& layout=pipeline->second.layout;
+  const bool instanced=std::any_of(layout.bindings.begin(),layout.bindings.end(),
+      [](const ShaderBinding& b){return b.kind==ShaderResourceKind::StorageBuffer &&
+                                      b.name=="InstanceData" && b.slot==4;});
+  if(!instanced && command.instance_count!=1)
+    throw std::invalid_argument("multiple instances require an instanced shader");
   if (vb->second.desc.usage != BufferUsage::Vertex || ib->second.desc.usage != BufferUsage::Index)
     throw std::invalid_argument("draw buffers have incorrect usages");
   const auto stride = pipeline->second.layout.vertex_stride_bytes;
@@ -194,6 +202,16 @@ void ValidatingRenderDevice::draw_indexed(const DrawIndexed& command) {
     if (required.kind == ShaderResourceKind::StorageBuffer &&
         !storage_slots.contains(required.slot))
       throw std::invalid_argument("required shader storage buffer not bound");
+  if(instanced) {
+    const auto item=std::find_if(command.storage_buffers.begin(),command.storage_buffers.end(),
+      [](const StorageBufferBinding& binding){return binding.slot==4;});
+    if(item==command.storage_buffers.end())
+      throw std::invalid_argument("missing instanced object storage");
+    const auto& bytes=buffers_.at(item->buffer.id).bytes;
+    constexpr std::size_t object_stride=144; // std430: mat4+mat4+vec4
+    if(command.instance_count>bytes.size()/object_stride)
+      throw std::out_of_range("instance count exceeds storage buffer capacity");
+  }
   std::unordered_set<std::uint32_t> texture_slots;
   for (const auto& bound : command.textures) {
     if (!texture_slots.insert(bound.slot).second)
