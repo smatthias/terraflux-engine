@@ -160,6 +160,32 @@ void multiple_distinct_meshes(const std::string& json) {
   rejects([&]{(void)terraflux::assets::import_gltf(too_many);},
           "negative mesh index rejected");
 }
+void textured_materials(const std::string& json) {
+  const auto asset=terraflux::assets::import_gltf(json);
+  require(asset.images.size()==2,"PNG and JPEG image sources decoded");
+  const auto& a=asset.images.at("gltf-image-0");
+  const auto& b=asset.images.at("gltf-image-1");
+  require(a.width==16 && a.height==16 && b.width==16 && b.height==16,
+          "decoded image dimensions");
+  require(a.pixels.size()==16*16*4 && b.pixels.size()==16*16*4,
+          "decoded RGBA pixels for GPU upload");
+  require(a.pixels[0]!=b.pixels[0],"PNG/JPEG decoded to different colors");
+  require(asset.materials.at("gltf-material-0").albedo_map=="gltf-image-0" &&
+          asset.materials.at("gltf-material-1").albedo_map=="gltf-image-1",
+          "material texture indices resolved");
+  require(std::abs(asset.materials.at("gltf-material-0").metallic_factor-.2)<1e-8 &&
+          std::abs(asset.materials.at("gltf-material-1").roughness_factor-.85)<1e-8,
+          "metallic/roughness factors preserved");
+  rejects([&]{(void)terraflux::assets::import_gltf(
+    replace_first(json,"\"index\": 0,","\"index\": 99,"));},
+    "invalid texture index rejected");
+  rejects([&]{(void)terraflux::assets::import_gltf(
+    replace_first(json,"\"metallicFactor\": 0.2","\"metallicFactor\": -1"));},
+    "invalid metallic factor rejected");
+  rejects([&]{(void)terraflux::assets::import_gltf(
+    replace_first(json,"\"mimeType\": \"image/png\"","\"mimeType\": \"image/jpeg\""));},
+    "mime mismatch rejected");
+}
 void external_buffer_callback(const std::string& json) {
   const auto original="data:application/octet-stream;base64,";
   const auto pos=json.find(original);
@@ -214,7 +240,7 @@ void external_buffer_callback(const std::string& json) {
 }
 int main(int argc,char** argv) {
   try {
-    if(argc!=3)throw std::invalid_argument("gltf-tests expects base and multi-mesh fixture paths");
+    if(argc!=4)throw std::invalid_argument("gltf-tests expects base, multi-mesh and textured fixture paths");
     std::ifstream file(argv[1],std::ios::binary);
     if(!file)throw std::runtime_error("cannot open glTF test fixture");
     const std::string json((std::istreambuf_iterator<char>(file)),
@@ -229,6 +255,11 @@ int main(int argc,char** argv) {
     const std::string multi_json((std::istreambuf_iterator<char>(multi_file)),
                                   std::istreambuf_iterator<char>());
     multiple_distinct_meshes(multi_json);
-    std::cout<<"glTF 2.0: 6 test groups passed\n";
+    std::ifstream texfile(argv[3],std::ios::binary);
+    if(!texfile)throw std::runtime_error("cannot open glTF texture fixture");
+    const std::string texjson((std::istreambuf_iterator<char>(texfile)),
+                               std::istreambuf_iterator<char>());
+    textured_materials(texjson);
+    std::cout<<"glTF 2.0: 7 test groups passed\n";
   }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
 }
