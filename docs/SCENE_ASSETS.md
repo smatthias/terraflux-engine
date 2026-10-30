@@ -383,3 +383,8 @@ python3 examples/pack_gltf_fixture.py \
 This is a **direct-light PBR subset**. It does not yet implement image-based
 lighting, precomputed tangent attributes, emissive/occlusion textures, full
 alpha modes or all glTF extensions.
+
+
+## Phase 7: Occlusion, emissive and alpha-mask materials
+
+The glTF loader accepts occlusionTexture (red channel and strength), emissiveTexture and emissiveFactor. The PBR fragment shader applies occlusion to ambient light, adds emissive contribution and supports alphaMode MASK with alphaCutoff and baseColorFactor alpha. Opaque materials use neutral fallback textures; unsupported alphaMode BLEND is rejected because transparent sorting and blending have not been implemented. Normal-map tangent frames remain derivative-based; full IBL and extensions remain outside this milestone.

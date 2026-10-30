@@ -181,6 +181,19 @@ void textured_materials(const std::string& json) {
           asset.materials.at("gltf-material-1").albedo_sampling.mag==
               terraflux::TextureMagFilter::Nearest,
           "glTF min/mag/mip/wrap samplers imported");
+  const auto& masked=asset.materials.at("gltf-material-0");
+  require(masked.occlusion_map=="gltf-image-2" &&
+          masked.emissive_map=="gltf-image-0" &&
+          std::abs(masked.occlusion_strength-.65)<1e-8 &&
+          std::abs(masked.emissive_factor.y-.3)<1e-8 &&
+          masked.alpha_mode==terraflux::assets::Material::AlphaMode::Mask &&
+          std::abs(masked.alpha_factor-.9)<1e-8 &&
+          std::abs(masked.alpha_cutoff-.4)<1e-8,
+          "occlusion, emissive and alpha mask material data imported");
+  require(asset.materials.at("gltf-material-1").alpha_mode==
+              terraflux::assets::Material::AlphaMode::Opaque &&
+          asset.materials.at("gltf-material-1").occlusion_map.empty(),
+          "legacy opaque materials retain neutral defaults");
   require(asset.materials.at("gltf-material-0").metallic_roughness_map=="gltf-image-2" &&
           asset.materials.at("gltf-material-0").normal_map=="gltf-image-3" &&
           std::abs(asset.materials.at("gltf-material-0").normal_scale-.75)<1e-8,
@@ -212,6 +225,18 @@ void textured_materials(const std::string& json) {
   rejects([&]{(void)terraflux::assets::import_gltf(
     replace_first(json,"\"metallicRoughnessTexture\": {","\"metallicRoughnessTexture\": {\"texCoord\": 1,"));},
     "unsupported MR UV set rejected");
+  rejects([&]{(void)terraflux::assets::import_gltf(
+    replace_first(json,"\"strength\": 0.65","\"strength\": 1.4"));},
+    "occlusion strength out of range rejected");
+  rejects([&]{(void)terraflux::assets::import_gltf(
+    replace_first(json,"\"alphaMode\": \"MASK\"","\"alphaMode\": \"BLEND\""));},
+    "unsupported alpha blend mode rejected");
+  rejects([&]{(void)terraflux::assets::import_gltf(
+    replace_first(json,"\"alphaCutoff\": 0.4","\"alphaCutoff\": -0.2"));},
+    "negative alpha cutoff rejected");
+  rejects([&]{(void)terraflux::assets::import_gltf(
+    replace_first(json,"\"emissiveFactor\": [","\"emissiveFactor\": [99,"));},
+    "invalid emissive RGB factor rejected");
 }
 
 std::vector<std::uint8_t> glb_from_gltf(std::string json) {
