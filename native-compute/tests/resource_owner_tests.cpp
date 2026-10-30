@@ -135,11 +135,13 @@ void shared_texture_lifetime(){
   auto first=cache.acquire("shared",{2,2},pixels);
   const auto original=first->handle();
   auto second=cache.acquire("shared",{2,2},pixels);
-  check(first==second && backend.live_texture_count()==1,"models share one texture allocation");
+  check(first==second && backend.live_texture_count()==1 && backend.live_resource_bytes().texture_bytes==16,
+        "models share one texture allocation counted once");
   first.reset();
   check(backend.live_texture_count()==1 && second->handle()==original,"one model release preserves another lease");
   second.reset();
-  check(!backend.live_texture_count() && cache.size()==0 && !cache.find("shared"),
+  check(!backend.live_texture_count() && backend.live_resource_bytes().texture_bytes==0 &&
+        cache.size()==0 && !cache.find("shared"),
         "last material release evicts GPU texture despite weak cache entry");
   auto renewed=cache.acquire("shared",{2,2},pixels);
   check(renewed->handle()!=original,"expired entry creates a fresh valid GPU resource");

@@ -2,6 +2,7 @@
 
 #include <terraflux/texture_sampling.hpp>
 #include <cstddef>
+#include <limits>
 #include <cstdint>
 #include <span>
 #include <string>
@@ -100,11 +101,22 @@ struct DrawIndexed {
   std::uint32_t instance_count=1; // OpenGL glDrawElementsInstanced for instance shader
 };
 
+// Logical API storage, excluding driver overhead and deferred orphan copies.
+struct ResourceBytes {
+  std::uint64_t buffer_bytes=0,texture_bytes=0;
+  std::uint64_t total() const {return buffer_bytes+texture_bytes;}
+  bool operator==(const ResourceBytes&) const=default;
+};
+std::uint64_t rgba8_storage_bytes(TextureDesc desc);
+void check_resource_byte_budget(std::uint64_t used,std::uint64_t additional,std::uint64_t limit);
+
 // The engine owns this interface; no OpenGL, GLFW, PSSL, or console types
 // appear here. Buffers have explicit lifetime and bounded subrange updates.
 class RenderDevice {
  public:
   virtual ~RenderDevice() = default;
+  virtual ResourceBytes live_resource_bytes() const = 0;
+  virtual void set_resource_byte_budget(std::uint64_t bytes) = 0;
   virtual BufferHandle create_buffer(BufferDesc desc, std::span<const std::byte> initial_data) = 0;
   virtual void destroy_buffer(BufferHandle handle) = 0;
   virtual void update_buffer(BufferHandle handle, std::size_t offset_bytes,
@@ -135,6 +147,8 @@ class ValidatingRenderDevice final : public RenderDevice {
   PipelineHandle create_pipeline(PipelineDesc desc) override;
   void destroy_pipeline(PipelineHandle handle) override;
   void draw_indexed(const DrawIndexed& command) override;
+  ResourceBytes live_resource_bytes() const override;
+  void set_resource_byte_budget(std::uint64_t bytes) override {byte_budget_=bytes;}
   std::size_t draw_count() const { return draw_count_; }
   std::size_t live_buffer_count() const { return buffers_.size(); }
   std::size_t live_pipeline_count() const { return pipelines_.size(); }
@@ -145,6 +159,7 @@ class ValidatingRenderDevice final : public RenderDevice {
     BufferDesc desc;
     std::vector<std::byte> bytes;
   };
+  std::uint64_t byte_budget_=std::numeric_limits<std::uint64_t>::max();
   std::uint32_t next_id_ = 1;
   std::unordered_map<std::uint32_t, StoredBuffer> buffers_;
   std::unordered_map<std::uint32_t, PipelineDesc> pipelines_;

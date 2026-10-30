@@ -261,6 +261,43 @@ void test_bad_mesh_upload() {
   require(upload.vertices.size() == 4, "sanity check");
 }
 
+void test_resource_bytes() {
+  ValidatingRenderDevice device;
+  std::array<std::byte,32> buffer{};
+  std::array<std::byte,60> pixels{};
+  TextureDesc desc{3,5};
+  desc.sampling.min=terraflux::TextureMinFilter::LinearMipLinear;
+  require(rgba8_storage_bytes(desc)==72,"non-power-of-two mip chain byte accounting");
+  auto no_mips=desc;no_mips.sampling.min=terraflux::TextureMinFilter::Linear;
+  require(rgba8_storage_bytes(no_mips)==60,"base-level-only texture accounting");
+  must_throw([&]{(void)rgba8_storage_bytes({0,1});},"invalid texture dimensions rejected");
+  device.set_resource_byte_budget(104);
+  const auto storage=device.create_buffer({BufferUsage::Storage,buffer.size()},buffer);
+  const auto texture=device.create_texture2d(desc,pixels);
+  require(device.live_resource_bytes()==ResourceBytes{32,72},"buffers and complete mip chains counted separately");
+  device.orphan_storage_buffer(storage);
+  device.update_buffer(storage,0,buffer);
+  require(device.live_resource_bytes().total()==104,"orphan/update preserve logical capacity accounting");
+  must_throw([&]{(void)device.create_buffer({BufferUsage::Vertex,1},std::span(buffer).first(1));},
+             "allocation over exact byte cap rejected");
+  require(device.live_buffer_count()==1 && device.live_resource_bytes().total()==104,
+          "failed admission leaves no resource or byte leak");
+  device.destroy_texture(texture);
+  require(device.live_resource_bytes()==ResourceBytes{32,0},"texture release subtracts mip storage");
+  device.set_resource_byte_budget(31);
+  require(device.live_resource_bytes().total()==32,"lowering cap preserves existing allocation");
+  must_throw([&]{(void)device.create_texture2d({1,1},std::span(pixels).first(4));},
+             "lowered cap blocks further allocations");
+  device.destroy_buffer(storage);
+  require(device.live_resource_bytes().total()==0,"full destruction restores byte baseline");
+  device.set_resource_byte_budget(0);
+  must_throw([&]{(void)device.create_buffer({BufferUsage::Vertex,1},std::span(buffer).first(1));},
+             "zero byte cap rejects positive storage");
+  const auto maximum=std::numeric_limits<std::uint64_t>::max();
+  check_resource_byte_budget(maximum-1,1,maximum);
+  must_throw([&]{check_resource_byte_budget(maximum-1,2,maximum);},"budget addition cannot wrap");
+}
+
 }  // namespace
 
 int main() {
@@ -277,7 +314,8 @@ int main() {
     test_storage_buffer_validation();
     test_object_uniform_bindings();
     test_texture_resources();
-    std::cout << "TerraFlux graphics contracts: 12 tests passed\n";
+    test_resource_bytes();
+    std::cout << "TerraFlux graphics contracts: 13 tests passed\n";
   } catch (const std::exception& error) {
     std::cerr << "TerraFlux graphics test failed: " << error.what() << '\n';
     return 1;

@@ -924,6 +924,13 @@ void OpenGLRenderDevice::destroy_pipeline(PipelineHandle handle) {
     impl_->attribute_pipeline=impl_->attribute_vertex=impl_->attribute_index=0;
 }
 
+ResourceBytes OpenGLRenderDevice::live_resource_bytes() const {
+  return impl_->validator.live_resource_bytes();
+}
+void OpenGLRenderDevice::set_resource_byte_budget(std::uint64_t bytes) {
+  impl_->validator.set_resource_byte_budget(bytes);
+}
+
 OpenGLRenderDevice::ResourceCounts OpenGLRenderDevice::live_resource_counts() const {
   return {impl_->buffers.size(),impl_->textures.size(),impl_->pipelines.size()};
 }

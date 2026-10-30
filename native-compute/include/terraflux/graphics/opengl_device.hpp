@@ -17,6 +17,9 @@ class OpenGLRenderDevice final : public RenderDevice {
   OpenGLRenderDevice(const OpenGLRenderDevice&) = delete;
   OpenGLRenderDevice& operator=(const OpenGLRenderDevice&) = delete;
 
+  ResourceBytes live_resource_bytes() const override;
+  void set_resource_byte_budget(std::uint64_t bytes) override;
+
   BufferHandle create_buffer(BufferDesc desc, std::span<const std::byte> initial_data) override;
   void update_buffer(BufferHandle handle, std::size_t offset_bytes,
                      std::span<const std::byte> data) override;

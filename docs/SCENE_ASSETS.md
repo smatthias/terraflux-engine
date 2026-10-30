@@ -729,3 +729,26 @@ Runtime transforms, animation clocks, camera and configured budgets are outside
 this format. Tests cover canonical/null-selection roundtrips, mismatched scenes,
 invalid IDs, failed-save preservation and cleanup. Mesa CI saves and restores a
 partially active mixed scene under its one-mesh/one-instance admission limit.
+
+
+## Logical byte accounting and device allocation cap
+
+Both RenderDevice implementations expose `live_resource_bytes` and
+`set_resource_byte_budget`. Buffer storage counts declared capacity; RGBA8
+textures count complete generated mip chains, including non-power-of-two
+levels. Byte admission uses subtraction to avoid unsigned addition wrap and
+runs before new buffer/texture resource creation. Failed admission leaves maps
+and counts unchanged. Lowering a cap does not destroy existing resources;
+it prevents further allocation until usage falls within the limit. Updates and
+orphaning leave logical capacity unchanged, while final shared texture release
+and buffer destruction remove their bytes.
+
+OpenGL delegates accounting/admission to its validating resource mirror.
+`--resource-budget-mib` covers the whole device, including terrain and instance
+streams, unlike the scene-only mesh/instance budgets. Imported-scope unload
+checks both resource-count and byte baselines. JSON reports current totals,
+not peaks or physical VRAM. Shader/program overhead, driver padding, deferred
+orphan allocations, GPU query/framebuffer storage and CPU recipes are excluded.
+Native tests cover exact caps, mip chains, zero/lowered limits, failure cleanup,
+shared leases and overflow rejection. Mesa CI checks a bounded mixed scene
+and rejection of terrain allocation under a zero-byte cap.

@@ -130,6 +130,31 @@ resources; no automatic victim eviction occurs. Inactive startup retains CPU
 recipes but uploads no drawable geometry. `--activate-node` applies once at
 startup; R reload reapplies inactive-start settings without auto-activation.
 
+### Logical resource-byte accounting
+
+```bash
+./build-gl/terraflux-terrain-viewer --scene examples/mixed_asset_scene.json \
+  --resource-budget-mib 64 --residency-report
+```
+
+An optional device-wide byte cap covers terrain, imported geometry, material/
+camera uniforms, shared textures, instance buffers and temporary reload
+candidates. The default is unlimited; the CLI accepts 0..16384 MiB. Allocations
+that would exceed the cap fail before backend creation. Existing resources are
+not automatically evicted. Reload/activation may need extra temporary capacity;
+initialization or draw-time stream allocation can fail if the cap is too small.
+
+Diagnostics add `buffer_bytes`, `texture_bytes`, `total_resource_bytes` and
+`resource_budget_bytes` (null when unlimited). Buffers count their capacity;
+RGBA8 textures count all generated mip levels. Shared textures count once per
+live allocation; orphaning keeps the same logical capacity. Destruction and
+full asset unload return counts to the terrain baseline.
+
+These are logical API payload bytes, not measured physical VRAM. Driver
+alignment/metadata, shader programs, query/framebuffer storage, deferred orphan
+copies and retained CPU data are excluded. No hardware memory availability or
+performance improvement is inferred from these counts.
+
 ### Persist selection and inactive bindings
 
 ```bash
@@ -418,7 +443,7 @@ hours or release-readiness guarantees. The PS4 backend is unimplemented.
 
 | Desktop engine — Phases 1–9 | Full roadmap including PS4 |
 | --- | --- |
-| **~80%** (previously ~79%) | **~52%** (previously ~51%) |
+| **~81%** (previously ~80%) | **~53%** (previously ~52%) |
 
 | Phase | Component | Estimated completion |
 | --- | --- | ---: |
@@ -429,8 +454,8 @@ hours or release-readiness guarantees. The PS4 backend is unimplemented.
 | 5 | Simulation visualization | 65% |
 | 6 | Shader system | 76% |
 | 7 | Scene and asset system | ~90% (previously 86%) |
-| 8 | Engine runtime | ~86% (previously ~82%) |
-| 9 | Performance | ~58% (previously 55%) |
+| 8 | Engine runtime | ~86% |
+| 9 | Performance | ~65% (previously ~58%) |
 | 10 | PS4 backend | 0% |
 
 Latest milestones: selective node reattachment and on-demand GPU mesh residency,
@@ -444,7 +469,7 @@ OBJ, glTF, GLB, transparent materials and repeated model references. Native test
 CTest suites and 71 simulation parity fixtures; CI also exercises the viewer
 under Mesa/Xvfb. See the branch's CI results for validation of each commit.
 
-Next planned work: bounded resource-byte accounting and GPU memory-budget diagnostics. GPU meshes are created on demand; CPU model data
+Next planned work: peak-allocation telemetry and memory-budget recovery diagnostics. GPU meshes are created on demand; CPU model data
 and decoded image recipes remain eager and retained for reattachment. Asynchronous streaming, skeletal animation
 and full glTF/IBL support remain future work.
 This desktop-engine breakdown is separate from the earlier simulation-focused

@@ -78,6 +78,7 @@ struct Options {
   bool residency_report=false,start_inactive=false;
   std::optional<terraflux::scene::NodeId> selected_node,activate_node;
   std::uint32_t max_resident_meshes=512,max_scene_instances=1024;
+  std::optional<std::uint64_t> resource_budget_bytes;
   std::uint32_t benchmark_frames=0;
   std::string load_state,save_state;
   std::string request_file, response_file, obj_file, gltf_file, texture_file, scene_file;
@@ -92,6 +93,13 @@ Options parse_args(int argc, char** argv) {
     else if (arg == "--scene-detach-test") options.scene_detach_test=true;
     else if (arg == "--scene-controls-test") options.scene_controls_test=true;
     else if (arg == "--asset-lifecycle-test") options.asset_lifecycle_test=true;
+    else if(arg=="--resource-budget-mib" && i+1<argc) {
+      const std::string value=argv[++i];std::uint64_t mib=0;
+      const auto parsed=std::from_chars(value.data(),value.data()+value.size(),mib);
+      if(parsed.ec!=std::errc{} || parsed.ptr!=value.data()+value.size() || mib>16384)
+        throw std::invalid_argument("resource byte budget must be 0..16384 MiB");
+      options.resource_budget_bytes=mib*1048576;
+    }
     else if(arg=="--start-inactive")options.start_inactive=true;
     else if((arg=="--select-node" || arg=="--activate-node") && i+1<argc) {
       const std::string value=argv[++i];std::uint32_t node=0;
@@ -291,6 +299,7 @@ int main(int argc, char** argv) {
 
     using namespace terraflux::graphics;
     OpenGLRenderDevice device;
+    if(options.resource_budget_bytes)device.set_resource_byte_budget(*options.resource_budget_bytes);
     RenderResourceOwner owned(device);
     const auto vertices = bytes_of(upload.vertices);
     const auto indices = bytes_of(upload.indices);
@@ -368,6 +377,7 @@ int main(int argc, char** argv) {
       terraflux::math::Vec3 local_center{};
     };
     const auto terrain_resources=device.live_resource_counts();
+    const auto terrain_bytes=device.live_resource_bytes();
     const auto load_imported=[&]()->std::unique_ptr<ImportedGpu> {
       std::optional<terraflux::scene::Scene> loaded_scene;
       std::optional<terraflux::runtime::ResidencyState> loaded_state;
@@ -782,7 +792,7 @@ int main(int argc, char** argv) {
     const auto unload_imported=[&] {
       capture_state();
       imported.unload();
-      if(device.live_resource_counts()!=terrain_resources)
+      if(device.live_resource_counts()!=terrain_resources || device.live_resource_bytes()!=terrain_bytes)
         throw std::runtime_error("asset unload did not restore terrain resource baseline");
       std::cout<<"Asset unloaded; terrain resources preserved\n";
     };
@@ -795,6 +805,7 @@ int main(int argc, char** argv) {
       const auto budget=imported->residency.budget();
       const auto selected=imported->residency.selected(imported->scene_instances);
       const auto resources=device.live_resource_counts();
+      const auto bytes=device.live_resource_bytes();
       std::cout<<"RESIDENCY_JSON={\"instances\":"<<stats.instances
           <<",\"referenced_meshes\":"<<stats.referenced_meshes
           <<",\"selected_node\":"<<(selected?std::to_string(*selected):"null")
@@ -802,7 +813,11 @@ int main(int argc, char** argv) {
           <<",\"saved_instances\":"<<stats.saved_instances
           <<",\"max_meshes\":"<<budget.max_meshes<<",\"max_instances\":"<<budget.max_instances
           <<",\"live_buffers\":"<<resources.buffers<<",\"live_textures\":"<<resources.textures
-          <<",\"live_pipelines\":"<<resources.pipelines<<"}\n";
+          <<",\"live_pipelines\":"<<resources.pipelines
+          <<",\"buffer_bytes\":"<<bytes.buffer_bytes<<",\"texture_bytes\":"<<bytes.texture_bytes
+          <<",\"total_resource_bytes\":"<<bytes.total()
+          <<",\"resource_budget_bytes\":"<<(options.resource_budget_bytes?std::to_string(*options.resource_budget_bytes):"null")
+          <<"}\n";
     };
     report_residency();
     const auto evict_unused=[&](ImportedGpu& asset) {

@@ -150,6 +150,8 @@ jobs:
           assert stats["referenced_meshes"]==7 and stats["instances"]==17
           assert stats["max_meshes"]==7 and stats["max_instances"]==17
           assert stats["detached_nodes"]==0 and stats["live_buffers"]>0
+          assert stats["total_resource_bytes"]==stats["buffer_bytes"]+stats["texture_bytes"]
+          assert stats["buffer_bytes"]>0 and stats["texture_bytes"]>0
           PYBUDGET
           if xvfb-run -a -s "-screen 0 1280x800x24" \
             ./build-gl/terraflux-terrain-viewer --smoke-test --max-resident-meshes 6 \
@@ -157,6 +159,24 @@ jobs:
             echo "Expected over-budget scene to fail"; exit 1
           fi
           grep -q "scene residency budget exceeded" /tmp/terraflux-over-budget.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --residency-report \
+            --resource-budget-mib 64 --scene examples/mixed_asset_scene.json \
+            | tee /tmp/terraflux-byte-budget.log
+          python3 - <<'PYBYTES'
+          import json
+          from pathlib import Path
+          stats=json.loads(next(s.split("=",1)[1] for s in Path("/tmp/terraflux-byte-budget.log").read_text().splitlines()
+                               if s.startswith("RESIDENCY_JSON=")))
+          assert stats["resource_budget_bytes"]==64*1024*1024
+          assert 0<stats["total_resource_bytes"]<=stats["resource_budget_bytes"]
+          PYBYTES
+          if xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --resource-budget-mib 0 \
+            > /tmp/terraflux-byte-rejected.log 2>&1; then
+            echo "Expected zero byte budget to reject terrain allocation"; exit 1
+          fi
+          grep -q "resource byte budget exceeded" /tmp/terraflux-byte-rejected.log
           xvfb-run -a -s "-screen 0 1280x800x24" \
             ./build-gl/terraflux-terrain-viewer --smoke-test --residency-report \
             --start-inactive --max-resident-meshes 1 --max-scene-instances 1 \

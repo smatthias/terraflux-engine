@@ -83,10 +83,35 @@ std::uint32_t ValidatingRenderDevice::allocate_id() {
   return next_id_++;
 }
 
+std::uint64_t rgba8_storage_bytes(TextureDesc desc) {
+  if(!desc.width || !desc.height || desc.width>4096 || desc.height>4096 ||
+     static_cast<std::uint64_t>(desc.width)*desc.height>4'000'000)
+    throw std::invalid_argument("invalid texture dimensions for byte accounting");
+  std::uint64_t bytes=0;
+  auto width=desc.width,height=desc.height;
+  while(true) {
+    bytes+=static_cast<std::uint64_t>(width)*height*4;
+    if(!desc.sampling.uses_mipmaps() || (width==1 && height==1))break;
+    width=std::max(1U,width/2);height=std::max(1U,height/2);
+  }
+  return bytes;
+}
+void check_resource_byte_budget(std::uint64_t used,std::uint64_t additional,std::uint64_t limit) {
+  if(used>limit || additional>limit-used)
+    throw std::length_error("resource byte budget exceeded");
+}
+ResourceBytes ValidatingRenderDevice::live_resource_bytes() const {
+  ResourceBytes result;
+  for(const auto& [id,buffer]:buffers_)result.buffer_bytes+=buffer.desc.size_bytes;
+  for(const auto& [id,texture]:textures_)result.texture_bytes+=rgba8_storage_bytes(texture);
+  return result;
+}
+
 BufferHandle ValidatingRenderDevice::create_buffer(
     BufferDesc desc, std::span<const std::byte> initial_data) {
   if (desc.size_bytes == 0 || initial_data.size() != desc.size_bytes)
     throw std::invalid_argument("buffer must have positive size and complete initialization");
+  check_resource_byte_budget(live_resource_bytes().total(),desc.size_bytes,byte_budget_);
   const auto id = allocate_id();
   buffers_.emplace(id, StoredBuffer{desc, {initial_data.begin(), initial_data.end()}});
   return {id};
@@ -126,6 +151,7 @@ TextureHandle ValidatingRenderDevice::create_texture2d(
       static_cast<std::uint64_t>(desc.width)*desc.height>4'000'000 ||
       rgba8.size()!=static_cast<std::size_t>(desc.width)*desc.height*4)
     throw std::invalid_argument("invalid RGBA8 texture dimensions or pixels");
+  check_resource_byte_budget(live_resource_bytes().total(),rgba8_storage_bytes(desc),byte_budget_);
   const auto id=allocate_id();
   textures_.emplace(id,desc);
   return {id};
