@@ -254,10 +254,26 @@
   ],
   "textures": [
     {
-      "source": 0
+      "source": 0,
+      "sampler": 0
     },
     {
-      "source": 1
+      "source": 1,
+      "sampler": 1
+    }
+  ],
+  "samplers": [
+    {
+      "minFilter": 9987,
+      "magFilter": 9729,
+      "wrapS": 33071,
+      "wrapT": 33648
+    },
+    {
+      "minFilter": 9729,
+      "magFilter": 9728,
+      "wrapS": 10497,
+      "wrapT": 33071
     }
   ]
 }

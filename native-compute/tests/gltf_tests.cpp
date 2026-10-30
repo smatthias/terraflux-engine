@@ -170,6 +170,17 @@ void textured_materials(const std::string& json) {
   require(a.pixels.size()==16*16*4 && b.pixels.size()==16*16*4,
           "decoded RGBA pixels for GPU upload");
   require(a.pixels[0]!=b.pixels[0],"PNG/JPEG decoded to different colors");
+  require(asset.materials.at("gltf-material-0").albedo_sampling.min==
+              terraflux::TextureMinFilter::LinearMipLinear &&
+          asset.materials.at("gltf-material-0").albedo_sampling.wrap_s==
+              terraflux::TextureWrap::ClampToEdge &&
+          asset.materials.at("gltf-material-0").albedo_sampling.wrap_t==
+              terraflux::TextureWrap::MirroredRepeat &&
+          asset.materials.at("gltf-material-1").albedo_sampling.min==
+              terraflux::TextureMinFilter::Linear &&
+          asset.materials.at("gltf-material-1").albedo_sampling.mag==
+              terraflux::TextureMagFilter::Nearest,
+          "glTF min/mag/mip/wrap samplers imported");
   require(asset.materials.at("gltf-material-0").albedo_map=="gltf-image-0" &&
           asset.materials.at("gltf-material-1").albedo_map=="gltf-image-1",
           "material texture indices resolved");
@@ -185,6 +196,12 @@ void textured_materials(const std::string& json) {
   rejects([&]{(void)terraflux::assets::import_gltf(
     replace_first(json,"\"mimeType\": \"image/png\"","\"mimeType\": \"image/jpeg\""));},
     "mime mismatch rejected");
+  rejects([&]{(void)terraflux::assets::import_gltf(
+    replace_first(json,"\"minFilter\": 9987","\"minFilter\": 9999"));},
+    "invalid sampler min filter rejected");
+  rejects([&]{(void)terraflux::assets::import_gltf(
+    replace_first(json,"\"wrapS\": 33071","\"wrapS\": 123"));},
+    "invalid sampler wrap rejected");
 }
 void external_buffer_callback(const std::string& json) {
   const auto original="data:application/octet-stream;base64,";

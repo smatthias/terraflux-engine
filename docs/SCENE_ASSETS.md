@@ -329,3 +329,30 @@ lighting**. It rejects metallic-roughness textures, normal maps,
 occlusion/emissive textures, transparency and required extensions.
 Full Blender/glTF PBR compatibility will require those features and
 configurable samplers in a follow-up.
+
+
+## Phase 6/7: Metallic-roughness materials and glTF samplers
+
+The glTF texture pipeline now honors `minFilter`, `magFilter`, `wrapS`
+and `wrapT`, including all six standard minification modes,
+three wrap modes, and automatic mipmap generation when needed. The default
+sampler follows glTF (linear mag, trilinear min, repeat wrapping).
+Images are cached by source **and** sampling state, preventing accidental
+sharing of incompatible OpenGL sampling configurations.
+
+The glTF viewer uses a dedicated metallic/roughness fragment shader with
+GGX microfacet distribution, Schlick Fresnel and Smith geometry masking,
+per-material `metallicFactor`/`roughnessFactor`, sRGB conversion
+and filmic tone mapping. This currently supplies **one directional light
+and a simple ambient approximation**; it is not a full glTF PBR renderer.
+There is no image-based lighting, normal map, occlusion/emissive texture,
+metallic-roughness texture, transmission, transparency, or full GLB model
+support yet. The legacy diffuse OBJ renderer remains unchanged.
+
+```bash
+./build-gl/terraflux-terrain-viewer \
+  --gltf examples/assets/textured_multi_mesh.gltf
+```
+
+The sample uses both mipmapped/clamp/mirror and linear/repeat textures with
+different material metallic/roughness settings.
