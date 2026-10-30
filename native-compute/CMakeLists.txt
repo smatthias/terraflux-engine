@@ -11,10 +11,14 @@ add_library(terraflux_compute STATIC
   src/runtime.cpp
   src/assets/obj.cpp
   src/assets/material.cpp
+  src/assets/image.cpp
   src/assets/gltf.cpp
   src/terrain_mesh.cpp
 )
+find_package(PNG REQUIRED)
+find_package(JPEG REQUIRED)
 target_include_directories(terraflux_compute PUBLIC include)
+target_link_libraries(terraflux_compute PUBLIC PNG::PNG JPEG::JPEG)
 target_compile_features(terraflux_compute PUBLIC cxx_std_20)
 
 add_executable(terraflux-compute-runner src/grid_spread_runner.cpp)
