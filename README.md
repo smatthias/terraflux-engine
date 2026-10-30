@@ -783,10 +783,10 @@ Hardware execution is pending. The [terrain LOD design](docs/TERRAIN_LOD.md)
 is complete: boundary-preserving 4x4 patch simplification, hole fallback,
 error measurement and transactional integration criteria. LOD implementation
 is underway; the next independent increment is eligible-patch simplification.
-Progress this task: ↑ CPU LOD level-0 foundation implemented with exact partition
-preservation, source mappings and logical recipe admission. The new native test
-target brings the registered total to 16. Simplification and viewer integration
-remain pending; phase and overall planning estimates are unchanged.
+Progress this task: ↑ deterministic CPU LOD patch eligibility implemented, with
+explicit incomplete/topology/coordinate fallback statuses and focused tests.
+Geometry is unchanged; simplified level-1 recipes and viewer integration remain
+pending. Registered native suites remain 16; phase and overall estimates are unchanged.
 See the [prioritized gaps and acceptance criteria](docs/ENGINE_BASELINE.md#remaining-renderer-work-in-priority-order). GPU meshes are created on demand; CPU model data
 and decoded image recipes remain eager and retained for reattachment. Asynchronous streaming, skeletal animation
 and full glTF/IBL support remain future work.
