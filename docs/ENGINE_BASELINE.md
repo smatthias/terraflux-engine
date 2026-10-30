@@ -146,6 +146,7 @@ budget accounting, framebuffer completeness checks and explicit lifetimes, with
 a dedicated Mesa pixel/depth test. See [Owned offscreen render targets](GRAPHICS_BACKENDS.md#owned-offscreen-render-targets).
 Borrowed sampled color and a reusable explicit-shader fullscreen composition pass
 are also implemented. See [Sampled target color and fullscreen composition](GRAPHICS_BACKENDS.md#sampled-target-color-and-fullscreen-composition).
-The next integration is opt-in viewer composition with resize recovery. The pinned
-P1 gap still includes broader attachment formats and effects. Physical GPU evidence
-is still outstanding.
+Opt-in viewer composition and transactional resize recovery are also implemented;
+see [Viewer offscreen mode and transactional resizing](GRAPHICS_BACKENDS.md#viewer-offscreen-mode-and-transactional-resizing).
+The next lifecycle increment is exception-safe pass scopes. The pinned P1 gap still
+includes broader attachment formats and effects. Physical GPU evidence is still outstanding.

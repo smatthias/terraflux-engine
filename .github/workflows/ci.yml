@@ -113,6 +113,27 @@ jobs:
           python3 examples/generate_wildfire_scenario.py > /tmp/terraflux-request.json
           ./build-gl/terraflux-compute-runner < /tmp/terraflux-request.json > /tmp/terraflux-response.json
 
+      - name: Verify viewer offscreen composition and resize recovery
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --offscreen --smoke-test \
+            --offscreen-resize-test --scene examples/mixed_asset_scene.json \
+            | tee /tmp/terraflux-offscreen-resize.log
+          grep -q "Offscreen resize passed" /tmp/terraflux-offscreen-resize.log
+          grep -q '"fallback":true' /tmp/terraflux-offscreen-resize.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --offscreen --smoke-test \
+            --resource-budget-mib 4 | tee /tmp/terraflux-offscreen-fallback.log
+          grep -q '"width":0,"height":0' /tmp/terraflux-offscreen-fallback.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --offscreen --smoke-test --asset-lifecycle-test \
+            --scene examples/mixed_asset_scene.json
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --offscreen --smoke-test \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json
+
       - name: Render one frame with Mesa under Xvfb
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"

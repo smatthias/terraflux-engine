@@ -1,4 +1,5 @@
 #include <terraflux/graphics/opengl_device.hpp>
+#include <terraflux/graphics/composite.hpp>
 #include <terraflux/graphics/terrain_upload.hpp>
 #include <terraflux/graphics/mesh_upload.hpp>
 #include <terraflux/graphics/resource_owner.hpp>
@@ -33,6 +34,7 @@
 #include <filesystem>
 #include <map>
 #include <utility>
+#include <tuple>
 #include <iostream>
 #include <memory>
 #include <optional>
@@ -76,6 +78,7 @@ struct Options {
   bool smoke_test=false, profile=false, no_culling=false, no_instancing=false,asset_preview=false;
   bool asset_lifecycle_test=false,scene_controls_test=false,scene_detach_test=false,scene_residency_test=false;
   bool residency_report=false,start_inactive=false,resource_recovery_test=false;
+  bool offscreen=false,offscreen_resize_test=false;
   std::optional<terraflux::scene::NodeId> selected_node,activate_node;
   std::uint32_t max_resident_meshes=512,max_scene_instances=1024;
   std::optional<std::uint64_t> resource_budget_bytes,cpu_recipe_budget_bytes;
@@ -89,6 +92,8 @@ Options parse_args(int argc, char** argv) {
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
     if (arg == "--smoke-test") options.smoke_test = true;
+    else if(arg=="--offscreen")options.offscreen=true;
+    else if(arg=="--offscreen-resize-test")options.offscreen_resize_test=true;
     else if(arg=="--resource-recovery-test"){options.resource_recovery_test=true;options.scene_residency_test=true;}
     else if (arg == "--scene-residency-test") options.scene_residency_test=true;
     else if (arg == "--scene-detach-test") options.scene_detach_test=true;
@@ -143,8 +148,13 @@ Options parse_args(int argc, char** argv) {
     else if (arg == "--save-state" && i+1<argc)options.save_state=argv[++i];
     else if (arg == "--scene" && i + 1 < argc) options.scene_file = argv[++i];
     else throw std::invalid_argument(
-        "usage: terraflux-terrain-viewer [--request request.json --response response.json] [--obj model.obj | --gltf model.gltf] [--texture texture.ppm] [--scene scene.json (legacy scenes require --obj)] [--profile] [--no-culling] [--no-instancing] [--asset-preview with --gltf] [--benchmark-frames 60] [--smoke-test] [--asset-lifecycle-test with --smoke-test]");
+        "usage: terraflux-terrain-viewer [--request request.json --response response.json] [--obj model.obj | --gltf model.gltf] [--texture texture.ppm] [--scene scene.json (legacy scenes require --obj)] [--offscreen] [--offscreen-resize-test with --offscreen --smoke-test] [--profile] [--no-culling] [--no-instancing] [--asset-preview with --gltf] [--benchmark-frames 60] [--smoke-test] [--asset-lifecycle-test with --smoke-test]");
   }
+  if(options.offscreen_resize_test)options.no_instancing=true; // Isolate target admission from ring growth.
+  if(options.offscreen_resize_test && (!options.offscreen || !options.smoke_test ||
+      options.asset_lifecycle_test || options.scene_controls_test || options.scene_detach_test ||
+      options.scene_residency_test || options.resource_budget_bytes))
+    throw std::invalid_argument("--offscreen-resize-test requires --offscreen --smoke-test, no other scripted test or byte cap");
   if (options.request_file.empty() != options.response_file.empty())
     throw std::invalid_argument("--request and --response must be provided together");
   if (!options.obj_file.empty() && !options.gltf_file.empty())
@@ -302,6 +312,13 @@ int main(int argc, char** argv) {
     using namespace terraflux::graphics;
     OpenGLRenderDevice device;
     if(options.resource_budget_bytes)device.set_resource_byte_budget(*options.resource_budget_bytes);
+    std::unique_ptr<FullscreenComposite> compositor;
+    if(options.offscreen)compositor=std::make_unique<FullscreenComposite>(device);
+    ResizableRenderTarget offscreen(device);
+    std::uint64_t resize_failures=0;
+    using ResizeAttempt=std::tuple<int,int,std::uint64_t,std::uint64_t>;
+    std::optional<ResizeAttempt> failed_resize;
+    std::optional<RenderTargetDesc> resize_test_original;
     RenderResourceOwner owned(device);
     const auto vertices = bytes_of(upload.vertices);
     const auto indices = bytes_of(upload.indices);
@@ -380,8 +397,19 @@ int main(int argc, char** argv) {
       double separation = 1.0;
       terraflux::math::Vec3 local_center{};
     };
-    const auto terrain_resources=device.live_resource_counts();
-    const auto terrain_bytes=device.live_resource_bytes();
+    const auto terrain_resource_base=device.live_resource_counts();
+    const auto terrain_byte_base=device.live_resource_bytes();
+    const auto terrain_resources=[&] {
+      auto counts=terrain_resource_base;
+      if(offscreen.target()){++counts.render_targets;++counts.textures;}
+      return counts;
+    };
+    const auto terrain_bytes=[&] {
+      auto bytes=terrain_byte_base;
+      if(const auto target=offscreen.target())
+        bytes.render_target_bytes+=offscreen_storage_bytes({target->width,target->height});
+      return bytes;
+    };
     const auto load_imported=[&]()->std::unique_ptr<ImportedGpu> {
       std::optional<terraflux::scene::Scene> loaded_scene;
       std::optional<terraflux::runtime::ResidencyState> loaded_state;
@@ -804,7 +832,7 @@ int main(int argc, char** argv) {
     const auto unload_imported=[&] {
       capture_state();
       imported.unload();
-      if(device.live_resource_counts()!=terrain_resources || device.live_resource_bytes()!=terrain_bytes)
+      if(device.live_resource_counts()!=terrain_resources() || device.live_resource_bytes()!=terrain_bytes())
         throw std::runtime_error("asset unload did not restore terrain resource baseline");
       std::cout<<"Asset unloaded; terrain resources preserved\n";
     };
@@ -1102,20 +1130,47 @@ int main(int argc, char** argv) {
         if (options.smoke_test) throw std::runtime_error("no framebuffer in smoke test");
         continue;
       }
+      const RenderTargetDesc window_target{static_cast<std::uint32_t>(width),
+                                           static_cast<std::uint32_t>(height)};
+      if(options.offscreen) {
+        const ResizeAttempt attempt{width,height,device.live_resource_bytes().total(),
+                                    device.resource_telemetry().limit_bytes};
+        if(!failed_resize || *failed_resize!=attempt) {
+          try {
+            if(offscreen.resize(window_target.width,window_target.height)) {
+              failed_resize.reset();
+              if(options.smoke_test || options.residency_report || options.profile)
+                std::cout<<"OFFSCREEN_JSON={\"width\":"<<width<<",\"height\":"<<height
+                         <<",\"resize_failures\":"<<resize_failures<<",\"fallback\":false}\n";
+              report_residency();
+            }
+          } catch(const std::exception& error) {
+            ++resize_failures;failed_resize=attempt;
+            const auto previous=offscreen.target();
+            std::cerr<<"Offscreen resize failed: "<<error.what()
+                     <<(previous?"; retaining previous target\n":"; rendering directly to window\n");
+            std::cout<<"OFFSCREEN_JSON={\"width\":"<<(previous?previous->width:0)
+                     <<",\"height\":"<<(previous?previous->height:0)
+                     <<",\"resize_failures\":"<<resize_failures<<",\"fallback\":true}\n";
+            report_residency();
+          }
+        }
+      }
+      const auto scene_target=offscreen.target().value_or(window_target);
+      const int scene_width=static_cast<int>(scene_target.width);
+      const int scene_height=static_cast<int>(scene_target.height);
       if(options.benchmark_frames && rendered_frames==kBenchmarkWarmup)
         device.enable_gpu_timing();
       const bool record_gpu=options.profile || (options.benchmark_frames &&
                                 rendered_frames>=kBenchmarkWarmup);
       const double profile_render_start=glfwGetTime();
       std::uint32_t frame_draws=0;
-      const auto camera_vp=update_camera(device, camera, width, height, scene_camera,
+      const auto camera_vp=update_camera(device, camera, scene_width, scene_height, scene_camera,
                     yaw, pitch, distance,
                     cell_size, fire_field ? fire_field->width : 1,
                     fire_field ? fire_field->height : 1, engine_time);
       if(record_gpu)device.begin_gpu_timing();
-      const RenderTargetDesc window_target{static_cast<std::uint32_t>(width),
-                                           static_cast<std::uint32_t>(height)};
-      device.begin_render_pass({window_target});
+      device.begin_render_pass({scene_target});
       DrawIndexed command{pipeline, vb, ib, 0,
           static_cast<std::uint32_t>(upload.indices.size()), {{0, camera}}, {}};
       if (fire_buffer) command.storage_buffers.push_back({1, *fire_buffer});
@@ -1123,7 +1178,7 @@ int main(int argc, char** argv) {
       ++frame_draws;
       const auto terrain_snapshot=(options.smoke_test &&
           (options.asset_lifecycle_test || (imported && imported->uses_pbr)))?
-          device.capture_rgba(width,height):std::vector<std::uint8_t>{};
+          device.capture_rgba(scene_width,scene_height):std::vector<std::uint8_t>{};
       if(options.asset_lifecycle_test && !playback) {
         if(lifecycle_terrain.empty())lifecycle_terrain=terrain_snapshot;
         else if(lifecycle_terrain!=terrain_snapshot)
@@ -1131,9 +1186,9 @@ int main(int argc, char** argv) {
       }
       device.end_render_pass();
       // Preserve terrain color and depth for opaque/transparent object draws.
-      device.begin_render_pass({window_target,AttachmentLoadOp::Load,AttachmentLoadOp::Load});
+      device.begin_render_pass({scene_target,AttachmentLoadOp::Load,AttachmentLoadOp::Load});
       if(options.smoke_test && !terrain_snapshot.empty() &&
-         device.capture_rgba(width,height)!=terrain_snapshot)
+         device.capture_rgba(scene_width,scene_height)!=terrain_snapshot)
         throw std::runtime_error("load pass changed preserved terrain color");
       OpaqueRenderQueue draw_queue;
       TransparentRenderQueue transparent_queue;
@@ -1273,11 +1328,10 @@ int main(int argc, char** argv) {
                   << transparent_draws << " transparent draws\n";
       }
       device.end_render_pass();
-      if(record_gpu)device.end_gpu_timing();
       if(options.smoke_test && imported &&
          (!imported->uses_scene_file || !imported->scene_instances.empty())) {
         if(imported->uses_pbr) {
-          const auto frame=device.capture_rgba(width,height);
+          const auto frame=device.capture_rgba(scene_width,scene_height);
           if(frame.size()!=terrain_snapshot.size())
             throw std::runtime_error("glTF smoke framebuffer size mismatch");
           std::size_t changed=0;
@@ -1291,18 +1345,40 @@ int main(int argc, char** argv) {
             throw std::runtime_error("glTF smoke test rendered no pixels over terrain");
           std::cout<<(imported->is_gltf?"Visible glTF changed pixels: ":"Visible PBR scene changed pixels: ")<<changed<<'\n';
         }else{
-          const auto visible_asset=device.count_asset_pixels(width,height);
+          const auto visible_asset=device.count_asset_pixels(scene_width,scene_height);
           if(visible_asset==0)
             throw std::runtime_error("smoke test found no visible OBJ pixels");
           std::cout<<"Visible OBJ pixels: "<<visible_asset<<'\n';
         }
       }
       if (options.smoke_test && playback && !playback->frames[playback_frame].active.empty()) {
-        const auto visible_fire = device.count_fire_pixels(width, height);
+        const auto visible_fire = device.count_fire_pixels(scene_width, scene_height);
         if (visible_fire == 0)
           throw std::runtime_error("smoke test found no visible fire pixels");
         std::cout << "Visible fire pixels: " << visible_fire << '\n';
       }
+      if(offscreen.target()) {
+        const auto source=options.smoke_test?device.capture_rgba(scene_width,scene_height):
+                                            std::vector<std::uint8_t>{};
+        device.begin_render_pass({window_target});
+        compositor->draw(offscreen.color());++frame_draws;
+        device.end_render_pass();
+        if(options.smoke_test) {
+          const auto presented=device.capture_rgba(width,height);
+          for(std::uint64_t y=0;y<window_target.height;++y)
+            for(std::uint64_t x=0;x<window_target.width;++x) {
+              const auto sx=((2*x+1)*scene_target.width)/(2*window_target.width);
+              const auto sy=((2*y+1)*scene_target.height)/(2*window_target.height);
+              for(std::size_t channel=0;channel<4;++channel)
+                if(presented[(y*window_target.width+x)*4+channel]!=
+                   source[(sy*scene_target.width+sx)*4+channel])
+                  throw std::runtime_error("offscreen viewer composite pixel mismatch");
+            }
+          std::cout<<"Offscreen composed: "<<scene_width<<"x"<<scene_height
+                   <<" -> "<<width<<"x"<<height<<'\n';
+        }
+      }
+      if(record_gpu)device.end_gpu_timing();
       const double profile_render_end=glfwGetTime();
       cpu_profiler.record({profile_render_start-profile_update_start,
                            profile_render_end-profile_render_start,frame_draws});
@@ -1328,7 +1404,33 @@ int main(int argc, char** argv) {
       }
       glfwSwapBuffers(window.get());
       ++rendered_frames;
-      if(options.resource_recovery_test) {
+      if(options.offscreen_resize_test) {
+        const auto target=offscreen.target();
+        if(!target)throw std::runtime_error("resize test has no offscreen target");
+        if(rendered_frames==1) {
+          resize_test_original=target;
+          device.set_resource_byte_budget(device.live_resource_bytes().total());
+          glfwSetWindowSize(window.get(),768,480);glfwPollEvents();
+        } else if(rendered_frames==2) {
+          if(!resize_failures || target->handle!=resize_test_original->handle ||
+             target->width==static_cast<std::uint32_t>(width))
+            throw std::runtime_error("resize rejection did not preserve old target");
+          device.set_resource_byte_budget(std::numeric_limits<std::uint64_t>::max());
+        } else if(rendered_frames==3) {
+          if(target->handle==resize_test_original->handle || target->width!=static_cast<std::uint32_t>(width) ||
+             target->height!=static_cast<std::uint32_t>(height))
+            throw std::runtime_error("same-extent resize did not recover after budget increase");
+          glfwSetWindowSize(window.get(),1280,800);glfwPollEvents();
+        } else if(rendered_frames==4) {
+          if(target->width!=1280 || target->height!=800)
+            throw std::runtime_error("second window resize did not replace target");
+          offscreen.reset();
+          if(device.live_resource_bytes().render_target_bytes || device.live_resource_counts().render_targets)
+            throw std::runtime_error("viewer target cleanup leaked storage");
+          std::cout<<"Offscreen resize passed: allocate, reject, retain, recover, resize, cleanup\n";
+          break;
+        }
+      }else if(options.resource_recovery_test) {
         if(rendered_frames==1) {
           const auto before=device.live_resource_bytes();
           const auto counts=device.live_resource_counts();
@@ -1376,7 +1478,7 @@ int main(int argc, char** argv) {
         }else if(rendered_frames==3) {
           while(!imported->scene_instances.empty())detach_node(imported->scene_instances.front().node);
           const auto counts=device.live_resource_counts();
-          if(counts.buffers!=terrain_resources.buffers || counts.textures!=terrain_resources.textures)
+          if(counts.buffers!=terrain_resources().buffers || counts.textures!=terrain_resources().textures)
             throw std::runtime_error("cold residency retained drawable resources");
         }else if(rendered_frames==4) {
           reattach_node(residency_node);
@@ -1401,7 +1503,7 @@ int main(int argc, char** argv) {
           }
         }else{
           const auto counts=device.live_resource_counts();
-          if(counts.buffers!=terrain_resources.buffers || counts.textures!=terrain_resources.textures)
+          if(counts.buffers!=terrain_resources().buffers || counts.textures!=terrain_resources().textures)
             throw std::runtime_error("last detach retained geometry, material uniforms or textures");
           unload_imported();
           std::cout<<"Scene detach passed: shared meshes preserved, unused geometry evicted, terrain retained\n";
@@ -1423,7 +1525,7 @@ int main(int argc, char** argv) {
           std::cout<<"Asset lifecycle: failed replacement preserved current asset\n";
         }else if(rendered_frames==2)unload_imported();
         else if(rendered_frames==3) {
-          if(imported || device.live_resource_counts()!=terrain_resources)
+          if(imported || device.live_resource_counts()!=terrain_resources())
             throw std::runtime_error("terrain-only frame retained asset resources");
           imported.reload(load_imported);
           std::cout<<"Asset lifecycle: reloaded after terrain-only frame\n";
@@ -1456,6 +1558,7 @@ int main(int argc, char** argv) {
                 <<",\"warmup\":"<<kBenchmarkWarmup
                 <<",\"culling\":"<<(options.no_culling?"false":"true")
                 <<",\"instancing\":"<<(options.no_instancing?"false":"true")
+                <<",\"offscreen\":"<<(options.offscreen?"true":"false")
                 <<",\"resolution\":["<<1280<<","<<800<<"]"
                 <<",\"cpu_update_mean_ms\":"<<benchmark_cpu_update*1000/n
                 <<",\"cpu_render_mean_ms\":"<<benchmark_cpu_render*1000/n

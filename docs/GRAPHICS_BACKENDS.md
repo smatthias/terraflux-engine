@@ -339,6 +339,55 @@ stale views, separate-destruction rejection, state contracts and failed helper
 construction. The explicit Mesa/Xvfb test additionally checks an asymmetric
 rendered image copied between targets, exact RGBA equality, nearest enlargement
 into the window, unchanged destination depth and geometry drawn after the copy.
-The main viewer still uses direct window rendering. Next: opt-in offscreen viewer
-composition and resize/reallocation recovery. HDR, sampled depth and general
-post-processing effects remain future work.
+The viewer integration described below adds opt-in rendering through this path.
+HDR, sampled depth and general post-processing effects remain future work.
+
+
+## Viewer offscreen mode and transactional resizing
+
+The viewer's `--offscreen` flag uses a persistent FullscreenComposite and a
+ResizableRenderTarget. Terrain and object passes share the offscreen attachments;
+a third pass copies color to the current window framebuffer before presentation.
+Camera aspect and scene diagnostics use the actual scene-target dimensions,
+including when the last successful target is retained across a window resize.
+Window depth is cleared for the copy and is not populated with scene geometry.
+The direct path remains the default.
+
+ResizableRenderTarget::resize returns false for zero/minimized or unchanged
+extents. A different positive extent allocates its candidate first, retires the
+old target only after candidate creation succeeds, then publishes the new extent.
+A failed admission, unsupported extent or active-target retirement preserves the
+old allocation and destroys the candidate. Reset is explicit/idempotent and the
+destructor provides best-effort cleanup. Resize/reset must run between passes.
+Destroying the owning helper during an active pass remains a caller error;
+exception-safe pass scopes are the next lifecycle increment.
+
+The viewer catches resize failures before drawing. It retains and scales the old
+target, or draws directly if there is no allocation yet. It retries after changes
+to requested extent, live bytes or effective cap, rather than emitting the same
+failed request every stable frame. A transient driver failure with none of those
+changes therefore requires an extent/resource/cap change to retry. Minimized
+frames skip presentation and retain target storage.
+
+The shared budget includes the helper's 88 geometry-buffer bytes and target
+attachments, plus assets and terrain. Resize needs old plus new attachment
+storage simultaneously. Asset-unload validation computes the current viewer
+baseline including the compositor and any live target. OFFSCREEN_JSON emits
+successful allocation/recovery events when diagnostics/smoke are enabled, and
+failure events always, with retained width/height, resize_failures and fallback.
+RESIDENCY_JSON continues to include current target bytes/counts and peaks.
+
+Composition adds one draw and is included in CPU/GPU render measurements.
+BENCHMARK_JSON.offscreen records the requested mode; inspect fallback diagnostics
+before comparing measurements. Native tests cover no-op/minimized extents,
+failed admission, preserved handles/bytes, active-pass rejection, recovery,
+unsupported dimensions, reset and destruction. Smoke mode compares scene pixels
+against nearest-scaled window pixels; ordinary rendering has no such readback.
+
+The dedicated four-frame viewer test uses actual GLFW window resizes under
+Mesa/Xvfb, forces a cap rejection, verifies old-target retention, raises the cap,
+recovers at the same requested size, resizes again and checks cleanup. It turns
+off instancing to avoid unrelated ring allocations during the admission check.
+CI separately exercises first-allocation fallback, mixed-format asset lifecycle
+and wildfire replay through the offscreen path. Display-independent CTest still
+has 14 suites. Physical GPU validation remains outstanding.

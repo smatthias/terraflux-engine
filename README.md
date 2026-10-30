@@ -231,11 +231,42 @@ the configured state file. Full asset unload retains the last residency snapshot
 for saving. Budgets, animation time, runtime transforms and camera state are not
 saved; the fingerprint is a compatibility check, not an asset-integrity signature.
 
+### Optional offscreen viewer rendering
+
+```bash
+./build-gl/terraflux-terrain-viewer --offscreen --scene examples/mixed_asset_scene.json
+LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a -s "-screen 0 1280x800x24" \
+  ./build-gl/terraflux-terrain-viewer --offscreen --smoke-test \
+  --offscreen-resize-test --scene examples/mixed_asset_scene.json
+```
+
+`--offscreen` renders terrain and objects into an RGBA8/Depth32Float target, then
+copies its color to the window with nearest sampling. Direct window rendering
+remains the default. A successful frame adds one fullscreen draw; profiling/GPU
+queries include it. `BENCHMARK_JSON.offscreen` records the requested mode.
+
+Resize allocates a candidate before releasing the old target, so the resource
+budget must accommodate both temporarily. Failure keeps the previous target and
+scales its image into the window; initial failure falls back to direct rendering.
+A failed request is retried when window dimensions, live resource bytes or the
+budget limit change. Zero-sized/minimized windows skip rendering and keep storage.
+Target limits remain 4096 per axis and 4,000,000 pixels. OFFSCREEN_JSON reports
+allocation/recovery events and fallback, including the retained target dimensions.
+Assets unload independently of the compositor and current target.
+
+The four-frame `--offscreen-resize-test` forces a budget rejection, checks retention,
+raises the cap, retries the same requested size, resizes again and releases target
+storage. It requires `--offscreen --smoke-test`, disallows other scripted tests or
+an explicit resource byte cap, and disables instancing to isolate target admission
+from instance-ring growth. Mesa CI also checks initial fallback, mixed-format asset
+unload/reload and wildfire rendering. Pixel comparisons run only in smoke mode;
+ordinary frames perform no CPU framebuffer readback for composition.
+
 ### Explicit pipeline shader identities
 
 `PipelineDesc` now starts with a required `ShaderProgramId`, followed by layout
 and depth/blend state. Built-in identities cover terrain, wildfire, untextured
-objects, textured objects, instanced textured objects and both PBR variants.
+objects, textured objects, instanced textured objects, both PBR variants and fullscreen composition.
 Layout metadata is validated against the selected contract; binding names do
 not select or redirect shader source. Missing/unknown IDs and mismatched layouts
 reject before backend compilation. `ContractOnly` exists for CPU validation tests
@@ -508,18 +539,18 @@ hours or release-readiness guarantees. The PS4 backend is unimplemented.
 
 | Desktop engine — Phases 1–9 | Full roadmap including PS4 |
 | --- | --- |
-| **~87%** (previously ~86%) | **~58%** (previously ~57%) |
+| **~88%** (previously ~87%) | **~59%** (previously ~58%) |
 
 | Phase | Component | Estimated completion |
 | --- | --- | ---: |
 | 1 | Core extraction | 100% |
-| 2 | Rendering abstraction | ~86% (previously ~83%) |
-| 3 | OpenGL backend | ~90% (previously ~88%) |
+| 2 | Rendering abstraction | ~88% (previously ~86%) |
+| 3 | OpenGL backend | ~91% (previously ~90%) |
 | 4 | 3D terrain renderer | 75% |
 | 5 | Simulation visualization | 65% |
 | 6 | Shader system | ~82% (previously ~80%) |
 | 7 | Scene and asset system | ~90% (previously 86%) |
-| 8 | Engine runtime | ~86% |
+| 8 | Engine runtime | ~88% (previously ~86%) |
 | 9 | Performance | ~75% (previously ~70%) |
 | 10 | PS4 backend | 0% |
 
@@ -552,9 +583,11 @@ byte charge and invalidation when its target is destroyed. The reusable
 `FullscreenComposite` helper copies it into a separate offscreen/window pass
 through an explicit Composite shader; feedback sampling of the active target
 rejects. Mesa tests check exact pixels, orientation, nearest scaling, depth
-preservation and subsequent geometry state restoration. The main viewer still
-renders directly to the window.
-Next planned implementation: opt-in viewer offscreen composition with resize recovery.
+preservation and subsequent geometry state restoration. The viewer now supports
+`--offscreen` with transactional target resize, retained-target scaling on failure,
+and direct rendering if the first target cannot be admitted. Smoke tests validate
+composited pixels, actual window resize recovery, asset lifecycle and wildfire replay.
+Next planned implementation: exception-safe render-pass scopes and cleanup recovery.
 See the [prioritized gaps and acceptance criteria](docs/ENGINE_BASELINE.md#remaining-renderer-work-in-priority-order). GPU meshes are created on demand; CPU model data
 and decoded image recipes remain eager and retained for reattachment. Asynchronous streaming, skeletal animation
 and full glTF/IBL support remain future work.

@@ -351,6 +351,45 @@ void test_resource_telemetry() {
   require(!device.resource_telemetry().budget_rejections,"validation error is not a budget rejection");
 }
 
+void test_resize_recovery() {
+  ValidatingRenderDevice device;
+  const auto baseline=device.live_resource_bytes();
+  {
+    ResizableRenderTarget surface(device);
+    require(!surface.resize(0,64) && !surface.target(),"minimized initial surface stays empty");
+    must_throw([&]{(void)surface.color();},"empty surface cannot supply color");
+    require(surface.resize(8,8),"first extent allocated");
+    const auto original=*surface.target();const auto color=surface.color();
+    const auto bytes=device.live_resource_bytes();
+    require(!surface.resize(8,8) && !surface.resize(0,0) && surface.color()==color,
+            "unchanged/minimized extents keep allocation");
+    device.set_resource_byte_budget(bytes.total());
+    must_throw([&]{surface.resize(16,16);},"candidate must fit alongside old target");
+    require(surface.target()->handle==original.handle && surface.color()==color &&
+            device.live_resource_bytes()==bytes,"failed resize preserves source and bytes");
+    device.begin_render_pass({original});device.end_render_pass();
+    device.set_resource_byte_budget(4096);
+    device.begin_render_pass({original});
+    must_throw([&]{surface.resize(16,16);},"resize cannot retire an active target");
+    must_throw([&]{surface.reset();},"reset cannot retire an active target");
+    require(surface.color()==color && device.live_resource_bytes()==bytes,
+            "active resize rejects and cleans its candidate");
+    device.end_render_pass();
+    require(surface.resize(16,16),"same requested extent recovers after cap increases");
+    require(surface.target()->handle!=original.handle && device.live_render_target_count()==1,
+            "successful replacement retires original storage");
+    must_throw([&]{(void)device.render_target_color(original.handle);},"old view invalidated on commit");
+    require(device.live_resource_bytes().render_target_bytes==16*16*8,"replacement accounted once");
+    must_throw([&]{surface.resize(4097,16);},"unsupported resize rejects");
+    require(surface.target()->width==16,"unsupported resize preserves last successful extent");
+    surface.reset();surface.reset();
+    require(!surface.target() && device.live_resource_bytes()==baseline,"reset returns to baseline");
+    surface.resize(3,5);
+  }
+  require(device.live_resource_bytes()==baseline && !device.live_texture_count(),
+          "surface destruction retires storage and borrowed views");
+}
+
 void test_sampled_target_composition() {
   ValidatingRenderDevice device;
   const auto initial=device.live_resource_bytes();
@@ -562,7 +601,8 @@ int main() {
     test_render_pass_contract();
     test_offscreen_targets();
     test_sampled_target_composition();
-    std::cout << "TerraFlux graphics contracts: 18 tests passed\n";
+    test_resize_recovery();
+    std::cout << "TerraFlux graphics contracts: 19 tests passed\n";
   } catch (const std::exception& error) {
     std::cerr << "TerraFlux graphics test failed: " << error.what() << '\n';
     return 1;
