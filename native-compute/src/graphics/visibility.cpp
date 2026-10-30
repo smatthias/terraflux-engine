@@ -13,11 +13,16 @@ namespace {
 bool finite(math::Vec3 p) {
   return std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z);
 }
-using Key=std::tuple<std::uint32_t,std::uint32_t,std::uint32_t,std::uint32_t>;
+using Key=std::tuple<std::uint32_t,std::uint32_t,std::uint32_t,
+                     std::uint32_t,std::uint32_t,std::uint32_t,std::uint32_t>;
 Key key(const PreparedDraw& item) {
   const auto& cmd=item.command;
   const auto texture=cmd.textures.empty()?0:cmd.textures.front().texture.id;
-  return {cmd.pipeline.id,cmd.vertex_buffer.id,cmd.index_buffer.id,texture};
+  const auto camera=std::find_if(cmd.uniform_buffers.begin(),cmd.uniform_buffers.end(),
+      [](const UniformBufferBinding& b){return b.slot==0;});
+  return {cmd.pipeline.id,cmd.vertex_buffer.id,cmd.index_buffer.id,texture,
+          cmd.first_index,cmd.index_count,
+          camera==cmd.uniform_buffers.end()?0:camera->buffer.id};
 }
 }
 BoundingSphere mesh_bounds(const assets::Mesh& mesh) {
@@ -111,7 +116,65 @@ QueueStats OpaqueRenderQueue::submit(RenderDevice& device) {
         std::as_bytes(std::span(&item.material,1)));
     device.draw_indexed(item.command);
     ++stats.submitted;
+    ++stats.instances;
   }
+  pending_.clear();
+  return stats;
+}
+
+QueueStats OpaqueRenderQueue::submit_instanced(RenderDevice& device,
+    PipelineHandle pipeline,BufferHandle storage,std::uint32_t capacity){
+  if(!pipeline || !storage || capacity==0 || capacity>65535)
+    throw std::invalid_argument("instancing requires a pipeline, SSBO and valid capacity");
+  // Validate the whole batch before any draw or writes.
+  for(const auto& item:pending_){
+    if(!item.object_uniform || item.command.uniform_buffers.size()!=2 ||
+       !item.command.storage_buffers.empty() || item.command.textures.size()!=1 ||
+       item.command.instance_count!=1)
+      throw std::invalid_argument("instanced queue requires ordinary textured object draws");
+    const auto& bindings=item.command.uniform_buffers;
+    const auto camera=std::find_if(bindings.begin(),bindings.end(),
+        [](const UniformBufferBinding& b){return b.slot==0;});
+    const auto object=std::find_if(bindings.begin(),bindings.end(),
+        [](const UniformBufferBinding& b){return b.slot==2;});
+    if(camera==bindings.end() || object==bindings.end() ||
+       object->buffer!=item.object_uniform || !camera->buffer)
+      throw std::invalid_argument("invalid camera or object uniform in instance queue");
+  }
+  std::stable_sort(pending_.begin(),pending_.end(),
+    [](const PreparedDraw& a,const PreparedDraw& b){return key(a)<key(b);});
+  QueueStats stats;
+  Key previous{};
+  bool first=true;
+  std::vector<ObjectUniform> batch;
+  batch.reserve(capacity);
+  const auto flush=[&](const PreparedDraw& item,const std::vector<ObjectUniform>& instances){
+    // Rewriting the instance buffer between draws preserves the same
+    // fixed-size SSBO regardless of the total number of scene nodes.
+    device.update_buffer(storage,0,std::as_bytes(std::span(instances)));
+    auto cmd=item.command;
+    cmd.pipeline=pipeline;
+    cmd.uniform_buffers.erase(std::remove_if(cmd.uniform_buffers.begin(),cmd.uniform_buffers.end(),
+        [](const UniformBufferBinding& b){return b.slot==2;}),cmd.uniform_buffers.end());
+    cmd.storage_buffers={{4,storage}};
+    cmd.instance_count=static_cast<std::uint32_t>(instances.size());
+    device.draw_indexed(cmd);
+    ++stats.submitted;
+    stats.instances+=instances.size();
+  };
+  const PreparedDraw* leader=nullptr;
+  for(const auto& item:pending_){
+    const auto current=key(item);
+    if(first || current!=previous || batch.size()==capacity){
+      if(leader)flush(*leader,batch);
+      batch.clear();
+      ++stats.state_groups;
+      leader=&item;
+    }
+    batch.push_back(item.material);
+    first=false;previous=current;
+  }
+  if(leader)flush(*leader,batch);
   pending_.clear();
   return stats;
 }

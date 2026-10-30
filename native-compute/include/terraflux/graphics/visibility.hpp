@@ -41,11 +41,18 @@ struct PreparedDraw {
 struct QueueStats {
   std::size_t submitted=0;
   std::size_t state_groups=0;
+  std::size_t instances=0;
 };
 class OpaqueRenderQueue {
  public:
   void add(PreparedDraw item);
   QueueStats submit(RenderDevice& device);
+  // All prepared commands must have Camera UBO slot 0 and Object slot 2,
+  // and no other storage resources. Hardware instancing uploads the existing
+  // 144-byte ObjectUniform records to binding 4 and merges equal opaque
+  // mesh/material/index ranges into a single indexed instance draw.
+  QueueStats submit_instanced(RenderDevice& device, PipelineHandle instance_pipeline,
+                              BufferHandle instance_buffer,std::uint32_t capacity);
   std::size_t size() const {return pending_.size();}
 
  private:
