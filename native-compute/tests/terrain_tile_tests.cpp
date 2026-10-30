@@ -1,5 +1,7 @@
 #include <terraflux/terrain_tiles.hpp>
 #include <terraflux/graphics/terrain_upload.hpp>
+#include <terraflux/graphics/terrain_tiles.hpp>
+#include <terraflux/graphics/render_pass.hpp>
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -148,6 +150,49 @@ void malformed_inputs() {
   bad=source;bad.vertices[0].normal.z=std::numeric_limits<double>::quiet_NaN();rejects([&]{tile_terrain_mesh(bad);});
   bad=source;bad.cell_size_meters=0;rejects([&]{tile_terrain_mesh(bad);});
 }
+void gpu_uploads_and_culling() {
+  using namespace graphics;
+  ValidatingRenderDevice device;
+  RenderResourceOwner shared(device);
+  const std::array<float,16> identity{1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
+  const auto camera=shared.create_buffer({BufferUsage::Uniform,sizeof(identity)},std::as_bytes(std::span(identity)));
+  const auto pipeline=shared.create_pipeline({ShaderProgramId::Terrain,terrain_shader_layout()});
+  const auto frustum=Frustum::from_view_projection(math::Mat4::identity());
+  require(frustum.intersects_aabb({1,0,0},{2,1,1}),"AABB touching frustum retained");
+  require(!frustum.intersects_aabb({1.1,0,0},{2,1,1}),"outside AABB rejected");
+  for(const auto offset:std::array<math::Vec3,6>{{{3,0,0},{-3,0,0},{0,3,0},{0,-3,0},{0,0,3},{0,0,-3}}})
+    require(!frustum.intersects_aabb(offset-math::Vec3{0.5,0.5,0.5},offset+math::Vec3{0.5,0.5,0.5}),
+            "AABB outside each of six frustum planes rejected");
+  require(frustum.intersects_aabb({-2,-2,-2},{2,2,2}),"AABB enclosing frustum retained");
+  rejects([&]{frustum.intersects_aabb({2,0,0},{1,1,1});});
+  rejects([&]{frustum.intersects_aabb({0,0,0},{std::numeric_limits<double>::infinity(),1,1});});
+  std::vector<compute::GridCell> cells;
+  for(int y=0;y<5;++y)for(int x=0;x<5;++x)cells.push_back(cell(x,y,0));
+  const auto source=build_terrain_mesh(compute::Grid(cells),1);
+  const auto baseline=device.live_resource_bytes();
+  const auto buffer_count=device.live_buffer_count();
+  {
+    TerrainTileRenderer tiles(device,source,{1});
+    require(tiles.tile_count()==16 && tiles.geometry_bytes()==16*(4*28+6*4),"bounded tile uploads accounted exactly");
+    rejects<std::logic_error>([&]{tiles.draw(pipeline,camera,{},frustum);});
+    RenderPassScope pass(device,{{64,64}});
+    const auto culled=tiles.draw(pipeline,camera,{},frustum);
+    require(culled.total==16 && culled.visible==4 && culled.culled==12 && culled.draws==4 && culled.triangles==8,
+            "frustum skips outside terrain tile draw submissions");
+    const auto all=tiles.draw(pipeline,camera,{},frustum,false);
+    require(all.visible==16 && !all.culled && all.draws==16 && all.triangles==32,"disabled culling submits complete surface");
+    const auto absent=Frustum::from_view_projection(math::Mat4::translation({100,100,100}));
+    const auto none=tiles.draw(pipeline,camera,{},absent);
+    require(none.culled==16 && !none.draws && !none.triangles,"fully hidden terrain emits no draws");
+  }
+  require(device.live_resource_bytes()==baseline && device.live_buffer_count()==buffer_count,
+          "tile destruction restores shared resource baseline");
+  device.set_resource_byte_budget(baseline.total()+160);
+  rejects<std::length_error>([&]{TerrainTileRenderer failed(device,source,{1});});
+  require(device.live_resource_bytes()==baseline && device.live_buffer_count()==buffer_count,
+          "failed multi-tile upload retires all partially created buffers");
+}
+
 void integer_edges_and_maximum_tile() {
   const auto high=std::numeric_limits<std::int32_t>::max();
   const auto mesh=build_terrain_mesh(compute::Grid({cell(high-1,high-1,1),cell(high,high-1,1),
@@ -168,7 +213,7 @@ void integer_edges_and_maximum_tile() {
 int main() {
   try {
     dense_coverage_and_seams();stable_under_permutation();sparse_holes_and_islands();
-    count_budgets();malformed_inputs();integer_edges_and_maximum_tile();
-    std::cout<<"Terrain tiles: 6 test groups passed\n";
+    count_budgets();malformed_inputs();integer_edges_and_maximum_tile();gpu_uploads_and_culling();
+    std::cout<<"Terrain tiles: 7 test groups passed\n";
   }catch(const std::exception& error){std::cerr<<"Terrain tile test failed: "<<error.what()<<'\n';return 1;}
 }

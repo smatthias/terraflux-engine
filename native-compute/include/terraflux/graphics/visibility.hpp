@@ -24,6 +24,8 @@ class Frustum {
  public:
   static Frustum from_view_projection(const math::Mat4& view_projection);
   bool intersects(BoundingSphere world) const;
+  // Conservative inclusive AABB test, with scale-aware float rounding margin.
+  bool intersects_aabb(math::Vec3 lo,math::Vec3 hi) const;
 
  private:
   struct Plane { math::Vec3 normal; double distance=0.0; };

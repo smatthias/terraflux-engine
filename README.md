@@ -238,8 +238,25 @@ CPU tiles, defaulting to 32 quads per side. Each tile has a compact mesh,
 source-vertex mapping and inclusive bounds. Adjacent tiles copy the same globally
 computed positions/normals, including after GPU packing; holes and winding are
 preserved. Aggregate tile/vertex/index limits reject over-budget candidates.
-The viewer still uploads the monolithic mesh. LOD, GPU tile residency and tiled
-frustum submission remain future work. See the [API and limits](docs/TERRAIN_TILES.md).
+`--terrain-tiles` enables eager tile uploads and camera-frustum culling;
+`--terrain-tile-quads 8` also enables that mode with smaller tiles. Monolithic
+rendering remains the default. All tiles remain resident: LOD and selective
+residency are future work. See the [API and limits](docs/TERRAIN_TILES.md).
+
+```bash
+./build-gl/terraflux-terrain-viewer --terrain-tiles --scene examples/mixed_asset_scene.json
+LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a -s "-screen 0 1280x800x24" \
+  ./build-gl/terraflux-terrain-viewer --terrain-tile-quads 8 --smoke-test --terrain-tile-test
+```
+
+Tiled smoke mode retains an extra monolithic reference upload and compares terrain
+pixels before assets are drawn; normal tiled mode creates only tile geometry
+buffers. The three-camera `--terrain-tile-test` requires the demo terrain, tiled
+smoke mode and culling, and fails if no tiles are culled. `--no-culling` disables
+both terrain and asset culling and can be used in smoke/profile/benchmark runs.
+TERRAIN_JSON reports tile counts, draws, triangles and tile buffer bytes. Benchmark
+JSON also identifies tiled mode and reports terrain draws/culled tiles per frame.
+These functional checks do not establish a hardware speedup.
 
 ### Optional offscreen viewer rendering
 
@@ -571,19 +588,19 @@ hours or release-readiness guarantees. The PS4 backend is unimplemented.
 
 | Desktop engine — Phases 1–9 | Full roadmap including PS4 |
 | --- | --- |
-| **~89%** (previously ~88%) | **~60%** (previously ~59%) |
+| **~90%** (previously ~89%) | **~61%** (previously ~60%) |
 
 | Phase | Component | Estimated completion |
 | --- | --- | ---: |
 | 1 | Core extraction | 100% |
 | 2 | Rendering abstraction | ~89% (previously ~88%) |
 | 3 | OpenGL backend | ~91% (previously ~90%) |
-| 4 | 3D terrain renderer | ~80% (previously 75%) |
+| 4 | 3D terrain renderer | ~85% (previously ~80%) |
 | 5 | Simulation visualization | 65% |
 | 6 | Shader system | ~82% (previously ~80%) |
 | 7 | Scene and asset system | ~90% (previously 86%) |
 | 8 | Engine runtime | ~89% (previously ~88%) |
-| 9 | Performance | ~75% (previously ~70%) |
+| 9 | Performance | ~78% (previously ~75%) |
 | 10 | PS4 backend | 0% |
 
 Latest milestones: selective node reattachment and on-demand GPU mesh residency,
@@ -626,9 +643,11 @@ exercise exceptions, failed draws, budget rejection, cleanup and subsequent rend
 The compute library now partitions full-resolution terrain into bounded, nonempty
 CPU tiles with local indices, source-vertex maps and inclusive geometry bounds.
 Tiles preserve global positions/normals, holes and exact triangle coverage, with
-configurable aggregate count budgets. This groundwork does not yet change viewer
-submission or implement LOD. See [terrain tile geometry](docs/TERRAIN_TILES.md).
-Next planned implementation: optional viewer tile uploads and frustum culling.
+configurable aggregate count budgets. The viewer now optionally uploads these tiles and culls their packed-geometry
+bounds against the camera frustum. Tiled smoke renders match monolithic reference
+pixels, including fire-grid lookup, offscreen composition and asset lifecycle.
+LOD and on-demand residency remain future work. See [terrain tile geometry](docs/TERRAIN_TILES.md).
+Next planned implementation: selective terrain tile GPU residency.
 See the [prioritized gaps and acceptance criteria](docs/ENGINE_BASELINE.md#remaining-renderer-work-in-priority-order). GPU meshes are created on demand; CPU model data
 and decoded image recipes remain eager and retained for reattachment. Asynchronous streaming, skeletal animation
 and full glTF/IBL support remain future work.

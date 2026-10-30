@@ -2,9 +2,9 @@
 
 `terraflux/terrain_tiles.hpp` provides `tile_terrain_mesh(source, options)` in the
 compute library. This is a CPU geometry partition of the existing full-resolution
-TerrainMesh. The viewer currently uses the original monolithic upload. This
-increment does not implement GPU tile residency, frustum submission, LOD,
-decimation, skirts or on-demand source meshing.
+TerrainMesh. The viewer defaults to the original monolithic upload and offers
+an optional tiled upload/frustum path described below. LOD, selective GPU tile
+residency, decimation, skirts and on-demand source meshing remain future work.
 
 ## Geometry and ownership
 
@@ -39,7 +39,7 @@ options.max_tiles=1024;
 const auto tiles=terrain::tile_terrain_mesh(surface,options);
 for(const auto& tile:tiles) {
   const auto upload=graphics::prepare_terrain_upload(tile.mesh);
-  // Future viewer integration can create bounded GPU resources from this upload.
+  // The optional viewer path creates bounded GPU resources from these uploads.
 }
 ```
 
@@ -79,6 +79,62 @@ and integer-coordinate edges. It reconstructs source triangles from local indice
 and the source map, verifies exact multiplicity/winding, checks inclusive AABBs,
 and compares packed GPU positions/normals with the original upload.
 
-Next: optional viewer tile uploads and frustum culling, with rendered-output checks
-against the monolithic path. LOD and bounded on-demand residency require additional
-seam, transition and lifetime work. Physical GPU performance remains unmeasured.
+The optional viewer integration below adds rendered-output checks against the
+monolithic path. LOD and on-demand residency still require additional seam,
+transition and lifetime work. Physical GPU performance remains unmeasured.
+
+
+## Optional viewer tile uploads and culling
+
+`--terrain-tiles` enables TerrainTileRenderer, using 32 quads per side by default.
+`--terrain-tile-quads N` also enables tiled mode and selects 1..256 quads per side.
+The CPU partition's default aggregate caps still apply: a very small tile size
+can exceed the 4096-tile cap and reject startup. Source geometry and simulation
+rules are unchanged. All tiles are uploaded eagerly and remain GPU resident.
+There is no residency eviction or LOD selection in this increment.
+
+TerrainTileRenderer owns one vertex/index buffer pair per nonempty tile through
+RenderResourceOwner. Partial construction releases every buffer already created.
+Successful draws share the existing terrain/wildfire pipeline, Camera uniform
+and optional FireState SSBO. The wildfire lookup uses the same coordinates and
+original dense fire-field mapping. Tile GPU buffers are independent of imported
+asset lifetimes and included in the viewer's unload baseline and shared byte cap.
+Temporary CPU tile/upload arrays are released after construction; the viewer
+still retains its full source mesh.
+
+Normal tiled mode creates no monolithic GPU geometry buffers. Tiled smoke mode
+additionally creates and renders the monolithic reference, so its allocation and
+frame timings differ from ordinary/benchmark rendering. Each smoke frame compares
+the complete terrain color image exactly before object submission. This exercises
+the same active fire field and camera state for both paths. Pixel readback and
+reference drawing are diagnostic-only work.
+
+Tiles use AABBs of their packed float32 positions. Frustum::intersects_aabb tests
+all six inward-facing planes using each plane's positive support vertex. Bounds
+must be finite and ordered. Plane touches and a scale-aware float rounding margin
+are retained conservatively; some invisible tiles may therefore still draw. The
+margin is 64 float epsilons times the larger of the coordinate scale (at least 1)
+and plane-distance magnitude. Culling skips submissions, not allocations. It is
+frustum culling, not occlusion culling. `--no-culling` disables it for both tiles
+and assets; the flag is accepted in smoke/profile/benchmark modes.
+
+TerrainTileDrawStats reports total/visible/culled tile counts, draws and submitted
+triangles. TERRAIN_JSON emits those counts plus tile geometry_bytes in smoke mode
+and periodically during profiling. BENCHMARK_JSON adds terrain_tiled, terrain_tiles,
+terrain_draws_per_frame, terrain_culled_per_frame and terrain_geometry_bytes.
+Buffer bytes include copied boundary vertices. A fully hidden tile set draws zero
+terrain triangles; the destination pass still performs its configured clear.
+
+`--terrain-tile-test --smoke-test --terrain-tile-quads 8` runs three demo-terrain
+camera views, including closer orbit views. It requires culling and rejects
+imported assets, replay input or another scripted test. It compares monolithic
+pixels for every view and requires at least one skipped tile draw. It can combine
+with `--offscreen`. CI also tests tiled wildfire replay, mixed-format asset lifecycle
+through offscreen composition, and disabled culling. The native tile suite checks
+six-plane AABB rejection/touches, expected visible and fully hidden submissions,
+byte accounting, cleanup and partial-construction budget rejection.
+
+Next: selective tile GPU residency with explicit lifetimes and budget tests.
+More tile draws can increase CPU/submission overhead; these correctness tests do
+not demonstrate a speedup. Compare repeated benchmarks on actual GPU hardware
+before making performance claims.

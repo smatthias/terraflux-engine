@@ -153,6 +153,8 @@ controlled-failure cleanup/recovery tests; see [Exception-safe render-pass scope
 The feature branch now also includes bounded CPU terrain partitioning, exact seam
 normal/position copies, source mappings and geometry bounds, with a new native
 CTest suite (15 total on the branch). See [Terrain tile geometry contract](TERRAIN_TILES.md).
-Optional viewer tile uploads and frustum submission are next. The pinned snapshot
-remains unchanged. LOD/residency, broader attachment formats/effects and physical
-GPU evidence remain outstanding.
+The viewer also offers eager tile uploads and conservative AABB frustum submission,
+with monolithic pixel-reference checks across orbit views, wildfire and asset
+lifecycle paths. Selective GPU tile residency is next. The pinned snapshot remains
+unchanged. LOD, broader attachment formats/effects and physical GPU evidence remain
+outstanding.

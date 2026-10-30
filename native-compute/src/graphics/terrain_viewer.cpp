@@ -2,6 +2,7 @@
 #include <terraflux/graphics/composite.hpp>
 #include <terraflux/graphics/render_pass.hpp>
 #include <terraflux/graphics/terrain_upload.hpp>
+#include <terraflux/graphics/terrain_tiles.hpp>
 #include <terraflux/graphics/mesh_upload.hpp>
 #include <terraflux/graphics/resource_owner.hpp>
 #include <terraflux/graphics/asset_slot.hpp>
@@ -80,6 +81,8 @@ struct Options {
   bool asset_lifecycle_test=false,scene_controls_test=false,scene_detach_test=false,scene_residency_test=false;
   bool residency_report=false,start_inactive=false,resource_recovery_test=false;
   bool offscreen=false,offscreen_resize_test=false;
+  bool terrain_tiles=false,terrain_tile_test=false;
+  std::uint32_t terrain_tile_quads=32;
   std::optional<terraflux::scene::NodeId> selected_node,activate_node;
   std::uint32_t max_resident_meshes=512,max_scene_instances=1024;
   std::optional<std::uint64_t> resource_budget_bytes,cpu_recipe_budget_bytes;
@@ -93,6 +96,15 @@ Options parse_args(int argc, char** argv) {
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
     if (arg == "--smoke-test") options.smoke_test = true;
+    else if(arg=="--terrain-tiles")options.terrain_tiles=true;
+    else if(arg=="--terrain-tile-test")options.terrain_tile_test=true;
+    else if(arg=="--terrain-tile-quads" && i+1<argc) {
+      const std::string text=argv[++i];std::uint32_t n=0;
+      const auto parsed=std::from_chars(text.data(),text.data()+text.size(),n);
+      if(parsed.ec!=std::errc{} || parsed.ptr!=text.data()+text.size() || !n || n>256)
+        throw std::invalid_argument("--terrain-tile-quads must be 1..256");
+      options.terrain_tiles=true;options.terrain_tile_quads=n;
+    }
     else if(arg=="--offscreen")options.offscreen=true;
     else if(arg=="--offscreen-resize-test")options.offscreen_resize_test=true;
     else if(arg=="--resource-recovery-test"){options.resource_recovery_test=true;options.scene_residency_test=true;}
@@ -149,8 +161,13 @@ Options parse_args(int argc, char** argv) {
     else if (arg == "--save-state" && i+1<argc)options.save_state=argv[++i];
     else if (arg == "--scene" && i + 1 < argc) options.scene_file = argv[++i];
     else throw std::invalid_argument(
-        "usage: terraflux-terrain-viewer [--request request.json --response response.json] [--obj model.obj | --gltf model.gltf] [--texture texture.ppm] [--scene scene.json (legacy scenes require --obj)] [--offscreen] [--offscreen-resize-test with --offscreen --smoke-test] [--profile] [--no-culling] [--no-instancing] [--asset-preview with --gltf] [--benchmark-frames 60] [--smoke-test] [--asset-lifecycle-test with --smoke-test]");
+        "usage: terraflux-terrain-viewer [--request request.json --response response.json] [--obj model.obj | --gltf model.gltf] [--texture texture.ppm] [--scene scene.json (legacy scenes require --obj)] [--terrain-tiles] [--terrain-tile-quads 32] [--terrain-tile-test with --smoke-test --terrain-tiles] [--offscreen] [--offscreen-resize-test with --offscreen --smoke-test] [--profile] [--no-culling] [--no-instancing] [--asset-preview with --gltf] [--benchmark-frames 60] [--smoke-test] [--asset-lifecycle-test with --smoke-test]");
   }
+  if(options.terrain_tile_test && (!options.terrain_tiles || !options.smoke_test ||
+      !options.request_file.empty() || !options.scene_file.empty() || !options.obj_file.empty() ||
+      !options.gltf_file.empty() || options.offscreen_resize_test || options.asset_lifecycle_test ||
+      options.scene_controls_test || options.scene_detach_test || options.scene_residency_test || options.no_culling))
+    throw std::invalid_argument("--terrain-tile-test requires tiled smoke mode with the demo terrain and culling enabled");
   if(options.offscreen_resize_test)options.no_instancing=true; // Isolate target admission from ring growth.
   if(options.offscreen_resize_test && (!options.offscreen || !options.smoke_test ||
       options.asset_lifecycle_test || options.scene_controls_test || options.scene_detach_test ||
@@ -166,8 +183,8 @@ Options parse_args(int argc, char** argv) {
     throw std::invalid_argument("--scene cannot be combined with --gltf");
   if(options.benchmark_frames && options.smoke_test)
     throw std::invalid_argument("benchmark and smoke-test cannot run together");
-  if(options.no_culling && !options.benchmark_frames && !options.profile)
-    throw std::invalid_argument("--no-culling requires --profile or --benchmark-frames");
+  if(options.no_culling && !options.benchmark_frames && !options.profile && !options.smoke_test)
+    throw std::invalid_argument("--no-culling requires --profile, --benchmark-frames or --smoke-test");
   if(options.asset_preview && (options.gltf_file.empty() || options.benchmark_frames))
     throw std::invalid_argument("--asset-preview requires --gltf and cannot benchmark");
   if(options.no_instancing && !options.benchmark_frames && !options.profile &&
@@ -292,10 +309,11 @@ int main(int argc, char** argv) {
     for (auto& cell : grid.cells)
       if (!cell.elevation_meters && cell.fuel_load > 0) cell.elevation_meters = 0.0;
     const auto mesh = terraflux::terrain::build_terrain_mesh(grid, cell_size);
-    auto upload = terraflux::graphics::prepare_terrain_upload(mesh);
+    auto upload = (!options.terrain_tiles || options.smoke_test)?
+        terraflux::graphics::prepare_terrain_upload(mesh):terraflux::graphics::TerrainUpload{};
     std::optional<terraflux::replay::FireField> fire_field;
     if (playback) fire_field.emplace(terraflux::replay::make_fire_field(grid));
-    if (upload.indices.empty()) throw std::runtime_error("scenario terrain has no drawable triangles");
+    if (mesh.indices.empty()) throw std::runtime_error("scenario terrain has no drawable triangles");
     const auto scene_camera = camera_geometry(mesh);
 
     GlfwSession glfw;
@@ -323,8 +341,11 @@ int main(int argc, char** argv) {
     RenderResourceOwner owned(device);
     const auto vertices = bytes_of(upload.vertices);
     const auto indices = bytes_of(upload.indices);
-    const auto vb = owned.create_buffer({BufferUsage::Vertex, vertices.size()}, vertices);
-    const auto ib = owned.create_buffer({BufferUsage::Index, indices.size()}, indices);
+    BufferHandle vb{},ib{};
+    if(!options.terrain_tiles || options.smoke_test) {
+      vb=owned.create_buffer({BufferUsage::Vertex,vertices.size()},vertices);
+      ib=owned.create_buffer({BufferUsage::Index,indices.size()},indices);
+    }
     std::optional<BufferHandle> fire_buffer;
     if (fire_field) {
       const auto fire_bytes = std::as_bytes(std::span(fire_field->states));
@@ -336,6 +357,11 @@ int main(int argc, char** argv) {
     const auto pipeline = owned.create_pipeline({
         playback?ShaderProgramId::Wildfire:ShaderProgramId::Terrain,
         playback ? wildfire_shader_layout() : terrain_shader_layout(), true});
+
+    std::unique_ptr<TerrainTileRenderer> tiled_terrain;
+    if(options.terrain_tiles)tiled_terrain=std::make_unique<TerrainTileRenderer>(
+        device,mesh,terraflux::terrain::TerrainTileOptions{options.terrain_tile_quads});
+    std::uint64_t benchmark_terrain_draws=0,benchmark_terrain_culled=0,tile_test_culled=0;
 
     // Two independent world transforms share the original asset VBO/IBO.
     // Their own std140 object UBOs are refreshed every frame (not mesh data).
@@ -1166,17 +1192,38 @@ int main(int argc, char** argv) {
                                 rendered_frames>=kBenchmarkWarmup);
       const double profile_render_start=glfwGetTime();
       std::uint32_t frame_draws=0;
+      if(options.terrain_tile_test && rendered_frames>0) {
+        distance=scene_camera.starting_distance*0.2;
+        yaw=rendered_frames==1?0.45:1.95;pitch=0.55;
+      }
       const auto camera_vp=update_camera(device, camera, scene_width, scene_height, scene_camera,
                     yaw, pitch, distance,
                     cell_size, fire_field ? fire_field->width : 1,
                     fire_field ? fire_field->height : 1, engine_time);
       if(record_gpu)device.begin_gpu_timing();
+      const auto terrain_frustum=Frustum::from_view_projection(camera_vp);
+      DrawIndexed command{pipeline,vb,ib,0,static_cast<std::uint32_t>(upload.indices.size()),{{0,camera}}, {}};
+      if(fire_buffer)command.storage_buffers.push_back({1,*fire_buffer});
+      std::vector<std::uint8_t> terrain_reference;
+      if(tiled_terrain && options.smoke_test) {
+        RenderPassScope reference_pass(device,{scene_target});
+        device.draw_indexed(command);++frame_draws;
+        terrain_reference=device.capture_rgba(scene_width,scene_height);
+      }
       RenderPassScope terrain_pass(device,{scene_target});
-      DrawIndexed command{pipeline, vb, ib, 0,
-          static_cast<std::uint32_t>(upload.indices.size()), {{0, camera}}, {}};
-      if (fire_buffer) command.storage_buffers.push_back({1, *fire_buffer});
-      device.draw_indexed(command);
-      ++frame_draws;
+      TerrainTileDrawStats terrain_stats;
+      if(tiled_terrain) {
+        terrain_stats=tiled_terrain->draw(pipeline,camera,fire_buffer,terrain_frustum,!options.no_culling);
+        frame_draws+=static_cast<std::uint32_t>(terrain_stats.draws);
+        if(options.smoke_test && device.capture_rgba(scene_width,scene_height)!=terrain_reference)
+          throw std::runtime_error("tiled terrain differs from monolithic reference pixels");
+        tile_test_culled+=terrain_stats.culled;
+        if(options.smoke_test || (options.profile && profile_frames%120==0))
+          std::cout<<"TERRAIN_JSON={\"tiles\":"<<terrain_stats.total<<",\"visible\":"<<terrain_stats.visible
+                   <<",\"culled\":"<<terrain_stats.culled<<",\"draws\":"<<terrain_stats.draws
+                   <<",\"triangles\":"<<terrain_stats.triangles
+                   <<",\"geometry_bytes\":"<<tiled_terrain->geometry_bytes()<<"}\n";
+      } else {device.draw_indexed(command);++frame_draws;}
       const auto terrain_snapshot=(options.smoke_test &&
           (options.asset_lifecycle_test || (imported && imported->uses_pbr)))?
           device.capture_rgba(scene_width,scene_height):std::vector<std::uint8_t>{};
@@ -1225,8 +1272,8 @@ int main(int argc, char** argv) {
           upload_pbr(mesh.sections);
       }
       if (imported) {
-        const auto frustum=Frustum::from_view_projection(camera_vp);
-        // Opaque assets only. Terrain/fire passes retain original ordering.
+        const auto& frustum=terrain_frustum;
+        // Asset queue ordering is independent of opaque terrain tile submission.
         const auto enqueue=[&](BufferHandle vertex,BufferHandle index,
                                const std::vector<ImportedGpu::Section>& sections,
                                BufferHandle object_uniform,const terraflux::math::Mat4& model,
@@ -1387,6 +1434,8 @@ int main(int argc, char** argv) {
         benchmark_cpu_update+=profile_render_start-profile_update_start;
         benchmark_cpu_render+=profile_render_end-profile_render_start;
         benchmark_draws+=frame_draws;
+        benchmark_terrain_draws+=tiled_terrain?terrain_stats.draws:1;
+        benchmark_terrain_culled+=terrain_stats.culled;
         benchmark_visible+=visible_instances;
         benchmark_culled+=culled_instances;
       }
@@ -1405,7 +1454,14 @@ int main(int argc, char** argv) {
       }
       glfwSwapBuffers(window.get());
       ++rendered_frames;
-      if(options.offscreen_resize_test) {
+      if(options.terrain_tile_test) {
+        if(rendered_frames==3) {
+          if(!tile_test_culled)throw std::runtime_error("terrain tile test culled no tiles");
+          std::cout<<"Terrain tiles passed: three camera views match monolithic pixels; culled "
+                   <<tile_test_culled<<" tile draws\n";
+          break;
+        }
+      }else if(options.offscreen_resize_test) {
         const auto target=offscreen.target();
         if(!target)throw std::runtime_error("resize test has no offscreen target");
         if(rendered_frames==1) {
@@ -1560,6 +1616,11 @@ int main(int argc, char** argv) {
                 <<",\"culling\":"<<(options.no_culling?"false":"true")
                 <<",\"instancing\":"<<(options.no_instancing?"false":"true")
                 <<",\"offscreen\":"<<(options.offscreen?"true":"false")
+                <<",\"terrain_tiled\":"<<(options.terrain_tiles?"true":"false")
+                <<",\"terrain_tiles\":"<<(tiled_terrain?tiled_terrain->tile_count():0)
+                <<",\"terrain_draws_per_frame\":"<<static_cast<double>(benchmark_terrain_draws)/n
+                <<",\"terrain_culled_per_frame\":"<<static_cast<double>(benchmark_terrain_culled)/n
+                <<",\"terrain_geometry_bytes\":"<<(tiled_terrain?tiled_terrain->geometry_bytes():vertices.size()+indices.size())
                 <<",\"resolution\":["<<1280<<","<<800<<"]"
                 <<",\"cpu_update_mean_ms\":"<<benchmark_cpu_update*1000/n
                 <<",\"cpu_render_mean_ms\":"<<benchmark_cpu_render*1000/n
@@ -1593,6 +1654,7 @@ int main(int argc, char** argv) {
     // and before releasing the current OpenGL context.
     imported.unload();
     // Owned GPU resources release before OpenGL context teardown.
+    tiled_terrain.reset();
     owned.reset();
     if(options.smoke_test) {
       const auto measured=cpu_profiler.summary();

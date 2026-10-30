@@ -433,6 +433,7 @@ These are controlled validation failures, not simulated hardware device loss.
 
 Terrain tiling groundwork is now available in the compute library; see
 [Terrain tile geometry contract](TERRAIN_TILES.md) for copied boundary normals,
-source mappings, bounds and aggregate budgets. The viewer remains monolithic;
-optional tiled uploads and frustum submission are next. Physical GPU validation
-remains outstanding.
+source mappings, bounds and aggregate budgets. The viewer now has optional tile uploads/frustum culling and exact monolithic
+reference pixel checks in smoke mode; see that contract for CLI flags, diagnostics
+and eager-residency limits. Selective terrain residency is next. Physical GPU
+validation remains outstanding.

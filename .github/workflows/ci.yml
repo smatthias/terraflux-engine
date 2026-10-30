@@ -113,6 +113,26 @@ jobs:
           python3 examples/generate_wildfire_scenario.py > /tmp/terraflux-request.json
           ./build-gl/terraflux-compute-runner < /tmp/terraflux-request.json > /tmp/terraflux-response.json
 
+      - name: Verify tiled terrain pixels and frustum submission
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --terrain-tile-quads 8 \
+            --terrain-tile-test --smoke-test | tee /tmp/terraflux-terrain-tiles.log
+          grep -q "Terrain tiles passed" /tmp/terraflux-terrain-tiles.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --terrain-tile-quads 8 \
+            --terrain-tile-test --smoke-test --offscreen
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --terrain-tile-quads 8 --smoke-test \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --terrain-tile-quads 16 --smoke-test \
+            --offscreen --asset-lifecycle-test --scene examples/mixed_asset_scene.json
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --terrain-tile-quads 16 --smoke-test --no-culling
+
       - name: Verify viewer offscreen composition and resize recovery
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"

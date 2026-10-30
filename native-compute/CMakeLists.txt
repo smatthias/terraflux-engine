@@ -33,6 +33,7 @@ add_library(terraflux_graphics STATIC
   src/graphics/composite.cpp
   src/graphics/render_device.cpp
   src/graphics/terrain_upload.cpp
+  src/graphics/terrain_tiles.cpp
   src/graphics/mesh_upload.cpp
   src/graphics/visibility.cpp
   src/replay.cpp
