@@ -49,8 +49,12 @@ bool boolean(const Json& j) {
 std::vector<std::uint8_t> decode_base64(const std::string& uri) {
   const std::string prefix="data:application/octet-stream;base64,";
   const std::string prefix2="data:application/gltf-buffer;base64,";
+  const std::string prefix_png="data:image/png;base64,";
+  const std::string prefix_jpeg="data:image/jpeg;base64,";
   std::size_t start=uri.starts_with(prefix)?prefix.size() :
-                    uri.starts_with(prefix2)?prefix2.size() : 0;
+                    uri.starts_with(prefix2)?prefix2.size() :
+                    uri.starts_with(prefix_png)?prefix_png.size() :
+                    uri.starts_with(prefix_jpeg)?prefix_jpeg.size() : 0;
   if(!start) throw std::invalid_argument("unsupported glTF data URI");
   const std::string source=uri.substr(start);
   if(source.empty() || source.size()%4!=0 || source.size()>90'000'000)
@@ -378,6 +382,69 @@ GltfModel import_gltf(const std::string& json_text,
   }
 
   GltfModel result;
+  // Images can reference external paths, data URIs, or an embedded bufferView.
+  // Decode once per image index; materials retain references to these keys.
+  const Json::Array* image_list=nullptr;
+  if(const auto* p=optional(doc,"images"))image_list=&array(*p);
+  const Json::Array* texture_list=nullptr;
+  if(const auto* p=optional(doc,"textures"))texture_list=&array(*p);
+  const Json::Array* samplers=nullptr;
+  if(const auto* p=optional(doc,"samplers"))samplers=&array(*p);
+  if((image_list && image_list->size()>256) ||
+     (texture_list && texture_list->size()>256) ||
+     (samplers && samplers->size()>256))
+    throw std::invalid_argument("too many glTF images/textures/samplers");
+  if(image_list)for(std::size_t i=0;i<image_list->size();++i){
+    const auto& img=object((*image_list)[i]);
+    const auto* mime_ptr=optional(img,"mimeType");
+    const std::string mime=mime_ptr?string(*mime_ptr):"";
+    const auto* uri_ptr=optional(img,"uri");
+    const auto* view_ptr=optional(img,"bufferView");
+    if((uri_ptr!=nullptr)==(view_ptr!=nullptr))
+      throw std::invalid_argument("glTF image requires exactly one of uri or bufferView");
+    std::vector<std::uint8_t> encoded;
+    if(uri_ptr){
+      const auto uri=string(*uri_ptr);
+      encoded=uri.starts_with("data:")?decode_base64(uri):
+              external_buffer?external_buffer(uri):std::vector<std::uint8_t>{};
+    }else{
+      if(mime.empty())
+        throw std::invalid_argument("glTF bufferView image requires mimeType");
+      const auto index=uint(*view_ptr,"image bufferView");
+      const auto& view=views.at(in_range(index,views.size(),"image bufferViews"));
+      const auto& data=buffers.at(view.buffer);
+      encoded.assign(data.begin()+static_cast<std::ptrdiff_t>(view.offset),
+                     data.begin()+static_cast<std::ptrdiff_t>(view.offset+view.length));
+    }
+    const auto key="gltf-image-"+std::to_string(i);
+    result.images.emplace(key,decode_image(encoded,mime));
+  }
+  // Images are decoded by shared image index; texture objects can alias
+  // the same source. Sampler overrides are limited to repeat/no-mip modes.
+  std::vector<std::string> image_for_texture;
+  if(texture_list)for(const auto& item:*texture_list){
+    const auto& tex=object(item);
+    if(optional(tex,"extensions"))
+      throw std::invalid_argument("compressed/extended glTF texture unsupported");
+    const auto index=uint(field(tex,"source"),"texture source");
+    if(!image_list || index>=image_list->size())
+      throw std::invalid_argument("glTF texture references missing image");
+    if(const auto* sampler_id=optional(tex,"sampler")) {
+      const auto idx=uint(*sampler_id,"sampler");
+      if(!samplers || idx>=samplers->size())
+        throw std::invalid_argument("glTF texture references missing sampler");
+      const auto& sampler=object((*samplers)[idx]);
+      // The current OpenGL path uses GL_NEAREST and GL_REPEAT without mipmaps.
+      // Refuse incompatible authoring choices rather than silently ignoring.
+      const auto wrap_s=integer(sampler,"wrapS",10497);
+      const auto wrap_t=integer(sampler,"wrapT",10497);
+      const auto min=integer(sampler,"minFilter",9728);
+      const auto mag=integer(sampler,"magFilter",9728);
+      if(wrap_s!=10497 || wrap_t!=10497 || min!=9728 || mag!=9728)
+        throw std::invalid_argument("glTF sampler requires unsupported filtering/wrapping");
+    }
+    image_for_texture.push_back("gltf-image-"+std::to_string(index));
+  }
   const Json::Array* materials=nullptr;
   if(const auto* p=optional(doc,"materials"))materials=&array(*p);
   if(materials && materials->size()>4096)
@@ -387,8 +454,25 @@ GltfModel import_gltf(const std::string& json_text,
     Material m;
     if(const auto* pbr=optional(o,"pbrMetallicRoughness")){
       const auto& po=object(*pbr);
-      if(optional(po,"baseColorTexture"))
-        throw std::invalid_argument("glTF baseColorTexture requires future PNG/JPEG loader");
+      if(const auto* factor=optional(po,"metallicFactor"))
+        m.metallic_factor=number(*factor);
+      if(const auto* factor=optional(po,"roughnessFactor"))
+        m.roughness_factor=number(*factor);
+      if(!std::isfinite(m.metallic_factor) || !std::isfinite(m.roughness_factor) ||
+         m.metallic_factor<0 || m.metallic_factor>1 ||
+         m.roughness_factor<0 || m.roughness_factor>1)
+        throw std::invalid_argument("glTF PBR factors must be in [0,1]");
+      if(optional(po,"metallicRoughnessTexture"))
+        throw std::invalid_argument("metallicRoughnessTexture not yet shaded");
+      if(const auto* texture=optional(po,"baseColorTexture")){
+        const auto& info=object(*texture);
+        const auto index=uint(field(info,"index"),"baseColorTexture index");
+        if(index>=image_for_texture.size())
+          throw std::invalid_argument("glTF baseColorTexture index out of range");
+        if(integer(info,"texCoord")!=0 || optional(info,"extensions"))
+          throw std::invalid_argument("only baseColorTexture TEXCOORD_0 supported");
+        m.albedo_map=image_for_texture[index];
+      }
       if(const auto* color=optional(po,"baseColorFactor")){
         const auto& values=array(*color);
         if(values.size()!=4)throw std::invalid_argument("glTF baseColorFactor must be RGBA");
@@ -402,6 +486,11 @@ GltfModel import_gltf(const std::string& json_text,
         m.base_color={rgba[0],rgba[1],rgba[2]};
       }
     }
+    if(optional(o,"normalTexture") || optional(o,"occlusionTexture") ||
+       optional(o,"emissiveTexture") || optional(o,"extensions"))
+      throw std::invalid_argument("unsupported glTF material texture or extension");
+    if(const auto* alpha=optional(o,"alphaMode");alpha && string(*alpha)!="OPAQUE")
+      throw std::invalid_argument("transparent glTF materials unsupported");
     result.materials.emplace("gltf-material-"+std::to_string(i),m);
   }
 

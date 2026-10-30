@@ -34,6 +34,7 @@ struct GltfMeshInstance {
 struct GltfModel {
   std::vector<Mesh> meshes;
   MaterialLibrary materials;
+  std::map<std::string,ImageRgba8> images; // decoded shared glTF image indices
   std::vector<GltfNode> nodes;
   std::vector<GltfMeshInstance> instances;
 };
