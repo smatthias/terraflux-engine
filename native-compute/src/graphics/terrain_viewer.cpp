@@ -14,6 +14,7 @@
 #include <terraflux/scene_io.hpp>
 #include <terraflux/runtime.hpp>
 #include <terraflux/scene_residency.hpp>
+#include <terraflux/residency_state.hpp>
 #include <terraflux/grid.hpp>
 #include <terraflux/math.hpp>
 #include <terraflux/replay.hpp>
@@ -78,6 +79,7 @@ struct Options {
   std::optional<terraflux::scene::NodeId> selected_node,activate_node;
   std::uint32_t max_resident_meshes=512,max_scene_instances=1024;
   std::uint32_t benchmark_frames=0;
+  std::string load_state,save_state;
   std::string request_file, response_file, obj_file, gltf_file, texture_file, scene_file;
 };
 
@@ -127,6 +129,8 @@ Options parse_args(int argc, char** argv) {
     else if (arg == "--obj" && i + 1 < argc) options.obj_file = argv[++i];
     else if (arg == "--gltf" && i + 1 < argc) options.gltf_file = argv[++i];
     else if (arg == "--texture" && i + 1 < argc) options.texture_file = argv[++i];
+    else if (arg == "--load-state" && i+1<argc)options.load_state=argv[++i];
+    else if (arg == "--save-state" && i+1<argc)options.save_state=argv[++i];
     else if (arg == "--scene" && i + 1 < argc) options.scene_file = argv[++i];
     else throw std::invalid_argument(
         "usage: terraflux-terrain-viewer [--request request.json --response response.json] [--obj model.obj | --gltf model.gltf] [--texture texture.ppm] [--scene scene.json (legacy scenes require --obj)] [--profile] [--no-culling] [--no-instancing] [--asset-preview with --gltf] [--benchmark-frames 60] [--smoke-test] [--asset-lifecycle-test with --smoke-test]");
@@ -165,6 +169,11 @@ Options parse_args(int argc, char** argv) {
   if(options.start_inactive && (options.scene_controls_test || options.scene_detach_test ||
                                options.scene_residency_test || options.asset_lifecycle_test))
     throw std::invalid_argument("inactive loading cannot be combined with scripted lifecycle tests");
+  if((!options.load_state.empty() || !options.save_state.empty()) && options.scene_file.empty())
+    throw std::invalid_argument("residency state requires --scene");
+  if(!options.save_state.empty() && std::filesystem::absolute(options.save_state).lexically_normal()==
+      std::filesystem::absolute(options.scene_file).lexically_normal())
+    throw std::invalid_argument("residency state must not overwrite the scene file");
   return options;
 }
 
@@ -352,6 +361,7 @@ int main(int argc, char** argv) {
       std::unique_ptr<OpaqueRenderQueue::InstanceBufferRing> instance_ring;
       std::uint32_t indices = 0;
       terraflux::scene::Scene scene;
+      std::string authored_signature;
       terraflux::scene::NodeId left_pivot = 0, right_pivot = 0;
       terraflux::scene::NodeId left_mesh = 0, right_mesh = 0;
       double separation = 1.0;
@@ -360,9 +370,16 @@ int main(int argc, char** argv) {
     const auto terrain_resources=device.live_resource_counts();
     const auto load_imported=[&]()->std::unique_ptr<ImportedGpu> {
       std::optional<terraflux::scene::Scene> loaded_scene;
+      std::optional<terraflux::runtime::ResidencyState> loaded_state;
       terraflux::assets::SceneModelAssets scene_assets;
       if(!options.scene_file.empty()) {
         loaded_scene=terraflux::scene::deserialize_scene(read_file(options.scene_file));
+        if(!options.load_state.empty()) {
+          if(std::filesystem::file_size(options.load_state)>65536)
+            throw std::invalid_argument("residency state exceeds size bound");
+          loaded_state=terraflux::runtime::deserialize_residency_state(read_file(options.load_state));
+          terraflux::runtime::validate_residency_state(*loaded_state,*loaded_scene,options.obj_file);
+        }
         if(loaded_scene->mesh_assets().empty()) {
           if(options.obj_file.empty())throw std::invalid_argument("legacy --scene requires --obj");
         }else{
@@ -512,6 +529,7 @@ int main(int argc, char** argv) {
                             (min_pos.z + max_pos.z)*0.5};
         if(!use_gltf && !options.scene_file.empty()) {
           obj.uses_scene_file=true;
+          obj.authored_signature=terraflux::runtime::residency_signature(*loaded_scene,options.obj_file);
           obj.scene=std::move(*loaded_scene);
           obj.scene_anchor=terraflux::math::Mat4::translation(scene_camera.target) *
               terraflux::math::Mat4::scaling({scale,scale,scale}) *
@@ -535,6 +553,12 @@ int main(int argc, char** argv) {
             while(!obj.scene_instances.empty())
               obj.residency.detach(obj.scene,obj.scene_instances,obj.scene_instances.front().node,
                   [](auto& instance){instance.uniform={};instance.uniform_owner.reset();},[]{},[]{});
+          }
+          if(loaded_state) {
+            for(auto node:loaded_state->inactive)
+              obj.residency.detach(obj.scene,obj.scene_instances,node,
+                  [](auto& instance){instance.uniform={};instance.uniform_owner.reset();},[]{},[]{});
+            if(loaded_state->selected)obj.residency.select(obj.scene_instances,*loaded_state->selected);
           }
           if(options.selected_node)obj.residency.select(obj.scene_instances,*options.selected_node);
           obj.residency.check_budget(obj.scene_instances);
@@ -746,7 +770,17 @@ int main(int argc, char** argv) {
     const bool has_asset=!options.obj_file.empty() || !options.gltf_file.empty() ||
                          !options.scene_file.empty();
     if(has_asset)imported.reload(load_imported);
+    std::optional<terraflux::runtime::ResidencyState> last_state;
+    const auto capture_state=[&] {
+      if(!imported || !imported->uses_scene_file)return;
+      terraflux::runtime::ResidencyState state;
+      state.scene_signature=imported->authored_signature;
+      state.selected=imported->residency.selected(imported->scene_instances);
+      for(const auto& [node,saved]:imported->residency.detached())state.inactive.push_back(node);
+      last_state=std::move(state);
+    };
     const auto unload_imported=[&] {
+      capture_state();
       imported.unload();
       if(device.live_resource_counts()!=terrain_resources)
         throw std::runtime_error("asset unload did not restore terrain resource baseline");
@@ -1359,6 +1393,13 @@ int main(int argc, char** argv) {
       std::cout << "GPU profile: "<<gpu.mean_ms<<" ms mean, "
                 <<gpu.min_ms<<" ms min, "<<gpu.max_ms<<" ms max ("
                 <<gpu.samples<<" samples, "<<gpu.skipped<<" skipped)\n";
+    }
+    if(!options.save_state.empty()) {
+      capture_state();
+      if(last_state) {
+        terraflux::runtime::save_residency_state(options.save_state,*last_state);
+        std::cout<<"Residency state saved: "<<options.save_state<<'\n';
+      }
     }
     // Explicitly drain streamed SSBO allocations before other resources
     // and before releasing the current OpenGL context.

@@ -9,6 +9,7 @@ add_library(terraflux_compute STATIC
   src/scene.cpp
   src/scene_io.cpp
   src/runtime.cpp
+  src/residency_state.cpp
   src/assets/obj.cpp
   src/assets/scene_assets.cpp
   src/assets/material.cpp

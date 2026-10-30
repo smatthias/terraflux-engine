@@ -706,3 +706,26 @@ applies. R reload reapplies inactive startup but not one-time activation.
 Headless tests cover selection cycles and detach persistence; CI verifies a
 single OBJ node from a mixed scene at a one-mesh/one-instance budget and rejects
 a selected multi-mesh glTF model under a one-mesh limit.
+
+
+## Persisted residency state
+
+`runtime::ResidencyState` and the helpers in `terraflux/residency_state.hpp`
+serialize selection and inactive bindings independently of scene JSON. Format
+`terraflux.residency` version 1 is bounded to 64 KiB and validates IDs, duplicate
+inactive entries and signature syntax. Scene validation checks that referenced
+IDs were authored drawable bindings and that the canonical scene fingerprint
+matches, including the legacy primary OBJ argument. This is deterministic
+compatibility detection, not a cryptographic or asset-content integrity check.
+
+The viewer accepts `--load-state` and `--save-state`. Restore happens before
+GPU admission, so only active bindings upload geometry and budgets still apply.
+CLI selection overrides saved selection; inactive startup takes precedence over
+the saved active set; explicit startup activation runs last. Reload rereads the
+sidecar. Clean-exit save uses a same-directory temporary file and rename after
+successful flush/close, cleaning failed temporary writes. It does not fsync for
+power-loss durability. The authored scene is never the save destination.
+Runtime transforms, animation clocks, camera and configured budgets are outside
+this format. Tests cover canonical/null-selection roundtrips, mismatched scenes,
+invalid IDs, failed-save preservation and cleanup. Mesa CI saves and restores a
+partially active mixed scene under its one-mesh/one-instance admission limit.

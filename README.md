@@ -130,6 +130,28 @@ resources; no automatic victim eviction occurs. Inactive startup retains CPU
 recipes but uploads no drawable geometry. `--activate-node` applies once at
 startup; R reload reapplies inactive-start settings without auto-activation.
 
+### Persist selection and inactive bindings
+
+```bash
+./build-gl/terraflux-terrain-viewer --scene examples/mixed_asset_scene.json \
+  --start-inactive --activate-node 2 --save-state /tmp/terraflux-state.json
+./build-gl/terraflux-terrain-viewer --scene examples/mixed_asset_scene.json \
+  --load-state /tmp/terraflux-state.json --max-resident-meshes 1 --max-scene-instances 1
+```
+
+`--save-state` writes a separate versioned JSON file on clean exit. It records
+selected and inactive node IDs, with a compatibility fingerprint of the authored
+scene and legacy primary OBJ argument. Writes close successfully before replacing
+the destination by rename; failures preserve the prior destination. The source
+scene is unchanged. State is validated before residency admission, and changed
+scenes, invalid bindings, duplicate IDs and unsupported versions reject clearly.
+
+CLI `--select-node` overrides saved selection; `--start-inactive` makes every
+binding inactive, and one-time `--activate-node` runs afterward. R reload rereads
+the configured state file. Full asset unload retains the last residency snapshot
+for saving. Budgets, animation time, runtime transforms and camera state are not
+saved; the fingerprint is a compatibility check, not an asset-integrity signature.
+
 ### Wildfire replay and runtime checks
 
 ```bash
@@ -396,7 +418,7 @@ hours or release-readiness guarantees. The PS4 backend is unimplemented.
 
 | Desktop engine — Phases 1–9 | Full roadmap including PS4 |
 | --- | --- |
-| **~79%** (previously ~78%) | **~51%** |
+| **~80%** (previously ~79%) | **~52%** (previously ~51%) |
 
 | Phase | Component | Estimated completion |
 | --- | --- | ---: |
@@ -407,7 +429,7 @@ hours or release-readiness guarantees. The PS4 backend is unimplemented.
 | 5 | Simulation visualization | 65% |
 | 6 | Shader system | 76% |
 | 7 | Scene and asset system | ~90% (previously 86%) |
-| 8 | Engine runtime | ~82% (previously ~78%) |
+| 8 | Engine runtime | ~86% (previously ~82%) |
 | 9 | Performance | ~58% (previously 55%) |
 | 10 | PS4 backend | 0% |
 
@@ -422,7 +444,7 @@ OBJ, glTF, GLB, transparent materials and repeated model references. Native test
 CTest suites and 71 simulation parity fixtures; CI also exercises the viewer
 under Mesa/Xvfb. See the branch's CI results for validation of each commit.
 
-Next planned work: scene-state persistence for selected and inactive bindings. GPU meshes are created on demand; CPU model data
+Next planned work: bounded resource-byte accounting and GPU memory-budget diagnostics. GPU meshes are created on demand; CPU model data
 and decoded image recipes remain eager and retained for reattachment. Asynchronous streaming, skeletal animation
 and full glTF/IBL support remain future work.
 This desktop-engine breakdown is separate from the earlier simulation-focused
