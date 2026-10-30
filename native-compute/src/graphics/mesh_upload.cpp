@@ -126,6 +126,8 @@ ShaderLayout pbr_textured_object_shader_layout(bool instanced) {
   layout.bindings.push_back({"PbrMaterial",ShaderResourceKind::UniformBuffer,5,kFragmentStage});
   layout.bindings.push_back({"MetallicRoughnessTexture",ShaderResourceKind::SampledTexture,6,kFragmentStage});
   layout.bindings.push_back({"NormalTexture",ShaderResourceKind::SampledTexture,7,kFragmentStage});
+  layout.bindings.push_back({"OcclusionTexture",ShaderResourceKind::SampledTexture,8,kFragmentStage});
+  layout.bindings.push_back({"EmissiveTexture",ShaderResourceKind::SampledTexture,9,kFragmentStage});
   validate_shader_layout(layout);
   return layout;
 }

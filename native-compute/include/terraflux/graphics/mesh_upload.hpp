@@ -36,12 +36,14 @@ TexturedMeshUpload prepare_textured_asset_upload(const assets::Mesh& mesh);
 ShaderLayout textured_object_shader_layout();
 ShaderLayout instanced_textured_object_shader_layout();
 ShaderLayout pbr_textured_object_shader_layout(bool instanced);
-// std140 fragment UBO slot 5, one per material section.
+// std140 fragment UBO slot 5: material parameters and eye position.
 struct PbrMaterialUniform {
-  std::array<float,4> factors{}; // metallic, roughness, normalScale, unused
-  std::array<float,4> eye{};     // world-space camera position
+  std::array<float,4> factors{}; // metallic, roughness, normalScale, occlusionStrength
+  std::array<float,4> eye{}; // world-space camera position
+  std::array<float,4> emissive{}; // linear RGB factor, alphaCutoff
+  std::array<float,4> options{}; // alphaFactor, maskEnabled
 };
-static_assert(sizeof(PbrMaterialUniform)==32);
+static_assert(sizeof(PbrMaterialUniform)==64);
 
 ObjectUniform make_object_uniform(const math::Mat4& world,
                                   math::Vec3 tint = {0.19, 0.55, 0.94});

@@ -526,8 +526,8 @@ GltfModel import_gltf(const std::string& json_text,
           if(rgba[j]<0 || rgba[j]>1)
             throw std::invalid_argument("glTF material factor outside [0,1]");
         }
-        if(rgba[3]!=1.0)throw std::invalid_argument("transparent glTF materials unsupported");
         m.base_color={rgba[0],rgba[1],rgba[2]};
+        m.alpha_factor=rgba[3];
       }
     }
     if(const auto* normal=optional(o,"normalTexture")) {
@@ -543,11 +543,50 @@ GltfModel import_gltf(const std::string& json_text,
       if(!std::isfinite(m.normal_scale) || m.normal_scale<0 || m.normal_scale>10)
         throw std::invalid_argument("normalTexture scale must be within [0,10]");
     }
-    if(optional(o,"occlusionTexture") ||
-       optional(o,"emissiveTexture") || optional(o,"extensions"))
-      throw std::invalid_argument("unsupported glTF material texture or extension");
-    if(const auto* alpha=optional(o,"alphaMode");alpha && string(*alpha)!="OPAQUE")
-      throw std::invalid_argument("transparent glTF materials unsupported");
+    const auto parse_aux_texture=[&](const char* field_name,std::string& name,
+                                     TextureSampling& sampling) {
+      if(const auto* texture=optional(o,field_name)){
+        const auto& info=object(*texture);
+        const auto index=uint(field(info,"index"),field_name);
+        if(index>=image_for_texture.size() || integer(info,"texCoord")!=0 ||
+           optional(info,"extensions"))
+          throw std::invalid_argument(std::string(field_name)+" requires valid TEXCOORD_0");
+        name=image_for_texture[index];
+        sampling=sampling_for_texture[index];
+      }
+    };
+    parse_aux_texture("occlusionTexture",m.occlusion_map,m.occlusion_sampling);
+    if(const auto* occlusion=optional(o,"occlusionTexture")){
+      if(const auto* strength=optional(object(*occlusion),"strength"))
+        m.occlusion_strength=number(*strength);
+      if(!std::isfinite(m.occlusion_strength) ||
+         m.occlusion_strength<0 || m.occlusion_strength>1)
+        throw std::invalid_argument("glTF occlusion strength must be in [0,1]");
+    }
+    parse_aux_texture("emissiveTexture",m.emissive_map,m.emissive_sampling);
+    if(const auto* emissive=optional(o,"emissiveFactor")){
+      const auto& channels=array(*emissive);
+      if(channels.size()!=3)
+        throw std::invalid_argument("glTF emissiveFactor must be RGB");
+      const auto red=number(channels[0]),green=number(channels[1]),blue=number(channels[2]);
+      if(!std::isfinite(red) || !std::isfinite(green) || !std::isfinite(blue) ||
+         red<0 || red>1 || green<0 || green>1 || blue<0 || blue>1)
+        throw std::invalid_argument("glTF emissiveFactor must be in [0,1]");
+      m.emissive_factor={red,green,blue};
+    }
+    if(optional(o,"extensions"))
+      throw std::invalid_argument("glTF material extensions unsupported");
+    if(const auto* alpha=optional(o,"alphaMode")){
+      const auto mode=string(*alpha);
+      if(mode=="MASK")m.alpha_mode=Material::AlphaMode::Mask;
+      else if(mode!="OPAQUE")
+        throw std::invalid_argument("glTF alpha BLEND mode unsupported");
+    }
+    if(const auto* cutoff=optional(o,"alphaCutoff")){
+      m.alpha_cutoff=number(*cutoff);
+      if(!std::isfinite(m.alpha_cutoff) || m.alpha_cutoff<0 || m.alpha_cutoff>1)
+        throw std::invalid_argument("glTF alphaCutoff must be in [0,1]");
+    }
     result.materials.emplace("gltf-material-"+std::to_string(i),m);
   }
 

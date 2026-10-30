@@ -19,10 +19,16 @@ struct Material {
   std::string metallic_roughness_map,normal_map;
   TextureSampling metallic_roughness_sampling{},normal_sampling{};
   double normal_scale=1.0;
-  // Imported glTF PBR factors; current OpenGL renderer draws base color
-  // only. These are preserved for a future metallic/roughness shader.
+  // glTF PBR scalar factors, applied by the OpenGL material shader.
   double metallic_factor=1.0;
   double roughness_factor=1.0;
+  std::string occlusion_map,emissive_map;
+  TextureSampling occlusion_sampling{},emissive_sampling{};
+  double occlusion_strength=1.0;
+  math::Vec3 emissive_factor{0.0,0.0,0.0};
+  enum class AlphaMode { Opaque, Mask };
+  AlphaMode alpha_mode=AlphaMode::Opaque;
+  double alpha_factor=1.0,alpha_cutoff=0.5;
 };
 using MaterialLibrary = std::map<std::string,Material>;
 MaterialLibrary parse_mtl(std::istream& input);
