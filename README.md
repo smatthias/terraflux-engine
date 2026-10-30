@@ -779,8 +779,12 @@ engine timing. Native replay tests now cover nine groups.
 Baseline checkpoint and remaining-work list refreshed against successful CI.
 The [physical-GPU validation checklist](docs/GPU_VALIDATION.md) is ready, with
 logged smoke checks, interactive review and repeated benchmark commands.
-Hardware execution is pending; terrain LOD design is the next independent
-implementation workstream.
+Hardware execution is pending. The [terrain LOD design](docs/TERRAIN_LOD.md)
+is complete: boundary-preserving 4x4 patch simplification, hole fallback,
+error measurement and transactional integration criteria. LOD implementation
+remains pending; the next independent increment is CPU LOD generation and tests.
+Progress this task: ↑ terrain LOD specification completed; phase and overall
+implementation estimates are unchanged.
 See the [prioritized gaps and acceptance criteria](docs/ENGINE_BASELINE.md#remaining-renderer-work-in-priority-order). GPU meshes are created on demand; CPU model data
 and decoded image recipes remain eager and retained for reattachment. Asynchronous streaming, skeletal animation
 and full glTF/IBL support remain future work.
