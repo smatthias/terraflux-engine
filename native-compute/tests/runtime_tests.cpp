@@ -1,4 +1,6 @@
 #include <terraflux/runtime.hpp>
+#include <terraflux/scene_residency.hpp>
+#include <memory>
 #include <terraflux/scene_io.hpp>
 
 #include <cmath>
@@ -251,6 +253,62 @@ void scene_playback_controls() {
   playback.reset();
   check(!playback.paused() && near(playback.simulated_seconds(),0),"scene clock reset");
 }
+void scene_residency_api() {
+  struct Instance {terraflux::scene::NodeId node;std::uint32_t mesh_index;std::shared_ptr<int> resource;};
+  using Residency=terraflux::runtime::SceneResidency<Instance>;
+  terraflux::scene::Scene graph;
+  graph.declare_mesh_asset("model","model.obj");
+  const auto first=graph.create_node("First"),second=graph.create_node("Second",first);
+  graph.set_mesh_asset(first,"model");graph.set_mesh_asset(second,"model");
+  graph.set_transform(first,{{3,0,0},{0,0,0},{1,1,1}});
+  std::vector<Instance> live{{first,0,std::make_shared<int>(1)},
+                            {first,1,std::make_shared<int>(2)},
+                            {second,0,std::make_shared<int>(3)}};
+  Residency residency;
+  std::vector<bool> resident{true,true};
+  int retirements=0;
+  const auto evict=[&]{
+    const auto refs=Residency::reference_counts(live,2);
+    for(std::size_t i=0;i<2;++i)if(!refs[i])resident[i]=false;
+  };
+  const auto strip=[](Instance& instance){instance.resource.reset();};
+  check(residency.detach(graph,live,first,strip,[&]{++retirements;},evict),"runtime API detaches node");
+  check(live.size()==1 && resident[0] && !resident[1] && retirements==1,
+        "shared mesh survives while unused mesh evicts");
+  check(!graph.get(first).mesh_instance && graph.get(second).parent==first &&
+        graph.get(second).mesh_instance,"detach preserves child hierarchy and draw binding");
+  check(residency.detached().at(first).instances.size()==2 &&
+        !residency.detached().at(first).instances[0].resource,
+        "saved CPU recipes do not retain resources");
+  check(!residency.detach(graph,live,first,strip,[]{},evict),"duplicate detach is a no-op");
+  std::weak_ptr<int> staged;
+  int prepared=0;
+  rejects([&]{residency.reattach(graph,live,first,[&](Instance& instance){
+    resident[instance.mesh_index]=true;
+    instance.resource=std::make_shared<int>(7);staged=instance.resource;
+    if(++prepared==2)throw std::runtime_error("preparation failed");
+  },evict);},"resource preparation failure propagates");
+  check(live.size()==1 && staged.expired() && !resident[1] && resident[0] &&
+        !graph.get(first).mesh_instance && residency.detached().contains(first),
+        "failed reattachment releases staged resources and preserves detached state");
+  const auto prepare=[&](Instance& instance){
+    resident[instance.mesh_index]=true;instance.resource=std::make_shared<int>(9);
+  };
+  check(residency.reattach(graph,live,first,prepare,evict) && live.size()==3 &&
+        graph.get(first).mesh_asset=="model" && resident[1],"successful reattachment publishes complete node");
+  check(!residency.reattach(graph,live,first,prepare,evict),"duplicate attachment is a no-op");
+  const auto world=graph.world_matrix(second).transformPoint({0,0,0});
+  check(near(world.x,3),"parent transform survives residency changes");
+  rejects([&]{(void)Residency::reference_counts(live,1);},"invalid mesh index rejected");
+  // Version 1 primary-mesh binding also survives the same API.
+  terraflux::scene::Scene legacy;const auto node=legacy.create_node("Legacy");
+  legacy.set_mesh_instance(node,true);
+  std::vector<Instance> old{{node,0,{}}};Residency old_residency;
+  old_residency.detach(legacy,old,node,strip,[]{},[]{});
+  old_residency.reattach(legacy,old,node,[](Instance&){},[]{});
+  check(old.size()==1 && legacy.get(node).mesh_instance && !legacy.get(node).mesh_asset,
+        "legacy binding restored without named asset");
+}
 void example_scene(const std::string& path){
   std::ifstream file(path);
   if(!file)throw std::runtime_error("scene example not found");
@@ -277,8 +335,9 @@ int main(int argc,char** argv) {
     runtime_components_and_profiler();
     motion_components();
     scene_playback_controls();
+    scene_residency_api();
     example_scene(argv[1]);
-    std::cout<<"TerraFlux runtime: 7 test groups passed\n";
+    std::cout<<"TerraFlux runtime: 8 test groups passed\n";
   }catch(const std::exception& e){
     std::cerr<<"Runtime test failed: "<<e.what()<<'\n';
     return 1;

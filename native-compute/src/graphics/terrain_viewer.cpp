@@ -13,6 +13,7 @@
 #include <terraflux/scene.hpp>
 #include <terraflux/scene_io.hpp>
 #include <terraflux/runtime.hpp>
+#include <terraflux/scene_residency.hpp>
 #include <terraflux/grid.hpp>
 #include <terraflux/math.hpp>
 #include <terraflux/replay.hpp>
@@ -319,11 +320,7 @@ int main(int argc, char** argv) {
       std::vector<AdditionalMesh> additional_meshes;
       std::vector<terraflux::assets::Mesh> cpu_meshes;
       std::function<void(ImportedGpu&,std::uint32_t)> ensure_mesh;
-      struct DetachedNode {
-        std::optional<std::string> asset;
-        std::vector<SceneInstance> instances;
-      };
-      std::map<terraflux::scene::NodeId,DetachedNode> detached_nodes;
+      terraflux::runtime::SceneResidency<SceneInstance> residency;
       PipelineHandle pipeline,instanced_pipeline,transparent_pipeline;
       std::unique_ptr<OpaqueRenderQueue::InstanceBufferRing> instance_ring;
       std::uint32_t indices = 0;
@@ -724,8 +721,8 @@ int main(int argc, char** argv) {
       std::cout<<"Asset controls: U unload | R reload | D detach | A reattach | P pause scene | N single tick (failed reload preserves current asset)\n";
 
     const auto evict_unused=[&](ImportedGpu& asset) {
-      std::vector<std::size_t> references(asset.additional_meshes.size()+1);
-      for(const auto& instance:asset.scene_instances)++references.at(instance.mesh_index);
+      const auto references=terraflux::runtime::SceneResidency<ImportedGpu::SceneInstance>::reference_counts(
+          asset.scene_instances,asset.additional_meshes.size()+1);
       for(std::size_t mesh=0;mesh<references.size();++mesh) {
         auto& vertex=mesh==0?asset.vb:asset.additional_meshes[mesh-1].vb;
         auto& index=mesh==0?asset.ib:asset.additional_meshes[mesh-1].ib;
@@ -741,23 +738,10 @@ int main(int argc, char** argv) {
     const auto detach_node=[&](terraflux::scene::NodeId node) {
       if(!imported || !imported->uses_scene_file)return;
       auto& asset=*imported.operator->();
-      ImportedGpu::DetachedNode saved;
-      saved.asset=asset.scene.get(node).mesh_asset;
-      for(auto instance:asset.scene_instances)if(instance.node==node) {
-        instance.uniform={};instance.uniform_owner.reset();
-        saved.instances.push_back(std::move(instance));
-      }
-      if(saved.instances.empty())return;
-      asset.detached_nodes.insert_or_assign(node,std::move(saved));
-      asset.scene.set_mesh_instance(node,false);
-      // Retire prior streamed instance records before releasing their inputs.
-      asset.instance_ring.reset();
-      std::erase_if(asset.scene_instances,[&](const auto& instance) {
-        if(instance.node!=node)return false;
-        // Erasing the instance releases its own uniform scope.
-        return true;
-      });
-      evict_unused(asset);
+      const bool changed=asset.residency.detach(asset.scene,asset.scene_instances,node,
+          [](auto& instance){instance.uniform={};instance.uniform_owner.reset();},
+          [&]{asset.instance_ring.reset();},[&]{evict_unused(asset);});
+      if(!changed)return;
       if(!options.no_instancing)
         asset.instance_ring=std::make_unique<OpaqueRenderQueue::InstanceBufferRing>(device);
       std::cout<<"Detached scene node "<<node<<"; "<<asset.scene_instances.size()<<" mesh instances remain\n";
@@ -766,25 +750,16 @@ int main(int argc, char** argv) {
     const auto reattach_node=[&](terraflux::scene::NodeId node) {
       if(!imported || !imported->uses_scene_file)return;
       auto& asset=*imported.operator->();
-      const auto found=asset.detached_nodes.find(node);
-      if(found==asset.detached_nodes.end())return;
-      auto instances=found->second.instances;
-      try{
-        asset.scene_instances.reserve(asset.scene_instances.size()+instances.size());
-        for(auto& instance:instances) {
-          asset.ensure_mesh(asset,instance.mesh_index);
-          const auto model=asset.scene_anchor*asset.scene.world_matrix(node)*instance.asset_local;
-          const auto uniforms=make_object_uniform(model,{1,1,1});
-          const auto bytes=std::as_bytes(std::span(&uniforms,1));
-          instance.uniform_owner=std::make_shared<RenderResourceOwner>(device);
-          instance.uniform=instance.uniform_owner->create_buffer({BufferUsage::Uniform,bytes.size()},bytes);
-        }
-        if(found->second.asset)asset.scene.set_mesh_asset(node,*found->second.asset);
-        else asset.scene.set_mesh_instance(node,true);
-        asset.scene_instances.insert(asset.scene_instances.end(),
-            std::make_move_iterator(instances.begin()),std::make_move_iterator(instances.end()));
-        asset.detached_nodes.erase(found);
-      }catch(...){evict_unused(asset);throw;}
+      const bool changed=asset.residency.reattach(asset.scene,asset.scene_instances,node,
+          [&](auto& instance) {
+            asset.ensure_mesh(asset,instance.mesh_index);
+            const auto model=asset.scene_anchor*asset.scene.world_matrix(node)*instance.asset_local;
+            const auto uniforms=make_object_uniform(model,{1,1,1});
+            const auto bytes=std::as_bytes(std::span(&uniforms,1));
+            instance.uniform_owner=std::make_shared<RenderResourceOwner>(device);
+            instance.uniform=instance.uniform_owner->create_buffer({BufferUsage::Uniform,bytes.size()},bytes);
+          },[&]{evict_unused(asset);});
+      if(!changed)return;
       std::cout<<"Reattached scene node "<<node<<"; "<<asset.scene_instances.size()<<" mesh instances resident\n";
     };
 
@@ -845,8 +820,8 @@ int main(int argc, char** argv) {
         detach_node(imported->scene_instances.front().node);
       const bool attach=glfwGetKey(window.get(),GLFW_KEY_A)==GLFW_PRESS;
       if(attach && !previous_attach && !options.smoke_test && !options.benchmark_frames &&
-         imported && !imported->detached_nodes.empty()) {
-        try{reattach_node(imported->detached_nodes.begin()->first);}
+         imported && !imported->residency.detached().empty()) {
+        try{reattach_node(imported->residency.detached().begin()->first);}
         catch(const std::exception& error){std::cerr<<"Node reattachment failed: "<<error.what()<<'\n';}
         previous_time=glfwGetTime();
       }

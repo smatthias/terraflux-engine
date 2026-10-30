@@ -647,3 +647,23 @@ a terrain-only frame, cold reattachment and rendered recovery. It verifies
 unchanged handles for surviving geometry and a terrain-only buffer/texture
 baseline after full eviction. CI covers mixed, pure OBJ and legacy scenes,
 including non-instanced rendering. Physical GPU validation is outstanding.
+
+
+## Reusable headless residency API
+
+`runtime::SceneResidency<Instance>` in `terraflux/scene_residency.hpp` now owns
+saved bindings, CPU recipes and attach/detach transaction ordering. Instance
+records supply `node` and `mesh_index` plus host-specific resource fields.
+`reference_counts` validates mesh indices; the host supplies strip, resource
+retirement, preparation and unused-resource eviction callbacks. No window,
+OpenGL type or graphics context is required by this API.
+
+Preparation completes before draw instances are published. If it fails,
+staged instances are destroyed before the eviction callback runs, leaving the
+node detached. Instances must support noexcept move construction/assignment;
+retirement and eviction callbacks must not throw. The API is synchronous and
+single-threaded. The viewer still owns GPU upload recipes and scopes, using
+the same API exercised by headless tests. Those tests cover shared meshes,
+expanded model instances, failed preparation/cleanup, duplicate operations,
+hierarchy preservation, bounds validation and legacy primary-mesh bindings.
+Existing Mesa residency sweeps verify the viewer integration.

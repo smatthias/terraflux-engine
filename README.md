@@ -20,6 +20,7 @@ twin applications.
 - Scene pause/resume, single stepping and transactional asset unload/reload
 - Reusable CPU material/path/image resolution and sampler-aware texture keys
 - Reference-counted GPU texture leases; final material release evicts the allocation
+- Headless scene residency API with callback-driven resource preparation and eviction
 - Frustum culling, opaque hardware instancing, CPU/GPU timing and benchmarks
 
 ## Requirements
@@ -388,8 +389,7 @@ OBJ, glTF, GLB, transparent materials and repeated model references. Native test
 CTest suites and 71 simulation parity fixtures; CI also exercises the viewer
 under Mesa/Xvfb. See the branch's CI results for validation of each commit.
 
-Next planned work: extract scene residency operations from the desktop viewer
-into a reusable runtime API. GPU meshes are created on demand; CPU model data
+Next planned work: residency diagnostics and memory/resource budgets. GPU meshes are created on demand; CPU model data
 and decoded image recipes remain eager and retained for reattachment. Asynchronous streaming, skeletal animation
 and full glTF/IBL support remain future work.
 This desktop-engine breakdown is separate from the earlier simulation-focused
