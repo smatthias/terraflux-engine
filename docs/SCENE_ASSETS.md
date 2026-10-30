@@ -461,3 +461,38 @@ path alias. Tests cover schema roundtrips, legacy compatibility, deduplication,
 invalid references, file errors and path containment. This milestone supports
 OBJ scene references; glTF/GLB still use their authored hierarchies via `--gltf`.
 Dynamic loading/unloading and mixed OBJ/glTF scene references remain future work.
+
+
+## Phase 8: Dynamic asset scope unloading and reload
+
+Press **U** to unload the current imported asset/scene, leaving terrain and
+wildfire playback active. Press **R** to reread the original OBJ, glTF/GLB or
+scene file and replace the imported asset scope. Reload rebuilds authored
+scene transforms/components; it does not preserve unsaved runtime movement.
+Loading is synchronous. A failed reload reports its error and keeps the
+previous asset scope and its GPU resources available for the next frame.
+
+Imported models, material textures, uniforms, pipelines and streamed instance
+buffers have a separate lifetime from terrain resources. Replacement builds
+a complete candidate before retiring the previous scope, so it temporarily
+needs memory for both. Shared resources within an imported scene stay shared
+until the entire scene scope is unloaded; individual mesh eviction and async
+streaming are not part of this milestone. GPU cleanup occurs while the
+OpenGL context is still current.
+
+For a repeatable lifecycle smoke check:
+
+```bash
+./build-gl/terraflux-terrain-viewer --smoke-test --asset-lifecycle-test \
+  --scene examples/asset_scene.json
+```
+
+The four-frame check renders the asset, injects a failure after constructing
+a complete replacement, renders the preserved asset, unloads, renders terrain,
+reloads and renders again, then replaces/unloads once more. It asserts that
+live buffer/texture/pipeline counts return to the terrain baseline, validates
+asset pixels on loaded frames and checks that terrain pixels remain unchanged
+when wildfire playback is absent. Counts describe live OpenGL API resources,
+not physical VRAM reclamation or hardware performance. CI covers shared OBJ
+scenes, the standalone OBJ path, glTF transparency/tangents and legacy draws
+under Mesa/Xvfb. Physical GPU validation remains outstanding.

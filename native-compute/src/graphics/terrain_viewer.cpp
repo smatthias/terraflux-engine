@@ -2,6 +2,7 @@
 #include <terraflux/graphics/terrain_upload.hpp>
 #include <terraflux/graphics/mesh_upload.hpp>
 #include <terraflux/graphics/resource_owner.hpp>
+#include <terraflux/graphics/asset_slot.hpp>
 #include <terraflux/graphics/visibility.hpp>
 #include <terraflux/assets/obj.hpp>
 #include <terraflux/assets/scene_assets.hpp>
@@ -69,6 +70,7 @@ std::filesystem::path asset_path(const std::filesystem::path& directory,
 
 struct Options {
   bool smoke_test=false, profile=false, no_culling=false, no_instancing=false,asset_preview=false;
+  bool asset_lifecycle_test=false;
   std::uint32_t benchmark_frames=0;
   std::string request_file, response_file, obj_file, gltf_file, texture_file, scene_file;
 };
@@ -78,6 +80,7 @@ Options parse_args(int argc, char** argv) {
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
     if (arg == "--smoke-test") options.smoke_test = true;
+    else if (arg == "--asset-lifecycle-test") options.asset_lifecycle_test=true;
     else if (arg == "--profile") options.profile = true;
     else if (arg == "--no-culling") options.no_culling = true;
     else if (arg == "--no-instancing") options.no_instancing = true;
@@ -98,7 +101,7 @@ Options parse_args(int argc, char** argv) {
     else if (arg == "--texture" && i + 1 < argc) options.texture_file = argv[++i];
     else if (arg == "--scene" && i + 1 < argc) options.scene_file = argv[++i];
     else throw std::invalid_argument(
-        "usage: terraflux-terrain-viewer [--request request.json --response response.json] [--obj model.obj | --gltf model.gltf] [--texture texture.ppm] [--scene scene.json (legacy scenes require --obj)] [--profile] [--no-culling] [--no-instancing] [--asset-preview with --gltf] [--benchmark-frames 60] [--smoke-test]");
+        "usage: terraflux-terrain-viewer [--request request.json --response response.json] [--obj model.obj | --gltf model.gltf] [--texture texture.ppm] [--scene scene.json (legacy scenes require --obj)] [--profile] [--no-culling] [--no-instancing] [--asset-preview with --gltf] [--benchmark-frames 60] [--smoke-test] [--asset-lifecycle-test with --smoke-test]");
   }
   if (options.request_file.empty() != options.response_file.empty())
     throw std::invalid_argument("--request and --response must be provided together");
@@ -117,6 +120,9 @@ Options parse_args(int argc, char** argv) {
   if(options.no_instancing && !options.benchmark_frames && !options.profile &&
      !options.smoke_test)
     throw std::invalid_argument("--no-instancing requires --profile, --benchmark-frames or --smoke-test");
+  if(options.asset_lifecycle_test && (!options.smoke_test ||
+      (options.obj_file.empty() && options.gltf_file.empty() && options.scene_file.empty())))
+    throw std::invalid_argument("--asset-lifecycle-test requires --smoke-test and an asset");
   return options;
 }
 
@@ -196,19 +202,7 @@ terraflux::math::Mat4 update_camera(terraflux::graphics::RenderDevice& device,
 int main(int argc, char** argv) {
   try {
     const Options options = parse_args(argc, argv);
-    std::optional<terraflux::scene::Scene> loaded_scene;
-    terraflux::assets::SceneObjAssets scene_assets;
-    if(!options.scene_file.empty()) {
-      loaded_scene=terraflux::scene::deserialize_scene(read_file(options.scene_file));
-      if(loaded_scene->mesh_assets().empty()) {
-        if(options.obj_file.empty())throw std::invalid_argument("legacy --scene requires --obj");
-      }else{
-        if(!options.obj_file.empty())
-          throw std::invalid_argument("asset scenes declare their models; omit --obj");
-        scene_assets=terraflux::assets::load_scene_obj_assets(*loaded_scene,options.scene_file);
-      }
-    }
-    const bool asset_scene=!scene_assets.meshes.empty();
+
 
     std::optional<terraflux::replay::Playback> playback;
     std::optional<terraflux::compute::Grid> demo;
@@ -265,6 +259,9 @@ int main(int argc, char** argv) {
     // Two independent world transforms share the original asset VBO/IBO.
     // Their own std140 object UBOs are refreshed every frame (not mesh data).
     struct ImportedGpu {
+      // Declared first, destroyed last: instance-ring storage is retired before
+      // geometry/material/pipeline resources; the GL context outlives both.
+      std::unique_ptr<RenderResourceOwner> resources;
       BufferHandle vb, ib, object_uniform_left, object_uniform_right;
       struct GltfInstance {
         BufferHandle uniform;
@@ -309,388 +306,419 @@ int main(int argc, char** argv) {
       double separation = 1.0;
       terraflux::math::Vec3 local_center{};
     };
-    std::optional<ImportedGpu> imported;
-    if (!options.obj_file.empty() || !options.gltf_file.empty() || asset_scene) {
-      const bool use_gltf=!options.gltf_file.empty();
-      const auto source_file=use_gltf?options.gltf_file:
-          asset_scene?scene_assets.sources.front().string():options.obj_file;
-      const auto source_folder=std::filesystem::path(source_file).parent_path();
-      struct LocatedMaterial {
-        terraflux::assets::Material material;
-        std::filesystem::path folder;
-      };
-      std::map<std::string,LocatedMaterial> material_files;
-      terraflux::assets::Mesh object;
-      std::map<std::string,terraflux::assets::ImageRgba8> gltf_images;
-      std::vector<terraflux::assets::Mesh> extra_meshes;
-      std::vector<std::pair<std::uint32_t,terraflux::math::Mat4>> node_worlds;
-      if(use_gltf) {
-        const auto resolver=[&](const std::string& uri) {
-          const auto path=asset_path(source_folder,uri);
-          const auto size=std::filesystem::file_size(path);
-          if(size>64'000'000)
-            throw std::invalid_argument("external glTF buffer larger than 64MB");
-          const auto contents=read_file(path.string());
-          return std::vector<std::uint8_t>(contents.begin(),contents.end());
-        };
-        const auto source_contents=read_file(source_file);
-        const auto is_glb=source_contents.size()>=4 &&
-             source_contents.substr(0,4)==std::string("glTF",4);
-        const auto asset_bytes=std::span(
-            reinterpret_cast<const std::uint8_t*>(source_contents.data()),
-            source_contents.size());
-        auto asset=is_glb?terraflux::assets::import_glb(asset_bytes,resolver):
-                          terraflux::assets::import_gltf(source_contents,resolver);
-        if(asset.meshes.empty())throw std::invalid_argument("glTF contains no meshes");
-        object=std::move(asset.meshes.front());
-        gltf_images=std::move(asset.images);
-        for(std::size_t i=1;i<asset.meshes.size();++i)
-          extra_meshes.push_back(std::move(asset.meshes[i]));
-        for(const auto& instance:asset.instances)
-          node_worlds.emplace_back(instance.mesh_index,instance.world);
-        for(const auto& [name,material]:asset.materials)
-          material_files.emplace(name,LocatedMaterial{material,source_folder});
-      } else if(asset_scene) {
-        // Keep per-file material names distinct even when OBJ libraries reuse
-        // names. Each mesh and its material sections are uploaded only once.
-        for(std::size_t i=0;i<scene_assets.meshes.size();++i) {
-          auto& mesh=scene_assets.meshes[i];
-          const auto prefix="scene/"+std::to_string(i)+"/";
-          for(auto& section:mesh.sections)
-            if(!section.material_name.empty())section.material_name=prefix+section.material_name;
-          for(const auto& reference:mesh.material_libraries) {
-            const auto path=asset_path(scene_assets.sources[i].parent_path(),reference);
-            std::ifstream file(path);
-            if(!file)throw std::runtime_error("cannot open material library: "+path.string());
-            for(const auto& [name,material]:terraflux::assets::parse_mtl(file))
-              if(!material_files.emplace(prefix+name,LocatedMaterial{material,path.parent_path()}).second)
-                throw std::invalid_argument("duplicate material in scene asset: "+name);
-          }
-        }
-        object=std::move(scene_assets.meshes.front());
-        for(std::size_t i=1;i<scene_assets.meshes.size();++i)
-          extra_meshes.push_back(std::move(scene_assets.meshes[i]));
-        for(std::size_t id=1;id<loaded_scene->size();++id) {
-          const auto node=static_cast<terraflux::scene::NodeId>(id);
-          const auto& reference=loaded_scene->get(node).mesh_asset;
-          if(reference)node_worlds.emplace_back(scene_assets.mesh_indices.at(*reference),
-                                                loaded_scene->world_matrix(node));
-        }
-      } else {
-        std::ifstream model_file(options.obj_file);
-        if (!model_file) throw std::runtime_error("cannot open OBJ "+options.obj_file);
-        object=terraflux::assets::import_obj(model_file);
-        for(const auto& reference:object.material_libraries) {
-          const auto path=asset_path(source_folder,reference);
-          std::ifstream file(path);
-          if(!file) throw std::runtime_error("cannot open material library: "+path.string());
-          const auto parsed=terraflux::assets::parse_mtl(file);
-          for(const auto& [name,material]:parsed)
-            if(!material_files.emplace(name,LocatedMaterial{material,path.parent_path()}).second)
-              throw std::invalid_argument("duplicate material in libraries: "+name);
+    const auto terrain_resources=device.live_resource_counts();
+    const auto load_imported=[&]()->std::unique_ptr<ImportedGpu> {
+      std::optional<terraflux::scene::Scene> loaded_scene;
+      terraflux::assets::SceneObjAssets scene_assets;
+      if(!options.scene_file.empty()) {
+        loaded_scene=terraflux::scene::deserialize_scene(read_file(options.scene_file));
+        if(loaded_scene->mesh_assets().empty()) {
+          if(options.obj_file.empty())throw std::invalid_argument("legacy --scene requires --obj");
+        }else{
+          if(!options.obj_file.empty())
+            throw std::invalid_argument("asset scenes declare their models; omit --obj");
+          scene_assets=terraflux::assets::load_scene_obj_assets(*loaded_scene,options.scene_file);
         }
       }
-      if(object.vertices.empty())throw std::invalid_argument("imported mesh has no vertices");
-      const auto get_mesh=[&](std::uint32_t id)->const terraflux::assets::Mesh& {
-        return id==0?object:extra_meshes.at(id-1);
-      };
-      auto min_pos=object.vertices.front().position;
-      auto max_pos=min_pos;
-      if(use_gltf || asset_scene) {
-        std::vector<std::pair<terraflux::math::Vec3,terraflux::math::Vec3>> bounds;
-        for(std::size_t mesh_id=0;mesh_id<extra_meshes.size()+1;++mesh_id) {
-          const auto& mesh=get_mesh(static_cast<std::uint32_t>(mesh_id));
-          if(mesh.vertices.empty())throw std::invalid_argument("glTF mesh is empty");
-          auto lo=mesh.vertices.front().position,hi=lo;
-          for(const auto& vertex:mesh.vertices){
-            const auto& p=vertex.position;
-            lo.x=std::min(lo.x,p.x);lo.y=std::min(lo.y,p.y);lo.z=std::min(lo.z,p.z);
-            hi.x=std::max(hi.x,p.x);hi.y=std::max(hi.y,p.y);hi.z=std::max(hi.z,p.z);
-          }
-          bounds.emplace_back(lo,hi);
-        }
-        bool initialized=false;
-        for(const auto& [mesh_index,world]:node_worlds){
-          const auto& [lo,hi]=bounds.at(mesh_index);
-          for(int x=0;x<2;++x)for(int y=0;y<2;++y)for(int z=0;z<2;++z){
-            const auto point=world.transformPoint({x?hi.x:lo.x,y?hi.y:lo.y,z?hi.z:lo.z});
-            if(!initialized){min_pos=max_pos=point;initialized=true;}
-            else {
-              min_pos.x=std::min(min_pos.x,point.x);
-              min_pos.y=std::min(min_pos.y,point.y);
-              min_pos.z=std::min(min_pos.z,point.z);
-              max_pos.x=std::max(max_pos.x,point.x);
-              max_pos.y=std::max(max_pos.y,point.y);
-              max_pos.z=std::max(max_pos.z,point.z);
+      const bool asset_scene=!scene_assets.meshes.empty();
+      if (!options.obj_file.empty() || !options.gltf_file.empty() || asset_scene) {
+        const bool use_gltf=!options.gltf_file.empty();
+        const auto source_file=use_gltf?options.gltf_file:
+            asset_scene?scene_assets.sources.front().string():options.obj_file;
+        const auto source_folder=std::filesystem::path(source_file).parent_path();
+        struct LocatedMaterial {
+          terraflux::assets::Material material;
+          std::filesystem::path folder;
+        };
+        std::map<std::string,LocatedMaterial> material_files;
+        terraflux::assets::Mesh object;
+        std::map<std::string,terraflux::assets::ImageRgba8> gltf_images;
+        std::vector<terraflux::assets::Mesh> extra_meshes;
+        std::vector<std::pair<std::uint32_t,terraflux::math::Mat4>> node_worlds;
+        if(use_gltf) {
+          const auto resolver=[&](const std::string& uri) {
+            const auto path=asset_path(source_folder,uri);
+            const auto size=std::filesystem::file_size(path);
+            if(size>64'000'000)
+              throw std::invalid_argument("external glTF buffer larger than 64MB");
+            const auto contents=read_file(path.string());
+            return std::vector<std::uint8_t>(contents.begin(),contents.end());
+          };
+          const auto source_contents=read_file(source_file);
+          const auto is_glb=source_contents.size()>=4 &&
+               source_contents.substr(0,4)==std::string("glTF",4);
+          const auto asset_bytes=std::span(
+              reinterpret_cast<const std::uint8_t*>(source_contents.data()),
+              source_contents.size());
+          auto asset=is_glb?terraflux::assets::import_glb(asset_bytes,resolver):
+                            terraflux::assets::import_gltf(source_contents,resolver);
+          if(asset.meshes.empty())throw std::invalid_argument("glTF contains no meshes");
+          object=std::move(asset.meshes.front());
+          gltf_images=std::move(asset.images);
+          for(std::size_t i=1;i<asset.meshes.size();++i)
+            extra_meshes.push_back(std::move(asset.meshes[i]));
+          for(const auto& instance:asset.instances)
+            node_worlds.emplace_back(instance.mesh_index,instance.world);
+          for(const auto& [name,material]:asset.materials)
+            material_files.emplace(name,LocatedMaterial{material,source_folder});
+        } else if(asset_scene) {
+          // Keep per-file material names distinct even when OBJ libraries reuse
+          // names. Each mesh and its material sections are uploaded only once.
+          for(std::size_t i=0;i<scene_assets.meshes.size();++i) {
+            auto& mesh=scene_assets.meshes[i];
+            const auto prefix="scene/"+std::to_string(i)+"/";
+            for(auto& section:mesh.sections)
+              if(!section.material_name.empty())section.material_name=prefix+section.material_name;
+            for(const auto& reference:mesh.material_libraries) {
+              const auto path=asset_path(scene_assets.sources[i].parent_path(),reference);
+              std::ifstream file(path);
+              if(!file)throw std::runtime_error("cannot open material library: "+path.string());
+              for(const auto& [name,material]:terraflux::assets::parse_mtl(file))
+                if(!material_files.emplace(prefix+name,LocatedMaterial{material,path.parent_path()}).second)
+                  throw std::invalid_argument("duplicate material in scene asset: "+name);
             }
           }
-        }
-        if(!initialized)throw std::invalid_argument("asset scene contains no mesh instances");
-      }else{
-        for(const auto& vertex:object.vertices) {
-          const auto& p=vertex.position;
-          min_pos.x=std::min(min_pos.x,p.x);
-          min_pos.y=std::min(min_pos.y,p.y);
-          min_pos.z=std::min(min_pos.z,p.z);
-          max_pos.x=std::max(max_pos.x,p.x);
-          max_pos.y=std::max(max_pos.y,p.y);
-          max_pos.z=std::max(max_pos.z,p.z);
-        }
-      }
-      const double extent = std::max({max_pos.x-min_pos.x, max_pos.y-min_pos.y,
-                                      max_pos.z-min_pos.z});
-      if (!(extent > 0.0)) throw std::runtime_error("imported model has no spatial extent");
-      const double gltf_scale=options.asset_preview?0.43:0.22;
-      const double scale=(scene_camera.starting_distance*(use_gltf?gltf_scale:0.095))/extent;
-      const auto geometry = prepare_textured_asset_upload(object); // local + UV
-      const auto vertex_bytes = bytes_of(geometry.vertices);
-      const auto index_bytes = bytes_of(geometry.indices);
-      ImportedGpu obj{};
-      obj.is_gltf=use_gltf;
-      obj.primary_bounds=mesh_bounds(object);
-      for(const auto& mesh:extra_meshes)
-        obj.additional_bounds.push_back(mesh_bounds(mesh));
-      obj.indices = static_cast<std::uint32_t>(geometry.indices.size());
-      obj.separation = extent * 0.95;
-      obj.local_center = {(min_pos.x + max_pos.x)*0.5, min_pos.y,
-                          (min_pos.z + max_pos.z)*0.5};
-      if(!use_gltf && !options.scene_file.empty()) {
-        obj.uses_scene_file=true;
-        obj.scene=std::move(*loaded_scene);
-        obj.scene_anchor=terraflux::math::Mat4::translation(scene_camera.target) *
-            terraflux::math::Mat4::scaling({scale,scale,scale}) *
-            terraflux::math::Mat4::translation(obj.local_center*-1.0);
-        for(std::size_t id=1;id<obj.scene.size();++id) {
-          const auto& node=obj.scene.get(static_cast<terraflux::scene::NodeId>(id));
-          if(node.mesh_instance) {
-            // Hold node identifiers until the corresponding UBOs are created.
-            const auto mesh_index=asset_scene?scene_assets.mesh_indices.at(*node.mesh_asset):0;
-            obj.scene_instances.push_back({{},static_cast<terraflux::scene::NodeId>(id),mesh_index});
+          object=std::move(scene_assets.meshes.front());
+          for(std::size_t i=1;i<scene_assets.meshes.size();++i)
+            extra_meshes.push_back(std::move(scene_assets.meshes[i]));
+          for(std::size_t id=1;id<loaded_scene->size();++id) {
+            const auto node=static_cast<terraflux::scene::NodeId>(id);
+            const auto& reference=loaded_scene->get(node).mesh_asset;
+            if(reference)node_worlds.emplace_back(scene_assets.mesh_indices.at(*reference),
+                                                  loaded_scene->world_matrix(node));
           }
-        }
-        if(obj.scene_instances.empty() || obj.scene_instances.size()>1024)
-          throw std::invalid_argument("scene requires 1..1024 mesh instances");
-      }else if(!use_gltf) {
-        const auto anchor = obj.scene.create_node("Terrain anchor");
-        obj.left_pivot = obj.scene.create_node("Rotating left", anchor);
-        obj.right_pivot = obj.scene.create_node("Rotating right", anchor);
-        obj.left_mesh = obj.scene.create_node("Mesh left", obj.left_pivot);
-        obj.right_mesh = obj.scene.create_node("Mesh right", obj.right_pivot);
-        obj.scene.set_transform(anchor, {
-            scene_camera.target, {}, {scale,scale,scale}});
-        obj.scene.set_transform(obj.left_mesh, {
-            obj.local_center * -1.0, {}, {1,1,1}});
-        obj.scene.set_transform(obj.right_mesh, {
-            obj.local_center * -1.0, {}, {1,1,1}});
-      }
-      const auto cached_texture=[&](const std::filesystem::path& source,
-                                     terraflux::TextureSampling sampling) {
-        const std::string path_key=source.empty()?
-             (use_gltf?"__white__":"__checkerboard__"):
-                              source.lexically_normal().generic_string();
-        // Samplers belong to texture objects: same image with different
-        // sampling settings must not alias one GL texture.
-        const auto& s=sampling;
-        const std::string key=path_key+"@"+
-            std::to_string(static_cast<int>(s.min))+":"+
-            std::to_string(static_cast<int>(s.mag))+":"+
-            std::to_string(static_cast<int>(s.wrap_s))+":"+
-            std::to_string(static_cast<int>(s.wrap_t));
-        if(const auto it=obj.textures.find(key);it!=obj.textures.end())
-          return it->second;
-        terraflux::assets::ImageRgba8 image;
-        if(source.empty())
-          image=use_gltf?terraflux::assets::ImageRgba8{1,1,{255,255,255,255}}:
-                         terraflux::assets::checkerboard_image();
-        else if(source.generic_string()=="__default_mr__")
-          image={1,1,{255,255,255,255}}; // roughness G=1, metallic B=1
-        else if(source.generic_string()=="__default_normal__")
-          image={1,1,{128,128,255,255}}; // tangent-space +Z
-        else if(source.generic_string()=="__default_occlusion__")
-          image={1,1,{255,255,255,255}}; // full ambient visibility
-        else if(source.generic_string()=="__default_emissive__")
-          image={1,1,{255,255,255,255}}; // emissive factor provides black default
-        else if(use_gltf && gltf_images.contains(source.generic_string())) {
-          image=gltf_images.at(source.generic_string());
         } else {
-          const auto path=source.string();
-          if(std::filesystem::file_size(source)>32'000'000)
-            throw std::invalid_argument("texture image exceeds 32MB");
-          const auto encoded=read_file(path);
-          if(encoded.starts_with("P3")){
-            std::istringstream file(encoded);
-            image=terraflux::assets::read_ppm_p3(file);
-          }else{
-            const auto raw=std::span(
-                reinterpret_cast<const std::uint8_t*>(encoded.data()),encoded.size());
-            image=terraflux::assets::decode_image(raw);
+          std::ifstream model_file(options.obj_file);
+          if (!model_file) throw std::runtime_error("cannot open OBJ "+options.obj_file);
+          object=terraflux::assets::import_obj(model_file);
+          for(const auto& reference:object.material_libraries) {
+            const auto path=asset_path(source_folder,reference);
+            std::ifstream file(path);
+            if(!file) throw std::runtime_error("cannot open material library: "+path.string());
+            const auto parsed=terraflux::assets::parse_mtl(file);
+            for(const auto& [name,material]:parsed)
+              if(!material_files.emplace(name,LocatedMaterial{material,path.parent_path()}).second)
+                throw std::invalid_argument("duplicate material in libraries: "+name);
           }
         }
-        const auto bytes=std::as_bytes(std::span(image.pixels));
-        const auto id=owned.create_texture2d({image.width,image.height,sampling},bytes);
-        obj.textures.emplace(key,id);
-        return id;
-      };
-      const auto build_sections=[&](const terraflux::assets::Mesh& mesh) {
-        std::vector<ImportedGpu::Section> result;
-        result.reserve(mesh.sections.size());
-        for(const auto& section:mesh.sections) {
-          terraflux::math::Vec3 color{1,1,1};
-          terraflux::TextureSampling sampling{};
-          double metallic=1,roughness=1,normal_scale=1,occlusion_strength=1;
-          double alpha_factor=1,alpha_cutoff=.5;
-          bool alpha_mask=false,alpha_blend=false;
-          terraflux::math::Vec3 emissive_factor{};
-          std::filesystem::path texture_file,metallic_file,normal_file,occlusion_file,emissive_file;
-          terraflux::TextureSampling metallic_sampling{},normal_sampling{},occlusion_sampling{},emissive_sampling{};
-          if(!section.material_name.empty()) {
-            const auto it=material_files.find(section.material_name);
-            if(it==material_files.end())
-              throw std::invalid_argument("undefined imported material: "+section.material_name);
-            color=it->second.material.base_color;
-            sampling=it->second.material.albedo_sampling;
-            metallic=it->second.material.metallic_factor;
-            roughness=it->second.material.roughness_factor;
-            normal_scale=it->second.material.normal_scale;
-            occlusion_strength=it->second.material.occlusion_strength;
-            emissive_factor=it->second.material.emissive_factor;
-            alpha_factor=it->second.material.alpha_factor;
-            alpha_cutoff=it->second.material.alpha_cutoff;
-            alpha_mask=it->second.material.alpha_mode==
-                terraflux::assets::Material::AlphaMode::Mask;
-            alpha_blend=it->second.material.alpha_mode==
-                terraflux::assets::Material::AlphaMode::Blend;
-            occlusion_sampling=it->second.material.occlusion_sampling;
-            emissive_sampling=it->second.material.emissive_sampling;
-            if(!it->second.material.occlusion_map.empty())
-              occlusion_file=it->second.material.occlusion_map;
-            if(!it->second.material.emissive_map.empty())
-              emissive_file=it->second.material.emissive_map;
-            metallic_sampling=it->second.material.metallic_roughness_sampling;
-            normal_sampling=it->second.material.normal_sampling;
-            if(!it->second.material.metallic_roughness_map.empty())
-              metallic_file=it->second.material.metallic_roughness_map;
-            if(!it->second.material.normal_map.empty())
-              normal_file=it->second.material.normal_map;
-            if(!it->second.material.albedo_map.empty())
-              texture_file=(use_gltf && gltf_images.contains(it->second.material.albedo_map))?
-                  std::filesystem::path(it->second.material.albedo_map):
-                  asset_path(it->second.folder,it->second.material.albedo_map);
+        if(object.vertices.empty())throw std::invalid_argument("imported mesh has no vertices");
+        const auto get_mesh=[&](std::uint32_t id)->const terraflux::assets::Mesh& {
+          return id==0?object:extra_meshes.at(id-1);
+        };
+        auto min_pos=object.vertices.front().position;
+        auto max_pos=min_pos;
+        if(use_gltf || asset_scene) {
+          std::vector<std::pair<terraflux::math::Vec3,terraflux::math::Vec3>> bounds;
+          for(std::size_t mesh_id=0;mesh_id<extra_meshes.size()+1;++mesh_id) {
+            const auto& mesh=get_mesh(static_cast<std::uint32_t>(mesh_id));
+            if(mesh.vertices.empty())throw std::invalid_argument("glTF mesh is empty");
+            auto lo=mesh.vertices.front().position,hi=lo;
+            for(const auto& vertex:mesh.vertices){
+              const auto& p=vertex.position;
+              lo.x=std::min(lo.x,p.x);lo.y=std::min(lo.y,p.y);lo.z=std::min(lo.z,p.z);
+              hi.x=std::max(hi.x,p.x);hi.y=std::max(hi.y,p.y);hi.z=std::max(hi.z,p.z);
+            }
+            bounds.emplace_back(lo,hi);
           }
-          if(!options.texture_file.empty())texture_file=options.texture_file;
-          const auto handle=cached_texture(texture_file,sampling);
-          TextureHandle mr_handle{},normal_handle{},occlusion_handle{},emissive_handle{};
-          if(use_gltf) {
-            mr_handle=cached_texture(metallic_file.empty()?
-                    std::filesystem::path("__default_mr__"):metallic_file,
-                    metallic_sampling);
-            normal_handle=cached_texture(normal_file.empty()?
-                    std::filesystem::path("__default_normal__"):normal_file,
-                    normal_sampling);
-            occlusion_handle=cached_texture(occlusion_file.empty()?
-                    std::filesystem::path("__default_occlusion__"):occlusion_file,
-                    occlusion_sampling);
-            emissive_handle=cached_texture(emissive_file.empty()?
-                    std::filesystem::path("__default_emissive__"):emissive_file,
-                    emissive_sampling);
+          bool initialized=false;
+          for(const auto& [mesh_index,world]:node_worlds){
+            const auto& [lo,hi]=bounds.at(mesh_index);
+            for(int x=0;x<2;++x)for(int y=0;y<2;++y)for(int z=0;z<2;++z){
+              const auto point=world.transformPoint({x?hi.x:lo.x,y?hi.y:lo.y,z?hi.z:lo.z});
+              if(!initialized){min_pos=max_pos=point;initialized=true;}
+              else {
+                min_pos.x=std::min(min_pos.x,point.x);
+                min_pos.y=std::min(min_pos.y,point.y);
+                min_pos.z=std::min(min_pos.z,point.z);
+                max_pos.x=std::max(max_pos.x,point.x);
+                max_pos.y=std::max(max_pos.y,point.y);
+                max_pos.z=std::max(max_pos.z,point.z);
+              }
+            }
           }
-          BufferHandle pbr_uniform{};
-          if(use_gltf) {
-            PbrMaterialUniform pbr{};
-            pbr.factors={static_cast<float>(metallic),static_cast<float>(roughness),
-                         static_cast<float>(normal_scale),static_cast<float>(occlusion_strength)};
-            pbr.emissive={static_cast<float>(emissive_factor.x),
-                          static_cast<float>(emissive_factor.y),
-                          static_cast<float>(emissive_factor.z),
-                          static_cast<float>(alpha_cutoff)};
-            pbr.options={static_cast<float>(alpha_factor),
-                         alpha_blend?2.0f:(alpha_mask?1.0f:0.0f),0,0};
-            const auto bytes=std::as_bytes(std::span(&pbr,1));
-            pbr_uniform=owned.create_buffer({BufferUsage::Uniform,bytes.size()},bytes);
+          if(!initialized)throw std::invalid_argument("asset scene contains no mesh instances");
+        }else{
+          for(const auto& vertex:object.vertices) {
+            const auto& p=vertex.position;
+            min_pos.x=std::min(min_pos.x,p.x);
+            min_pos.y=std::min(min_pos.y,p.y);
+            min_pos.z=std::min(min_pos.z,p.z);
+            max_pos.x=std::max(max_pos.x,p.x);
+            max_pos.y=std::max(max_pos.y,p.y);
+            max_pos.z=std::max(max_pos.z,p.z);
           }
-          result.push_back({section.first_index,section.index_count,
-                            handle,mr_handle,normal_handle,occlusion_handle,emissive_handle,color,
-                            pbr_uniform,static_cast<float>(metallic),
-                            static_cast<float>(roughness),static_cast<float>(normal_scale),
-                            static_cast<float>(occlusion_strength),
-                            static_cast<float>(alpha_factor),static_cast<float>(alpha_cutoff),
-                            alpha_mask,alpha_blend,emissive_factor});
         }
-        if(result.empty())throw std::invalid_argument("mesh has no drawable material sections");
-        return result;
-      };
-      obj.sections=build_sections(object);
-      obj.vb=owned.create_buffer({BufferUsage::Vertex,vertex_bytes.size()},vertex_bytes);
-      obj.ib=owned.create_buffer({BufferUsage::Index,index_bytes.size()},index_bytes);
-      for(const auto& mesh:extra_meshes) {
-        const auto upload=prepare_textured_asset_upload(mesh);
-        const auto bytes=bytes_of(upload.vertices);
-        const auto indices_bytes=bytes_of(upload.indices);
-        ImportedGpu::AdditionalMesh extra{};
-        extra.sections=build_sections(mesh);
-        extra.indices=static_cast<std::uint32_t>(upload.indices.size());
-        extra.vb=owned.create_buffer({BufferUsage::Vertex,bytes.size()},bytes);
-        extra.ib=owned.create_buffer({BufferUsage::Index,indices_bytes.size()},indices_bytes);
-        obj.additional_meshes.push_back(std::move(extra));
-      }
-      const auto init_object = make_object_uniform(terraflux::math::Mat4::identity());
-      const auto init_bytes = std::as_bytes(std::span(&init_object,1));
-      if(use_gltf) {
-        const auto focus=scene_camera.target+
-            terraflux::math::Vec3{0,options.asset_preview?
-                  scene_camera.starting_distance*0.045:0,0};
-        const auto anchor=terraflux::math::Mat4::translation(focus) *
-            terraflux::math::Mat4::scaling({scale,scale,scale}) *
-            terraflux::math::Mat4::translation(obj.local_center*-1.0);
-        if(node_worlds.size()>1024)
-          throw std::length_error("glTF viewer supports at most 1024 mesh instances");
-        for(const auto& [mesh_index,world]:node_worlds) {
-          const auto model=anchor*world;
-          const auto uniform=make_object_uniform(model,{1,1,1});
-          const auto bytes=std::as_bytes(std::span(&uniform,1));
-          const auto handle=owned.create_buffer({BufferUsage::Uniform,bytes.size()},bytes);
-          obj.gltf_instances.push_back({handle,mesh_index,model});
+        const double extent = std::max({max_pos.x-min_pos.x, max_pos.y-min_pos.y,
+                                        max_pos.z-min_pos.z});
+        if (!(extent > 0.0)) throw std::runtime_error("imported model has no spatial extent");
+        const double gltf_scale=options.asset_preview?0.43:0.22;
+        const double scale=(scene_camera.starting_distance*(use_gltf?gltf_scale:0.095))/extent;
+        const auto geometry = prepare_textured_asset_upload(object); // local + UV
+        const auto vertex_bytes = bytes_of(geometry.vertices);
+        const auto index_bytes = bytes_of(geometry.indices);
+        auto candidate=std::make_unique<ImportedGpu>();
+        auto& obj=*candidate;
+        obj.resources=std::make_unique<RenderResourceOwner>(device);
+        auto& asset_owned=*obj.resources;
+        obj.is_gltf=use_gltf;
+        obj.primary_bounds=mesh_bounds(object);
+        for(const auto& mesh:extra_meshes)
+          obj.additional_bounds.push_back(mesh_bounds(mesh));
+        obj.indices = static_cast<std::uint32_t>(geometry.indices.size());
+        obj.separation = extent * 0.95;
+        obj.local_center = {(min_pos.x + max_pos.x)*0.5, min_pos.y,
+                            (min_pos.z + max_pos.z)*0.5};
+        if(!use_gltf && !options.scene_file.empty()) {
+          obj.uses_scene_file=true;
+          obj.scene=std::move(*loaded_scene);
+          obj.scene_anchor=terraflux::math::Mat4::translation(scene_camera.target) *
+              terraflux::math::Mat4::scaling({scale,scale,scale}) *
+              terraflux::math::Mat4::translation(obj.local_center*-1.0);
+          for(std::size_t id=1;id<obj.scene.size();++id) {
+            const auto& node=obj.scene.get(static_cast<terraflux::scene::NodeId>(id));
+            if(node.mesh_instance) {
+              // Hold node identifiers until the corresponding UBOs are created.
+              const auto mesh_index=asset_scene?scene_assets.mesh_indices.at(*node.mesh_asset):0;
+              obj.scene_instances.push_back({{},static_cast<terraflux::scene::NodeId>(id),mesh_index});
+            }
+          }
+          if(obj.scene_instances.empty() || obj.scene_instances.size()>1024)
+            throw std::invalid_argument("scene requires 1..1024 mesh instances");
+        }else if(!use_gltf) {
+          const auto anchor = obj.scene.create_node("Terrain anchor");
+          obj.left_pivot = obj.scene.create_node("Rotating left", anchor);
+          obj.right_pivot = obj.scene.create_node("Rotating right", anchor);
+          obj.left_mesh = obj.scene.create_node("Mesh left", obj.left_pivot);
+          obj.right_mesh = obj.scene.create_node("Mesh right", obj.right_pivot);
+          obj.scene.set_transform(anchor, {
+              scene_camera.target, {}, {scale,scale,scale}});
+          obj.scene.set_transform(obj.left_mesh, {
+              obj.local_center * -1.0, {}, {1,1,1}});
+          obj.scene.set_transform(obj.right_mesh, {
+              obj.local_center * -1.0, {}, {1,1,1}});
         }
-      }else if(obj.uses_scene_file){
-        for(auto& instance:obj.scene_instances) {
-          const auto model=obj.scene_anchor*obj.scene.world_matrix(instance.node);
-          const auto uniforms=make_object_uniform(model,{0.16,0.57,0.95});
-          const auto bytes=std::as_bytes(std::span(&uniforms,1));
-          instance.uniform=owned.create_buffer({BufferUsage::Uniform,bytes.size()},bytes);
+        const auto cached_texture=[&](const std::filesystem::path& source,
+                                       terraflux::TextureSampling sampling) {
+          const std::string path_key=source.empty()?
+               (use_gltf?"__white__":"__checkerboard__"):
+                                source.lexically_normal().generic_string();
+          // Samplers belong to texture objects: same image with different
+          // sampling settings must not alias one GL texture.
+          const auto& s=sampling;
+          const std::string key=path_key+"@"+
+              std::to_string(static_cast<int>(s.min))+":"+
+              std::to_string(static_cast<int>(s.mag))+":"+
+              std::to_string(static_cast<int>(s.wrap_s))+":"+
+              std::to_string(static_cast<int>(s.wrap_t));
+          if(const auto it=obj.textures.find(key);it!=obj.textures.end())
+            return it->second;
+          terraflux::assets::ImageRgba8 image;
+          if(source.empty())
+            image=use_gltf?terraflux::assets::ImageRgba8{1,1,{255,255,255,255}}:
+                           terraflux::assets::checkerboard_image();
+          else if(source.generic_string()=="__default_mr__")
+            image={1,1,{255,255,255,255}}; // roughness G=1, metallic B=1
+          else if(source.generic_string()=="__default_normal__")
+            image={1,1,{128,128,255,255}}; // tangent-space +Z
+          else if(source.generic_string()=="__default_occlusion__")
+            image={1,1,{255,255,255,255}}; // full ambient visibility
+          else if(source.generic_string()=="__default_emissive__")
+            image={1,1,{255,255,255,255}}; // emissive factor provides black default
+          else if(use_gltf && gltf_images.contains(source.generic_string())) {
+            image=gltf_images.at(source.generic_string());
+          } else {
+            const auto path=source.string();
+            if(std::filesystem::file_size(source)>32'000'000)
+              throw std::invalid_argument("texture image exceeds 32MB");
+            const auto encoded=read_file(path);
+            if(encoded.starts_with("P3")){
+              std::istringstream file(encoded);
+              image=terraflux::assets::read_ppm_p3(file);
+            }else{
+              const auto raw=std::span(
+                  reinterpret_cast<const std::uint8_t*>(encoded.data()),encoded.size());
+              image=terraflux::assets::decode_image(raw);
+            }
+          }
+          const auto bytes=std::as_bytes(std::span(image.pixels));
+          const auto id=asset_owned.create_texture2d({image.width,image.height,sampling},bytes);
+          obj.textures.emplace(key,id);
+          return id;
+        };
+        const auto build_sections=[&](const terraflux::assets::Mesh& mesh) {
+          std::vector<ImportedGpu::Section> result;
+          result.reserve(mesh.sections.size());
+          for(const auto& section:mesh.sections) {
+            terraflux::math::Vec3 color{1,1,1};
+            terraflux::TextureSampling sampling{};
+            double metallic=1,roughness=1,normal_scale=1,occlusion_strength=1;
+            double alpha_factor=1,alpha_cutoff=.5;
+            bool alpha_mask=false,alpha_blend=false;
+            terraflux::math::Vec3 emissive_factor{};
+            std::filesystem::path texture_file,metallic_file,normal_file,occlusion_file,emissive_file;
+            terraflux::TextureSampling metallic_sampling{},normal_sampling{},occlusion_sampling{},emissive_sampling{};
+            if(!section.material_name.empty()) {
+              const auto it=material_files.find(section.material_name);
+              if(it==material_files.end())
+                throw std::invalid_argument("undefined imported material: "+section.material_name);
+              color=it->second.material.base_color;
+              sampling=it->second.material.albedo_sampling;
+              metallic=it->second.material.metallic_factor;
+              roughness=it->second.material.roughness_factor;
+              normal_scale=it->second.material.normal_scale;
+              occlusion_strength=it->second.material.occlusion_strength;
+              emissive_factor=it->second.material.emissive_factor;
+              alpha_factor=it->second.material.alpha_factor;
+              alpha_cutoff=it->second.material.alpha_cutoff;
+              alpha_mask=it->second.material.alpha_mode==
+                  terraflux::assets::Material::AlphaMode::Mask;
+              alpha_blend=it->second.material.alpha_mode==
+                  terraflux::assets::Material::AlphaMode::Blend;
+              occlusion_sampling=it->second.material.occlusion_sampling;
+              emissive_sampling=it->second.material.emissive_sampling;
+              if(!it->second.material.occlusion_map.empty())
+                occlusion_file=it->second.material.occlusion_map;
+              if(!it->second.material.emissive_map.empty())
+                emissive_file=it->second.material.emissive_map;
+              metallic_sampling=it->second.material.metallic_roughness_sampling;
+              normal_sampling=it->second.material.normal_sampling;
+              if(!it->second.material.metallic_roughness_map.empty())
+                metallic_file=it->second.material.metallic_roughness_map;
+              if(!it->second.material.normal_map.empty())
+                normal_file=it->second.material.normal_map;
+              if(!it->second.material.albedo_map.empty())
+                texture_file=(use_gltf && gltf_images.contains(it->second.material.albedo_map))?
+                    std::filesystem::path(it->second.material.albedo_map):
+                    asset_path(it->second.folder,it->second.material.albedo_map);
+            }
+            if(!options.texture_file.empty())texture_file=options.texture_file;
+            const auto handle=cached_texture(texture_file,sampling);
+            TextureHandle mr_handle{},normal_handle{},occlusion_handle{},emissive_handle{};
+            if(use_gltf) {
+              mr_handle=cached_texture(metallic_file.empty()?
+                      std::filesystem::path("__default_mr__"):metallic_file,
+                      metallic_sampling);
+              normal_handle=cached_texture(normal_file.empty()?
+                      std::filesystem::path("__default_normal__"):normal_file,
+                      normal_sampling);
+              occlusion_handle=cached_texture(occlusion_file.empty()?
+                      std::filesystem::path("__default_occlusion__"):occlusion_file,
+                      occlusion_sampling);
+              emissive_handle=cached_texture(emissive_file.empty()?
+                      std::filesystem::path("__default_emissive__"):emissive_file,
+                      emissive_sampling);
+            }
+            BufferHandle pbr_uniform{};
+            if(use_gltf) {
+              PbrMaterialUniform pbr{};
+              pbr.factors={static_cast<float>(metallic),static_cast<float>(roughness),
+                           static_cast<float>(normal_scale),static_cast<float>(occlusion_strength)};
+              pbr.emissive={static_cast<float>(emissive_factor.x),
+                            static_cast<float>(emissive_factor.y),
+                            static_cast<float>(emissive_factor.z),
+                            static_cast<float>(alpha_cutoff)};
+              pbr.options={static_cast<float>(alpha_factor),
+                           alpha_blend?2.0f:(alpha_mask?1.0f:0.0f),0,0};
+              const auto bytes=std::as_bytes(std::span(&pbr,1));
+              pbr_uniform=asset_owned.create_buffer({BufferUsage::Uniform,bytes.size()},bytes);
+            }
+            result.push_back({section.first_index,section.index_count,
+                              handle,mr_handle,normal_handle,occlusion_handle,emissive_handle,color,
+                              pbr_uniform,static_cast<float>(metallic),
+                              static_cast<float>(roughness),static_cast<float>(normal_scale),
+                              static_cast<float>(occlusion_strength),
+                              static_cast<float>(alpha_factor),static_cast<float>(alpha_cutoff),
+                              alpha_mask,alpha_blend,emissive_factor});
+          }
+          if(result.empty())throw std::invalid_argument("mesh has no drawable material sections");
+          return result;
+        };
+        obj.sections=build_sections(object);
+        obj.vb=asset_owned.create_buffer({BufferUsage::Vertex,vertex_bytes.size()},vertex_bytes);
+        obj.ib=asset_owned.create_buffer({BufferUsage::Index,index_bytes.size()},index_bytes);
+        for(const auto& mesh:extra_meshes) {
+          const auto upload=prepare_textured_asset_upload(mesh);
+          const auto bytes=bytes_of(upload.vertices);
+          const auto indices_bytes=bytes_of(upload.indices);
+          ImportedGpu::AdditionalMesh extra{};
+          extra.sections=build_sections(mesh);
+          extra.indices=static_cast<std::uint32_t>(upload.indices.size());
+          extra.vb=asset_owned.create_buffer({BufferUsage::Vertex,bytes.size()},bytes);
+          extra.ib=asset_owned.create_buffer({BufferUsage::Index,indices_bytes.size()},indices_bytes);
+          obj.additional_meshes.push_back(std::move(extra));
         }
-      }else{
-        obj.object_uniform_left = owned.create_buffer(
-            {BufferUsage::Uniform,init_bytes.size()},init_bytes);
-        obj.object_uniform_right = owned.create_buffer(
-            {BufferUsage::Uniform,init_bytes.size()},init_bytes);
+        const auto init_object = make_object_uniform(terraflux::math::Mat4::identity());
+        const auto init_bytes = std::as_bytes(std::span(&init_object,1));
+        if(use_gltf) {
+          const auto focus=scene_camera.target+
+              terraflux::math::Vec3{0,options.asset_preview?
+                    scene_camera.starting_distance*0.045:0,0};
+          const auto anchor=terraflux::math::Mat4::translation(focus) *
+              terraflux::math::Mat4::scaling({scale,scale,scale}) *
+              terraflux::math::Mat4::translation(obj.local_center*-1.0);
+          if(node_worlds.size()>1024)
+            throw std::length_error("glTF viewer supports at most 1024 mesh instances");
+          for(const auto& [mesh_index,world]:node_worlds) {
+            const auto model=anchor*world;
+            const auto uniform=make_object_uniform(model,{1,1,1});
+            const auto bytes=std::as_bytes(std::span(&uniform,1));
+            const auto handle=asset_owned.create_buffer({BufferUsage::Uniform,bytes.size()},bytes);
+            obj.gltf_instances.push_back({handle,mesh_index,model});
+          }
+        }else if(obj.uses_scene_file){
+          for(auto& instance:obj.scene_instances) {
+            const auto model=obj.scene_anchor*obj.scene.world_matrix(instance.node);
+            const auto uniforms=make_object_uniform(model,{0.16,0.57,0.95});
+            const auto bytes=std::as_bytes(std::span(&uniforms,1));
+            instance.uniform=asset_owned.create_buffer({BufferUsage::Uniform,bytes.size()},bytes);
+          }
+        }else{
+          obj.object_uniform_left = asset_owned.create_buffer(
+              {BufferUsage::Uniform,init_bytes.size()},init_bytes);
+          obj.object_uniform_right = asset_owned.create_buffer(
+              {BufferUsage::Uniform,init_bytes.size()},init_bytes);
+        }
+        obj.pipeline = asset_owned.create_pipeline({
+            use_gltf?pbr_textured_object_shader_layout(false):
+                     textured_object_shader_layout(),true});
+        if(use_gltf)
+          obj.transparent_pipeline=asset_owned.create_pipeline({
+              pbr_textured_object_shader_layout(false),true,true,false});
+        if(!options.no_instancing){
+          obj.instanced_pipeline=asset_owned.create_pipeline(
+              {use_gltf?pbr_textured_object_shader_layout(true):
+                        instanced_textured_object_shader_layout(),true});
+          obj.instance_ring=std::make_unique<OpaqueRenderQueue::InstanceBufferRing>(device);
+        }
+        std::size_t triangle_count=obj.indices/3;
+        std::size_t sections_count=obj.sections.size();
+        for(const auto& mesh:obj.additional_meshes){
+          triangle_count+=mesh.indices/3;
+          sections_count+=mesh.sections.size();
+        }
+        std::cout << (use_gltf?"Imported glTF: ":"Imported OBJ: ") << triangle_count
+                  << " triangles, " << (obj.additional_meshes.size()+1)
+                  << " meshes, " << sections_count << " material ranges, "
+                  << obj.textures.size() << " textures, "
+                  << (use_gltf?obj.gltf_instances.size():
+                      obj.uses_scene_file?obj.scene_instances.size():2)
+                  << " instances sharing per-mesh geometry\n";
+        return candidate;
       }
-      obj.pipeline = owned.create_pipeline({
-          use_gltf?pbr_textured_object_shader_layout(false):
-                   textured_object_shader_layout(),true});
-      if(use_gltf)
-        obj.transparent_pipeline=owned.create_pipeline({
-            pbr_textured_object_shader_layout(false),true,true,false});
-      if(!options.no_instancing){
-        obj.instanced_pipeline=owned.create_pipeline(
-            {use_gltf?pbr_textured_object_shader_layout(true):
-                      instanced_textured_object_shader_layout(),true});
-        obj.instance_ring=std::make_unique<OpaqueRenderQueue::InstanceBufferRing>(device);
-      }
-      imported = std::move(obj);
-      std::size_t triangle_count=imported->indices/3;
-      std::size_t sections_count=imported->sections.size();
-      for(const auto& mesh:imported->additional_meshes){
-        triangle_count+=mesh.indices/3;
-        sections_count+=mesh.sections.size();
-      }
-      std::cout << (use_gltf?"Imported glTF: ":"Imported OBJ: ") << triangle_count
-                << " triangles, " << (imported->additional_meshes.size()+1)
-                << " meshes, " << sections_count << " material ranges, "
-                << imported->textures.size() << " textures, "
-                << (use_gltf?imported->gltf_instances.size():
-                    imported->uses_scene_file?imported->scene_instances.size():2)
-                << " instances sharing per-mesh geometry\n";
-    }
+      return nullptr;
+    };
+    terraflux::graphics::AssetSlot<ImportedGpu> imported;
+    const bool has_asset=!options.obj_file.empty() || !options.gltf_file.empty() ||
+                         !options.scene_file.empty();
+    if(has_asset)imported.reload(load_imported);
+    const auto unload_imported=[&] {
+      imported.unload();
+      if(device.live_resource_counts()!=terrain_resources)
+        throw std::runtime_error("asset unload did not restore terrain resource baseline");
+      std::cout<<"Asset unloaded; terrain resources preserved\n";
+    };
+    if(has_asset && !options.smoke_test && !options.benchmark_frames)
+      std::cout<<"Asset controls: U unload | R reload (failed reload preserves current asset)\n";
 
     double yaw = 0.45, pitch = options.asset_preview?0.42:0.75;
     double distance=scene_camera.starting_distance*(options.asset_preview?0.75:1.0);
@@ -700,8 +728,10 @@ int main(int argc, char** argv) {
     std::size_t playback_frame = 0;
     std::size_t uploaded_frame = static_cast<std::size_t>(-1);
     bool playing = playback.has_value();
+    bool previous_unload=false,previous_reload=false;
     bool previous_space = false, previous_home = false, previous_back = false, previous_forward = false;
     unsigned rendered_frames = 0;
+    std::vector<std::uint8_t> lifecycle_terrain;
     std::uint64_t profile_frames = 0;
     terraflux::runtime::FrameProfiler cpu_profiler(120);
     constexpr unsigned kBenchmarkWarmup=8;
@@ -715,6 +745,19 @@ int main(int argc, char** argv) {
     while (!glfwWindowShouldClose(window.get())) {
       glfwPollEvents();
       if (glfwGetKey(window.get(), GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+      const bool unload=glfwGetKey(window.get(),GLFW_KEY_U)==GLFW_PRESS;
+      const bool reload=glfwGetKey(window.get(),GLFW_KEY_R)==GLFW_PRESS;
+      if(has_asset && !options.smoke_test && !options.benchmark_frames) {
+        if(unload && !previous_unload)unload_imported();
+        if(reload && !previous_reload) {
+          try{imported.reload(load_imported);std::cout<<"Asset reloaded\n";}
+          catch(const std::exception& error){
+            std::cerr<<"Asset reload failed; current asset preserved: "<<error.what()<<'\n';
+          }
+          previous_time=glfwGetTime(); // disk/shader loading isn't simulated time
+        }
+      }
+      previous_unload=unload;previous_reload=reload;
       const double now = glfwGetTime();
       const double profile_update_start = glfwGetTime();
       const double elapsed = options.benchmark_frames?
@@ -810,8 +853,14 @@ int main(int argc, char** argv) {
       if (fire_buffer) command.storage_buffers.push_back({1, *fire_buffer});
       device.draw_indexed(command);
       ++frame_draws;
-      const auto terrain_snapshot=(options.smoke_test && imported && imported->is_gltf)?
+      const auto terrain_snapshot=(options.smoke_test &&
+          (options.asset_lifecycle_test || (imported && imported->is_gltf)))?
           device.capture_rgba(width,height):std::vector<std::uint8_t>{};
+      if(options.asset_lifecycle_test && !playback) {
+        if(lifecycle_terrain.empty())lifecycle_terrain=terrain_snapshot;
+        else if(lifecycle_terrain!=terrain_snapshot)
+          throw std::runtime_error("terrain framebuffer changed during asset lifecycle");
+      }
       OpaqueRenderQueue draw_queue;
       TransparentRenderQueue transparent_queue;
       std::size_t visible_instances=0,culled_instances=0;
@@ -1001,7 +1050,35 @@ int main(int argc, char** argv) {
       }
       glfwSwapBuffers(window.get());
       ++rendered_frames;
-      if (options.smoke_test) break;
+      if(options.asset_lifecycle_test) {
+        if(rendered_frames==1) {
+          const auto before=device.live_resource_counts();
+          const auto original=imported->vb;
+          struct ReloadProbeFailure {};
+          try{
+            imported.reload([&]()->std::unique_ptr<ImportedGpu>{
+              auto candidate=load_imported();
+              throw ReloadProbeFailure{}; // after complete GPU candidate creation
+            });
+          }catch(const ReloadProbeFailure&){}
+          if(imported->vb!=original || device.live_resource_counts()!=before)
+            throw std::runtime_error("failed reload changed the asset or leaked resources");
+          std::cout<<"Asset lifecycle: failed replacement preserved current asset\n";
+        }else if(rendered_frames==2)unload_imported();
+        else if(rendered_frames==3) {
+          if(imported || device.live_resource_counts()!=terrain_resources)
+            throw std::runtime_error("terrain-only frame retained asset resources");
+          imported.reload(load_imported);
+          std::cout<<"Asset lifecycle: reloaded after terrain-only frame\n";
+        }else if(rendered_frames==4) {
+          // Also replace a populated asset slot; retire the old SSBO ring and
+          // all old GPU handles without invalidating the new candidate.
+          imported.reload(load_imported);
+          unload_imported();
+          std::cout<<"Asset lifecycle passed: render, failed reload, render, unload, terrain, reload, render, replace, unload\n";
+          break;
+        }
+      }else if(options.smoke_test)break;
       if(options.benchmark_frames &&
          rendered_frames>=options.benchmark_frames+kBenchmarkWarmup)break;
     }
@@ -1041,7 +1118,7 @@ int main(int argc, char** argv) {
     }
     // Explicitly drain streamed SSBO allocations before other resources
     // and before releasing the current OpenGL context.
-    if(imported)imported->instance_ring.reset();
+    imported.unload();
     // Owned GPU resources release before OpenGL context teardown.
     owned.reset();
     if(options.smoke_test) {

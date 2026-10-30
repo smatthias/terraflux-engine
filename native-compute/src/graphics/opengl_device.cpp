@@ -722,6 +722,10 @@ BufferHandle OpenGLRenderDevice::create_buffer(BufferDesc desc,
     throw std::runtime_error("glGenBuffers failed");
   }
   impl_->gl.BindBuffer(target, name);
+  // Element-buffer binding belongs to the currently bound VAO. Loading a
+  // replacement asset can mutate the terrain/old asset VAO between frames.
+  if(desc.usage==BufferUsage::Index)
+    impl_->attribute_pipeline=impl_->attribute_vertex=impl_->attribute_index=0;
   impl_->gl.BufferData(target, static_cast<GLsizeiptr>(desc.size_bytes),
                        initial_data.data(), GL_DYNAMIC_DRAW);
   impl_->buffers.emplace(handle.id, Impl::GpuBuffer{name, desc.usage, desc.size_bytes});
@@ -918,6 +922,10 @@ void OpenGLRenderDevice::destroy_pipeline(PipelineHandle handle) {
   if(impl_->current_vao==gpu.vao) impl_->current_vao=0;
   if(impl_->attribute_pipeline==handle.id)
     impl_->attribute_pipeline=impl_->attribute_vertex=impl_->attribute_index=0;
+}
+
+OpenGLRenderDevice::ResourceCounts OpenGLRenderDevice::live_resource_counts() const {
+  return {impl_->buffers.size(),impl_->textures.size(),impl_->pipelines.size()};
 }
 
 void OpenGLRenderDevice::draw_indexed(const DrawIndexed& command) {

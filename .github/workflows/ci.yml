@@ -132,6 +132,18 @@ jobs:
             --scene examples/asset_scene.json | tee /tmp/terraflux-scene-assets.log
           grep -q "2 meshes" /tmp/terraflux-scene-assets.log
           grep -q "3 instances" /tmp/terraflux-scene-assets.log
+          for source in "--scene examples/asset_scene.json" \
+                        "--obj examples/assets/pyramid.obj" \
+                        "--gltf examples/assets/tangent_blend.gltf --asset-preview"; do
+            xvfb-run -a -s "-screen 0 1280x800x24" \
+              ./build-gl/terraflux-terrain-viewer --smoke-test --asset-lifecycle-test \
+              $source | tee /tmp/terraflux-lifecycle.log
+            grep -q "Asset lifecycle passed" /tmp/terraflux-lifecycle.log
+            grep -q "rendered 4 frame(s)" /tmp/terraflux-lifecycle.log
+          done
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --asset-lifecycle-test \
+            --no-instancing --scene examples/asset_scene.json
           xvfb-run -a -s "-screen 0 1280x800x24" \
             ./build-gl/terraflux-terrain-viewer --smoke-test --no-instancing \
             --scene examples/asset_scene.json

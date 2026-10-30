@@ -28,6 +28,14 @@ class OpenGLRenderDevice final : public RenderDevice {
   void destroy_pipeline(PipelineHandle handle) override;
   void draw_indexed(const DrawIndexed& command) override;
 
+  struct ResourceCounts {
+    std::size_t buffers=0,textures=0,pipelines=0;
+    bool operator==(const ResourceCounts&) const=default;
+  };
+  // Live API resources, including streamed instance buffers; excludes driver
+  // deferred-deletion internals and does not claim physical VRAM measurements.
+  ResourceCounts live_resource_counts() const;
+
   struct GpuTimingSummary {
     std::size_t samples=0;
     std::size_t skipped=0; // timed frames skipped if all query slots were busy
