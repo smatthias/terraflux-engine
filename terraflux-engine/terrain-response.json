@@ -1,1 +1,0 @@
-{"contract_version":"terraflux.compute/v1","engine":"cpp-native-v1","deterministic":true,"grid_key":"synthetic-mountain-valley","frames":[{"step":0,"active_cells":[],"burned_cells":[[0,0]],"active_count":0,"burned_count":1}],"metrics":{"burned_cells":1,"completed_steps":1}}

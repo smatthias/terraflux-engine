@@ -1,3 +1,0 @@
-# Optional dependencies for dem_to_terrain.py; not needed by the native engine.
-numpy>=1.24,<3
-rasterio>=1.3,<2
