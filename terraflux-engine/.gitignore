@@ -1,0 +1,30 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# CMake / C++
+build/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+compile_commands.json
+
+# Editors
+.idea/
+.vscode/
+
+# Local configuration
+.env
+.env.*
+!.env.example
+
+# Local build products and session outputs
+build/
+build-*/
+build_*/
+cmake-build-*/
+.venv/
+__pycache__/
+*-taiga.zip

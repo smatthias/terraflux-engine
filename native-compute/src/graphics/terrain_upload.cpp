@@ -1,5 +1,7 @@
 #include <terraflux/graphics/terrain_upload.hpp>
+#include <terraflux/graphics/terrain_shading.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <limits>
@@ -17,33 +19,54 @@ float checked_float(double value) {
 }
 }  // namespace
 
-static_assert(sizeof(TerrainGpuVertex) == 7 * sizeof(float));
+static_assert(sizeof(TerrainGpuVertex) == 10 * sizeof(float));
 static_assert(std::is_standard_layout_v<TerrainGpuVertex>);
 
-ShaderLayout terrain_shader_layout() {
+namespace {
+// Interleaved terrain vertex stream plus the camera block; shared by the
+// terrain, wildfire and simple object shaders before their own bindings.
+ShaderLayout terrain_vertex_layout() {
   return {
       static_cast<std::uint32_t>(sizeof(TerrainGpuVertex)),
       {{"POSITION", 0, VertexFormat::Float3, static_cast<std::uint32_t>(offsetof(TerrainGpuVertex, position))},
        {"NORMAL", 1, VertexFormat::Float3, static_cast<std::uint32_t>(offsetof(TerrainGpuVertex, normal))},
-       {"FIRE_STATE", 2, VertexFormat::Float1, static_cast<std::uint32_t>(offsetof(TerrainGpuVertex, fire_state))}},
+       {"FIRE_STATE", 2, VertexFormat::Float1, static_cast<std::uint32_t>(offsetof(TerrainGpuVertex, fire_state))},
+       {"SURFACE", 3, VertexFormat::Float3, static_cast<std::uint32_t>(offsetof(TerrainGpuVertex, surface))}},
       {{"Camera", ShaderResourceKind::UniformBuffer, 0, kVertexStage}}
   };
 }
+void drop_attribute(ShaderLayout& layout, const char* semantic) {
+  std::erase_if(layout.attributes, [&](const VertexAttribute& a) { return a.semantic == semantic; });
+}
+}  // namespace
+
+ShaderBinding terrain_style_binding() {
+  // Both stages: the vertex stage displaces rock relief, the fragment stage shades.
+  return {"TerrainStyle", ShaderResourceKind::UniformBuffer, kTerrainStyleSlot, kVertexStage | kFragmentStage};
+}
+
+ShaderLayout terrain_shader_layout() {
+  ShaderLayout layout = terrain_vertex_layout();
+  layout.bindings.push_back(terrain_style_binding());
+  return layout;
+}
 
 ShaderLayout wildfire_shader_layout() {
-  ShaderLayout layout = terrain_shader_layout();
+  ShaderLayout layout = terrain_vertex_layout();
   // The wildfire shader uses the same interleaved vertex format but reads
   // fire data independently from a sparse-aware, clamped grid cell buffer.
-  layout.attributes.pop_back(); // FIRE_STATE is no longer a vertex input.
+  drop_attribute(layout, "FIRE_STATE"); // Fire state comes from the storage buffer instead.
   layout.bindings.front().stages = kVertexStage | kFragmentStage;
   layout.bindings.push_back({"FireState", ShaderResourceKind::StorageBuffer, 1, kFragmentStage});
   layout.bindings.push_back({"LayerVisibility",ShaderResourceKind::UniformBuffer,10,kFragmentStage});
+  layout.bindings.push_back(terrain_style_binding());
   return layout;
 }
 
 ShaderLayout object_shader_layout() {
-  ShaderLayout layout = terrain_shader_layout();
-  layout.attributes.pop_back(); // no FIRE_STATE vertex channel for objects
+  ShaderLayout layout = terrain_vertex_layout();
+  drop_attribute(layout, "FIRE_STATE"); // Objects have neither fire nor surface channels.
+  drop_attribute(layout, "SURFACE");
   layout.bindings.push_back({"Object", ShaderResourceKind::UniformBuffer, 2, kVertexStage});
   return layout;
 }
@@ -57,7 +80,9 @@ TerrainUpload prepare_terrain_upload(const terrain::TerrainMesh& mesh) {
         checked_float(v.position.x), checked_float(v.position.y), checked_float(v.position.z)
       }, {
         checked_float(v.normal.x), checked_float(v.normal.y), checked_float(v.normal.z)
-      }, 0.0f});
+      }, 0.0f, {
+        checked_float(v.fuel_load), checked_float(v.fuel_moisture), checked_float(v.curvature)
+      }});
   }
   for (const auto index : result.indices)
     if (index >= result.vertices.size())

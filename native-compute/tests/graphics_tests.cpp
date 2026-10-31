@@ -4,6 +4,7 @@
 #include <terraflux/graphics/layer_visibility.hpp>
 #include <type_traits>
 #include <terraflux/graphics/terrain_upload.hpp>
+#include <terraflux/graphics/terrain_shading.hpp>
 #include <terraflux/grid.hpp>
 #include <terraflux/terrain_mesh.hpp>
 #include <terraflux/graphics/mesh_upload.hpp>
@@ -39,8 +40,17 @@ template <typename F> void must_throw(F&& action, const char* message) {
 void test_vertex_and_shader_contract() {
   const auto layout = terrain_shader_layout();
   validate_shader_layout(layout);
-  require(layout.vertex_stride_bytes == 28 && layout.attributes.size() == 3,
-          "terrain shader must expose packed position and normal");
+  require(layout.vertex_stride_bytes == 40 && layout.attributes.size() == 4 &&
+          layout.attributes[3].semantic == "SURFACE" && layout.attributes[3].format == VertexFormat::Float3 &&
+          layout.attributes[3].offset_bytes == 28,
+          "terrain shader must expose packed position, normal, fire state and surface attributes");
+  const auto object = object_shader_layout();
+  require(object.vertex_stride_bytes == 40 && object.attributes.size() == 2,
+          "object shader keeps the terrain stride without fire or surface channels");
+  const auto wildfire = wildfire_shader_layout();
+  require(wildfire.attributes.size() == 3 && std::none_of(wildfire.attributes.begin(), wildfire.attributes.end(),
+          [](const VertexAttribute& a) { return a.semantic == "FIRE_STATE"; }),
+          "wildfire shader reads fire from storage but keeps surface attributes");
   require(vertex_format_bytes(VertexFormat::Float4) == 16, "format sizing");
   auto reordered = layout;
   std::swap(reordered.attributes[0], reordered.attributes[1]);
@@ -65,7 +75,7 @@ void test_invalid_layouts() {
   a.attributes[1].location = a.attributes[0].location;
   must_throw([&] { validate_shader_layout(a); }, "duplicate location must fail");
   a = terrain_shader_layout();
-  a.attributes[1].offset_bytes = 20;
+  a.attributes[1].offset_bytes = a.vertex_stride_bytes - 8;
   must_throw([&] { validate_shader_layout(a); }, "vertex stride overflow must fail");
   a = terrain_shader_layout();
   a.bindings.push_back({"CameraDuplicate", ShaderResourceKind::UniformBuffer, 0, kVertexStage});
@@ -95,6 +105,8 @@ void test_terrain_upload() {
           upload.vertices[2].position[2] == -30.0f, "terrain coordinate conversion");
   require(upload.vertices[0].normal[1] > 0.0f, "terrain normal conversion");
   require(upload.vertices[0].fire_state == 0.0f, "new terrain must initialize unburned");
+  require(upload.vertices[0].surface[0] == 1.0f && upload.vertices[0].surface[1] == 0.0f,
+          "fuel load and moisture travel with the vertex");
 }
 
 void test_create_draw_destroy() {
@@ -670,6 +682,297 @@ void test_explicit_shader_identity() {
   require(!device.live_pipeline_count(),"identity failures cannot leak pipeline handles");
 }
 
+bool near(double a,double b,double tolerance=1e-9) {return std::abs(a-b)<tolerance;}
+bool near(terraflux::math::Vec3 a,terraflux::math::Vec3 b,double tolerance=1e-9) {
+  return near(a.x,b.x,tolerance) && near(a.y,b.y,tolerance) && near(a.z,b.z,tolerance);
+}
+
+void test_terrain_style_contract() {
+  // Both ground shaders declare the fragment-stage style block; objects do not.
+  for(const auto program:{ShaderProgramId::Terrain,ShaderProgramId::Wildfire}) {
+    const auto layout=shader_program_layout(program);
+    const auto style=std::find_if(layout.bindings.begin(),layout.bindings.end(),
+        [](const ShaderBinding& b){return b.name=="TerrainStyle";});
+    require(style!=layout.bindings.end() && style->kind==ShaderResourceKind::UniformBuffer &&
+            style->slot==kTerrainStyleSlot && style->stages==(kVertexStage|kFragmentStage),"terrain style block declared for both stages");
+    validate_shader_layout(layout);
+  }
+  const auto object=object_shader_layout();
+  require(std::none_of(object.bindings.begin(),object.bindings.end(),
+          [](const ShaderBinding& b){return b.name=="TerrainStyle";}),"object shader has no terrain style");
+
+  TerrainStyle style;style.min_elevation_meters=100;style.max_elevation_meters=600;
+  style.contour_interval_meters=50;style.light_direction={0,2,0};
+  const auto packed=pack_terrain_style(style);
+  require(sizeof(packed)==kTerrainStyleBytes && kTerrainStyleBytes==96 && packed[0]==100.f && packed[1]==600.f &&
+          near(packed[2],1.0/500,1e-9) && packed[3]==50.f && packed[4]==28.f && packed[5]==48.f &&
+          packed[6]==1.f && near(packed[7],0.12,1e-6) && packed[8]==0.f && packed[9]==1.f && packed[10]==0.f &&
+          near(packed[11],0.30,1e-6) && packed[12]==1.f && packed[13]==5.f && packed[14]==1.f && packed[15]==0.f &&
+          packed[16]==0.f && packed[17]==-1.f && packed[18]==45.f && packed[19]==0.f &&
+          packed[20]==0.25f && packed[21]==0.25f && packed[22]==0.25f && packed[23]==0.25f,
+          "std140 packing: range, contours, slopes, snow line, ridge, light, ambient, detail, no water, normalized floor weights");
+  auto flooded=style;flooded.submerged_level_meters=250;flooded.floor.kind=WaterFloorKind::Stones;flooded.floor.seed=3;
+  flooded.floor.sand=2;flooded.floor.vegetation=0;flooded.floor.mud=1;flooded.floor.stones=1;
+  const auto wet=pack_terrain_style(flooded);
+  require(wet[16]==250.f && wet[17]==3.f && near(wet[19],3*37.31,1e-3) && wet[20]==0.5f && wet[21]==0.f && wet[22]==0.25f && wet[23]==0.25f,
+          "submerged level, floor kind, seed offset and weights are packed");
+  TerrainStyle flat;flat.min_elevation_meters=flat.max_elevation_meters=250;
+  require(pack_terrain_style(flat)[2]==0.f,"flat terrain packs a zero inverse range instead of infinity");
+  const auto reject=[&](auto mutate,const char* what) {
+    auto bad=style;mutate(bad);
+    must_throw([&]{(void)pack_terrain_style(bad);},what);
+    must_throw([&]{(void)terrain_surface_color(120,{0,1,0},bad);},what);
+  };
+  reject([](TerrainStyle& s){s.min_elevation_meters=s.max_elevation_meters+1;},"inverted range rejected");
+  reject([](TerrainStyle& s){s.max_elevation_meters=std::numeric_limits<double>::quiet_NaN();},"NaN range rejected");
+  reject([](TerrainStyle& s){s.contour_interval_meters=-1;},"negative contours rejected");
+  reject([](TerrainStyle& s){s.rock_slope_start_degrees=s.rock_slope_full_degrees;},"empty rock transition rejected");
+  reject([](TerrainStyle& s){s.rock_slope_full_degrees=91;},"rock angle above vertical rejected");
+  reject([](TerrainStyle& s){s.rock_slope_start_degrees=-1;},"negative rock angle rejected");
+  reject([](TerrainStyle& s){s.light_direction={0,0,0};},"zero light rejected");
+  reject([](TerrainStyle& s){s.light_direction.y=std::numeric_limits<double>::infinity();},"infinite light rejected");
+  reject([](TerrainStyle& s){s.ambient=1.5;},"ambient above one rejected");
+  reject([](TerrainStyle& s){s.ambient=-0.1;},"negative ambient rejected");
+
+  terraflux::compute::Grid grid({cell(0,0,-20),cell(1,0,35),cell(0,1,10),cell(1,1,10)});
+  const auto mesh=terraflux::terrain::build_terrain_mesh(grid,30);
+  const auto derived=terrain_style_for(mesh,25);
+  require(derived.min_elevation_meters==-20 && derived.max_elevation_meters==35 &&
+          derived.contour_interval_meters==25 && derived.snow_line_fraction==1.0,
+          "style follows the mesh elevation range; 55 m of relief gets no snow");
+  require(terrain_style_for(mesh).contour_interval_meters==5.0,"automatic contours for 55 m of relief");
+  require(auto_contour_interval(0)==0 && auto_contour_interval(-3)==0 && auto_contour_interval(578)==50 &&
+          auto_contour_interval(95)==10 && auto_contour_interval(255)==25 && auto_contour_interval(1000)==100 &&
+          auto_contour_interval(40)==5 && auto_contour_interval(17)==2,"1-2-2.5-5 contour spacing");
+  require(auto_snow_line(299.9)==1.0 && auto_snow_line(300)==0.72 && auto_snow_line(5000)==0.72,
+          "snow appears from 300 m of relief");
+  reject([](TerrainStyle& s){s.snow_line_fraction=1.2;},"snow line above one rejected");
+  reject([](TerrainStyle& s){s.snow_line_fraction=-0.1;},"negative snow line rejected");
+  reject([](TerrainStyle& s){s.ridge_curvature=0;},"zero ridge curvature rejected");
+  reject([](TerrainStyle& s){s.detail_strength=1.5;},"detail above one rejected");
+  reject([](TerrainStyle& s){s.detail_strength=std::numeric_limits<double>::quiet_NaN();},"NaN detail rejected");
+  reject([](TerrainStyle& s){s.rock_relief_meters=-1;},"negative rock relief rejected");
+  reject([](TerrainStyle& s){s.rock_relief_meters=25;},"rock relief above twenty meters rejected");
+  reject([](TerrainStyle& s){s.canopy_on_ground=1.5;},"canopy on ground above one rejected");
+  auto litter=style;litter.canopy_on_ground=0.0;
+  const auto floor_color=terrain_material({300,{0,1,0},0.9,0.23,0},litter);
+  require(floor_color.trees>0.5 && floor_color.albedo.y<terrain_material({300,{0,1,0},0.9,0.23,0},style).albedo.y,
+          "with the canopy lifted off the ground, the forest floor is darker litter");
+  reject([](TerrainStyle& s){s.submerged_level_meters=std::numeric_limits<double>::infinity();},"infinite water level rejected");
+  reject([](TerrainStyle& s){s.floor.sand=-1;},"negative floor weight rejected");
+  reject([](TerrainStyle& s){s.floor.sand=s.floor.vegetation=s.floor.mud=s.floor.stones=0;},"all-zero floor weights rejected");
+  reject([](TerrainStyle& s){s.floor.patch_size_meters=2;},"tiny floor patches rejected");
+  reject([](TerrainStyle& s){s.floor.patch_size_meters=900;},"huge floor patches rejected");
+  reject([](TerrainStyle& s){s.floor.kind=static_cast<WaterFloorKind>(9);},"unknown floor kind rejected");
+
+  // The validating device accepts a complete style block and rejects a short one.
+  ValidatingRenderDevice device;
+  device.begin_render_pass({{64,64}});
+  const auto upload=quad_upload();
+  const auto vb=device.create_buffer({BufferUsage::Vertex,std::as_bytes(std::span(upload.vertices)).size()},std::as_bytes(std::span(upload.vertices)));
+  const auto ib=device.create_buffer({BufferUsage::Index,std::as_bytes(std::span(upload.indices)).size()},std::as_bytes(std::span(upload.indices)));
+  const auto full=device.create_buffer({BufferUsage::Uniform,sizeof(packed)},std::as_bytes(std::span(packed)));
+  const std::array<float,8> half{};
+  const auto truncated=device.create_buffer({BufferUsage::Uniform,sizeof(half)},std::as_bytes(std::span(half)));
+  const auto pipeline=device.create_pipeline({ShaderProgramId::Terrain,terrain_shader_layout()});
+  device.draw_indexed({pipeline,vb,ib,0,6,{{kTerrainStyleSlot,full}},{}});
+  must_throw([&]{device.draw_indexed({pipeline,vb,ib,0,6,{{kTerrainStyleSlot,truncated}},{}});},
+             "short terrain style buffer rejected");
+  require(device.draw_count()==1,"styled terrain draw recorded once");
+}
+
+void test_terrain_surface_color_reference() {
+  TerrainStyle style;style.min_elevation_meters=0;style.max_elevation_meters=1000;
+  style.light_direction={0,1,0};style.ambient=0.3;
+  const terraflux::math::Vec3 up{0,1,0};
+  // Ramp: endpoints are the lowland and summit stops, interior stops are hit
+  // exactly, segments are continuous and the input is clamped.
+  require(near(terrain_height_tint(0),{0.16,0.40,0.22}) && near(terrain_height_tint(1),{0.88,0.86,0.82}) &&
+          near(terrain_height_tint(0.5),{0.72,0.64,0.38}),"ramp stops");
+  require(near(terrain_height_tint(-3),terrain_height_tint(0)) && near(terrain_height_tint(7),terrain_height_tint(1)),"ramp clamps");
+  for(const double t:{0.25,0.5,0.75})
+    require(near(terrain_height_tint(t-1e-9),terrain_height_tint(t+1e-9),1e-6),"ramp is continuous at stop boundaries");
+  require(!near(terrain_surface_color(0,up,style),terrain_surface_color(1000,up,style),1e-3) &&
+          !near(terrain_surface_color(250,up,style),terrain_surface_color(750,up,style),1e-3),
+          "different heights produce different colors");
+  require(near(terrain_surface_color(500,up,style),terrain_height_tint(0.5)),
+          "a flat surface lit from straight above shows the unshaded ramp color");
+  require(near(terrain_surface_color(-500,up,style),terrain_surface_color(0,up,style)) &&
+          near(terrain_surface_color(5000,up,style),terrain_surface_color(1000,up,style)),"heights clamp to the range");
+  TerrainStyle flat=style;flat.max_elevation_meters=flat.min_elevation_meters=400;
+  require(near(terrain_surface_color(400,up,flat),terrain_height_tint(0)) &&
+          near(terrain_surface_color(900,up,flat),terrain_height_tint(0)),"flat terrain is uniformly lowland");
+
+  // Slope: rock blend is 0 below start, 1 at/after full, monotone between.
+  require(terrain_rock_blend(0,style)==0 && terrain_rock_blend(28,style)==0 &&
+          terrain_rock_blend(48,style)==1 && terrain_rock_blend(90,style)==1 && near(terrain_rock_blend(38,style),0.5),
+          "rock transition endpoints");
+  for(double a=0;a<90;a+=1)require(terrain_rock_blend(a,style)<=terrain_rock_blend(a+1,style),"rock blend is monotone");
+  const terraflux::math::Vec3 steep=terraflux::math::Vec3{1,1,0}.normalized();   // 45 degrees
+  const terraflux::math::Vec3 cliff=terraflux::math::Vec3{4,1,0}.normalized();   // ~76 degrees
+  const double cliff_shade=0.3+0.7*cliff.y;
+  const terraflux::math::Vec3 rock_low{0.40,0.38,0.36},rock_high{0.60,0.58,0.56};
+  require(near(terrain_surface_color(500,cliff,style),(rock_low*0.5+rock_high*0.5)*cliff_shade) &&
+          near(terrain_surface_color(0,cliff,style),rock_low*cliff_shade),
+          "slopes beyond the full angle are pure shaded rock, darker low and paler high");
+  require(terrain_material({500,cliff,1.0,0.6},style).rock==1 &&
+          near(terrain_surface_color({500,cliff,1.0,0.6},style),terrain_surface_color(500,cliff,style)),
+          "rock hides vegetation and the height tint");
+  const auto soil=terrain_surface_color(500,up,style),partial=terrain_surface_color(500,steep,style);
+  require(!near(soil,partial,1e-3) && partial.x<soil.x,"a 45-degree slope is partly rock and darker");
+
+  // Lighting: facing the sun is brighter than facing away; ambient is the floor.
+  TerrainStyle sun=style;sun.light_direction={1,1,0};
+  const terraflux::math::Vec3 toward=terraflux::math::Vec3{0.3,1,0}.normalized(),away=terraflux::math::Vec3{-0.3,1,0}.normalized();
+  const auto lit=terrain_surface_color(500,toward,sun),shadow=terrain_surface_color(500,away,sun);
+  require(lit.x>shadow.x && lit.y>shadow.y && lit.z>shadow.z,"hillshade follows the light direction");
+  const terraflux::math::Vec3 opposite=terraflux::math::Vec3{-1,0.05,0}.normalized(); // near-vertical rock, back to the sun
+  require(near(terrain_surface_color(500,opposite,sun),(rock_low*0.5+rock_high*0.5)*0.3),
+          "surfaces facing away from the light keep exactly the ambient floor");
+  require(near(terrain_surface_color(500,{0,3,0},style),terrain_surface_color(500,up,style)),"normals are normalized");
+  must_throw([&]{(void)terrain_surface_color(500,{0,0,0},style);},"zero normal rejected");
+  must_throw([&]{(void)terrain_surface_color(std::numeric_limits<double>::quiet_NaN(),up,style);},"NaN elevation rejected");
+
+  // Viewer diagnostics classify fire (red-dominant) and imported asset (blue-dominant)
+  // pixels by color; no material may be mistaken for either across the style space.
+  TerrainStyle alpine;alpine.min_elevation_meters=0;alpine.max_elevation_meters=1000;alpine.snow_line_fraction=0.72;
+  for(double height=0;height<=1000;height+=50)
+    for(double slope=0;slope<90;slope+=6)
+      for(const double azimuth:{0.0,1.0,2.0,3.0,4.0,5.0})
+        for(const double fuel:{0.0,0.2,0.9})
+          for(const double moisture:{0.05,0.23,0.6})
+            for(const double curvature:{-0.2,0.0,0.2}) {
+              const double radians=slope*3.14159265358979323846/180;
+              const terraflux::math::Vec3 normal{std::sin(radians)*std::cos(azimuth),std::cos(radians),std::sin(radians)*std::sin(azimuth)};
+              const auto c=terrain_surface_color({height,normal,fuel,moisture,curvature},alpine);
+              const int r=static_cast<int>(std::lround(c.x*255)),g=static_cast<int>(std::lround(c.y*255)),b=static_cast<int>(std::lround(c.z*255));
+              require(!(r>=175 && r>g*1.7 && r>b*2.0),"no material matches the fire pixel heuristic");
+              require(!(b>=45 && b*100>g*128 && b*100>r*111),"no material matches the asset pixel heuristic");
+              require(c.x>=0 && c.y>=0 && c.z>=0 && c.x<=1 && c.y<=1 && c.z<=1,"colors stay normalized");
+            }
+}
+
+void test_terrain_material_reference() {
+  using Class=TerrainMaterialClass;
+  TerrainStyle style;style.min_elevation_meters=0;style.max_elevation_meters=1000;
+  style.snow_line_fraction=0.72;style.light_direction={0,1,0};
+  const terraflux::math::Vec3 up{0,1,0};
+  const auto classify=[&](double height,terraflux::math::Vec3 normal,double fuel,double moisture,double curvature) {
+    return dominant_material(terrain_material({height*1000,normal,fuel,moisture,curvature},style));
+  };
+  // Vegetation moisture classes are distinct, ordered and sum to one.
+  const auto dry=terrain_material({300,up,0.3,0.05},style),semi=terrain_material({300,up,0.3,0.23},style),
+             wet=terrain_material({300,up,0.3,0.6},style);
+  require(classify(0.3,up,0.3,0.05,0)==Class::DryVegetation && classify(0.3,up,0.3,0.23,0)==Class::SemiDryVegetation &&
+          classify(0.3,up,0.3,0.6,0)==Class::WetVegetation,"dry, semi-dry and wet vegetation classes");
+  for(const auto* m:{&dry,&semi,&wet})require(near(m->dry+m->semi_dry+m->wet,1.0),"moisture class weights sum to one");
+  require(dry.dry==1 && semi.semi_dry==1 && wet.wet==1,"class plateaus are exact at their centers");
+  require(!near(dry.albedo,semi.albedo,1e-3) && !near(semi.albedo,wet.albedo,1e-3),"moisture classes have distinct colors");
+  require(dry.albedo.x>wet.albedo.x && wet.albedo.y>dry.albedo.y*0.7 && wet.albedo.x<0.3,"dry vegetation is straw, wet vegetation green");
+  require(near(terrain_material({300,up,0.3,0.15},style).semi_dry,0.5),"halfway between dry and semi-dry blends evenly");
+  // Fuel load: bare ground keeps the height ramp, dense fuel becomes forest
+  // below the tree line and on moderate slopes only.
+  require(classify(0.3,up,0.0,0.5,0)==Class::Bare && near(terrain_material({300,up,0,0.5},style).albedo,terrain_height_tint(0.3)),
+          "no fuel is bare hypsometric ground");
+  require(classify(0.3,up,0.9,0.23,0)==Class::Forest,"dense fuel is forest");
+  require(classify(0.3,up,0.9,0.23,0)!=classify(0.3,up,0.3,0.23,0),"fuel load separates forest from grass");
+  const terraflux::math::Vec3 steep=terraflux::math::Vec3{std::tan(43*3.14159265358979323846/180),1,0}.normalized();
+  const terraflux::math::Vec3 moderate=terraflux::math::Vec3{std::tan(36*3.14159265358979323846/180),1,0}.normalized();
+  require(terrain_material({300,steep,0.9,0.23},style).trees==0 &&
+          terrain_material({300,moderate,0.9,0.23},style).trees>0.3 && terrain_material({300,moderate,0.9,0.23},style).trees<0.7,
+          "forest thins out between 30 and 42 degrees");
+  TerrainStyle no_snow=style;no_snow.snow_line_fraction=1.0;
+  require(dominant_material(terrain_material({900,up,0.9,0.23},no_snow))!=Class::Forest &&
+          terrain_material({900,up,0.9,0.23},no_snow).trees==0,"no forest above the tree line");
+  // Rock, exposed ridges, snow and ice.
+  const terraflux::math::Vec3 cliff=terraflux::math::Vec3{4,1,0}.normalized();
+  const terraflux::math::Vec3 gentle=terraflux::math::Vec3{std::tan(20*3.14159265358979323846/180),1,0}.normalized();
+  require(classify(0.3,cliff,0.9,0.5,0)==Class::Rock && classify(0.9,cliff,0.0,0.0,0)==Class::Rock,
+          "cliffs are rock whatever the fuel or height; snow does not cling to them");
+  require(classify(0.7,up,0.0,0.0,0.12)==Class::Ridge && classify(0.7,up,0.0,0.0,0.0)==Class::Bare,
+          "a convex high crest is an exposed ridge; the same height on a plane is not");
+  require(near(terrain_material({700,up,0,0,0.12},style).albedo,terraflux::math::Vec3{0.66,0.63,0.58}*0.85+terrain_height_tint(0.7)*0.15,1e-9),
+          "gentle exposed ridges are scree");
+  require(classify(0.8,up,0.0,0.0,0)==Class::Snow && classify(0.8,up,0.9,0.23,0)==Class::Snow &&
+          classify(0.8,gentle,0.0,0.0,-0.12)==Class::Snow,"above the snow line snow covers vegetation, bare ground and gentle basins");
+  require(classify(0.75,up,0.0,0.0,0.12)!=Class::Snow,"wind-blown crests near the snow line stay bare");
+  require(classify(0.85,up,0.0,0.0,-0.12)==Class::Ice && classify(0.99,up,0.0,0.0,0)==Class::Ice,
+          "flat high basins and summit caps are ice");
+  require(classify(0.85,gentle,0.0,0.0,-0.12)==Class::Snow,"ice needs nearly level ground");
+  require(classify(1.0,up,0.9,0.5,0)==Class::Snow || classify(1.0,up,0.9,0.5,0)==Class::Ice,"the summit is frozen");
+  require(dominant_material(terrain_material({1000,up,0,0},no_snow))==Class::Bare,"a snow line of one disables snow and ice");
+  // Names are distinct and stable.
+  std::vector<std::string> names;
+  for(std::size_t i=0;i<kTerrainMaterialClassCount;++i)names.push_back(terrain_material_name(static_cast<Class>(i)));
+  std::sort(names.begin(),names.end());
+  require(std::unique(names.begin(),names.end())==names.end() && names.front()=="bare","material names are unique");
+  must_throw([&]{(void)terrain_material_name(static_cast<Class>(42));},"unknown material class rejected");
+  must_throw([&]{(void)terrain_material({300,up,std::numeric_limits<double>::quiet_NaN(),0},style);},"NaN fuel rejected");
+}
+
+void test_water_floor_reference() {
+  using Class=TerrainMaterialClass;
+  TerrainStyle style;style.min_elevation_meters=0;style.max_elevation_meters=1000;
+  style.light_direction={0,1,0};style.submerged_level_meters=100;
+  const terraflux::math::Vec3 up{0,1,0};
+  const auto slope=[](double degrees){return terraflux::math::Vec3{std::tan(degrees*3.14159265358979323846/180),1,0}.normalized();};
+  const auto material=[&](double elevation,terraflux::math::Vec3 normal,WaterFloorKind kind) {
+    auto s=style;s.floor.kind=kind;return terrain_material({elevation,normal,0.9,0.5,0},s);
+  };
+  // Above the line the land materials are untouched; below it the floor takes over.
+  const auto land=material(101,up,WaterFloorKind::Mixed),shore=material(100,up,WaterFloorKind::Mixed),bed=material(96,up,WaterFloorKind::Mixed);
+  require(land.submerged==0 && dominant_material(land)==Class::Forest,"ground above the water line is land");
+  require(near(shore.submerged,0.5) && bed.submerged==1 && near(bed.depth_meters,4),"the blend spans +-0.3 m around the line");
+  require(dominant_material(bed)!=Class::Forest && bed.trees>0.5,"forest under water renders as floor although the fuel is unchanged");
+  TerrainStyle dry=style;dry.submerged_level_meters.reset();
+  require(terrain_material({96,up,0.9,0.5,0},dry).submerged==0 && dominant_material(terrain_material({96,up,0.9,0.5,0},dry))==Class::Forest,
+          "without a water level nothing is submerged");
+  // Single kinds are one-hot everywhere.
+  require(dominant_material(material(60,up,WaterFloorKind::Sand))==Class::FloorSand && material(60,up,WaterFloorKind::Sand).floor_sand==1 &&
+          dominant_material(material(60,slope(40),WaterFloorKind::Vegetation))==Class::FloorVegetation &&
+          dominant_material(material(99,up,WaterFloorKind::Mud))==Class::FloorMud &&
+          dominant_material(material(99,up,WaterFloorKind::Stones))==Class::FloorStones,"single floor kinds ignore depth and slope");
+  require(near(material(60,up,WaterFloorKind::Sand).albedo,{0.74,0.68,0.50}) && near(material(60,up,WaterFloorKind::Mud).albedo,{0.32,0.28,0.22}),
+          "single floor albedos");
+  // Mixed floors are zoned by depth and slope.
+  require(dominant_material(material(99.2,up,WaterFloorKind::Mixed))==Class::FloorSand,"gentle beds under 0.8 m are sand");
+  require(dominant_material(material(96.5,up,WaterFloorKind::Mixed))==Class::FloorVegetation,"gentle beds around 3.5 m grow plants");
+  require(dominant_material(material(85,up,WaterFloorKind::Mixed))==Class::FloorMud,"deep flat beds are mud");
+  require(dominant_material(material(96.5,slope(30),WaterFloorKind::Mixed))==Class::FloorStones &&
+          dominant_material(material(85,slope(30),WaterFloorKind::Mixed))==Class::FloorStones,"steep beds are stones at any depth");
+  for(const double elevation:{99.5,97.0,90.0,70.0})for(const double degrees:{0.0,10.0,25.0,45.0}) {
+    const auto m=material(elevation,slope(degrees),WaterFloorKind::Mixed);
+    require(near(m.floor_sand+m.floor_vegetation+m.floor_mud+m.floor_stones,1.0),"floor weights are normalized");
+  }
+  auto no_plants=style;no_plants.floor.vegetation=0;
+  require(dominant_material(terrain_material({96.5,up,0,0,0},no_plants))!=Class::FloorVegetation,"a zero weight removes a kind");
+  auto sandy=style;sandy.floor.sand=50;
+  require(dominant_material(terrain_material({85,up,0,0,0},sandy))==Class::FloorSand,"weights shift the zoning");
+  // Random floors are reproducible from their seed and stay within range.
+  const auto a=random_water_floor(11),b=random_water_floor(11),c=random_water_floor(12);
+  require(a.kind==WaterFloorKind::Mixed && a.seed==11 && a.sand==b.sand && a.vegetation==b.vegetation && a.mud==b.mud &&
+          a.stones==b.stones && a.patch_size_meters==b.patch_size_meters,"random floor is a pure function of the seed");
+  require(a.sand!=c.sand || a.mud!=c.mud || a.patch_size_meters!=c.patch_size_meters,"different seeds differ");
+  for(const auto& f:{a,c}) {
+    for(const double w:{f.sand,f.vegetation,f.mud,f.stones})require(w>=0.2 && w<=1.5,"random weights stay within 0.2..1.5");
+    require(f.patch_size_meters>=25 && f.patch_size_meters<=75,"random patch sizes stay within 25..75 m");
+    auto s=style;s.floor=f;(void)pack_terrain_style(s);
+  }
+  require(parse_water_floor("sand")==WaterFloorKind::Sand && parse_water_floor("stones")==WaterFloorKind::Stones &&
+          parse_water_floor("mixed")==WaterFloorKind::Mixed && std::string(water_floor_name(WaterFloorKind::Vegetation))=="vegetation",
+          "floor names round-trip");
+  must_throw([&]{(void)parse_water_floor("gravel");},"unknown floor name rejected");
+  must_throw([&]{(void)parse_water_floor(nullptr);},"null floor name rejected");
+  // Floors seen through water must not trip the viewer's fire/asset pixel heuristics either.
+  for(const auto kind:{WaterFloorKind::Sand,WaterFloorKind::Vegetation,WaterFloorKind::Mud,WaterFloorKind::Stones,WaterFloorKind::Mixed})
+    for(const double elevation:{99.5,97.0,90.0,60.0})for(const double degrees:{0.0,15.0,35.0}) {
+      auto s=style;s.floor.kind=kind;
+      const auto c=terrain_surface_color({elevation,slope(degrees),0.5,0.3,0},s);
+      const int r=static_cast<int>(std::lround(c.x*255)),g=static_cast<int>(std::lround(c.y*255)),b=static_cast<int>(std::lround(c.z*255));
+      require(!(r>=175 && r>g*1.7 && r>b*2.0) && !(b>=45 && b*100>g*128 && b*100>r*111),"floor colors avoid the pixel heuristics");
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -695,7 +998,11 @@ int main() {
     test_resize_recovery();
     test_render_pass_scopes();
     test_layer_visibility_contract();
-    std::cout << "TerraFlux graphics contracts: 21 tests passed\n";
+    test_terrain_style_contract();
+    test_terrain_surface_color_reference();
+    test_terrain_material_reference();
+    test_water_floor_reference();
+    std::cout << "TerraFlux graphics contracts: 25 tests passed\n";
   } catch (const std::exception& error) {
     std::cerr << "TerraFlux graphics test failed: " << error.what() << '\n';
     return 1;

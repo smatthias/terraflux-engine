@@ -1,0 +1,188 @@
+{
+  "format": "terraflux.scene",
+  "version": 2,
+  "nodes": [
+    {
+      "name": "Root",
+      "parent": 0,
+      "mesh_instance": false,
+      "translation": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "name": "Props",
+      "motion": [
+        0,
+        0.05,
+        0
+      ],
+      "parent": 0,
+      "mesh_instance": false,
+      "translation": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "name": "obj",
+      "parent": 1,
+      "mesh_instance": true,
+      "translation": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "spin": [
+        0,
+        0.1,
+        0
+      ],
+      "mesh_asset": "obj"
+    },
+    {
+      "name": "gltf",
+      "parent": 1,
+      "mesh_instance": true,
+      "translation": [
+        -4,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "spin": [
+        0,
+        0.1,
+        0
+      ],
+      "mesh_asset": "gltf"
+    },
+    {
+      "name": "glb",
+      "parent": 1,
+      "mesh_instance": true,
+      "translation": [
+        4,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "spin": [
+        0,
+        0.1,
+        0
+      ],
+      "mesh_asset": "glb"
+    },
+    {
+      "name": "gltf_alias",
+      "parent": 1,
+      "mesh_instance": true,
+      "translation": [
+        0,
+        0,
+        -4
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "spin": [
+        0,
+        0.1,
+        0
+      ],
+      "mesh_asset": "gltf_alias"
+    },
+    {
+      "name": "blend",
+      "parent": 1,
+      "mesh_instance": true,
+      "translation": [
+        0,
+        0,
+        4
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "spin": [
+        0,
+        0.1,
+        0
+      ],
+      "mesh_asset": "blend"
+    }
+  ],
+  "assets": {
+    "obj": "assets/pyramid.obj",
+    "gltf": "assets/textured_multi_mesh.gltf",
+    "gltf_alias": "assets/./textured_multi_mesh.gltf",
+    "glb": "assets/textured_multi_mesh.glb",
+    "blend": "assets/tangent_blend.gltf"
+  }
+}

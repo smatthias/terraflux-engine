@@ -1,0 +1,134 @@
+{
+  "format": "terraflux.scene",
+  "version": 2,
+  "nodes": [
+    {
+      "name": "Root",
+      "parent": 0,
+      "mesh_instance": false,
+      "translation": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "name": "Props",
+      "motion": [
+        0,
+        0.05,
+        0
+      ],
+      "parent": 0,
+      "mesh_instance": false,
+      "translation": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "name": "Pyramid left",
+      "parent": 1,
+      "mesh_instance": true,
+      "translation": [
+        -1.25,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0.4,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "spin": [
+        0,
+        0.7,
+        0
+      ],
+      "mesh_asset": "pyramid"
+    },
+    {
+      "name": "Pyramid right",
+      "parent": 1,
+      "mesh_instance": true,
+      "translation": [
+        1.25,
+        0.2,
+        0
+      ],
+      "rotation": [
+        0,
+        -0.4,
+        0.15
+      ],
+      "scale": [
+        0.75,
+        1.3,
+        0.75
+      ],
+      "spin": [
+        0,
+        -0.35,
+        0.08
+      ],
+      "mesh_asset": "painted"
+    },
+    {
+      "name": "Shared pyramid",
+      "parent": 1,
+      "mesh_instance": true,
+      "translation": [
+        0,
+        0,
+        -2
+      ],
+      "rotation": [
+        0,
+        0.4,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "spin": [
+        0,
+        0.7,
+        0
+      ],
+      "mesh_asset": "pyramid_alias"
+    }
+  ],
+  "assets": {
+    "pyramid": "assets/pyramid.obj",
+    "pyramid_alias": "assets/./pyramid.obj",
+    "painted": "assets/pyramid_materials.obj"
+  }
+}

@@ -1,6 +1,9 @@
 #include <terraflux/graphics/terrain_tiles.hpp>
+#include <terraflux/graphics/terrain_shading.hpp>
 #include <algorithm>
+#include <cmath>
 #include <numeric>
+#include <stdexcept>
 
 namespace terraflux::graphics {
 TerrainTileRenderer::Resident::Resident(RenderDevice& device,const TerrainUpload& recipe):resources(device) {
@@ -46,6 +49,14 @@ std::uint64_t TerrainTileRenderer::resident_bytes() const {
 BufferHandle TerrainTileRenderer::resident_vertex_buffer(std::size_t id) const {
   const auto& tile=tiles_.at(id);return tile.gpu?tile.gpu->vertices:BufferHandle{};
 }
+void TerrainTileRenderer::set_bounds_padding(double meters) {
+  if(!std::isfinite(meters) || meters<0 || meters>100)throw std::invalid_argument("terrain bounds padding must be 0..100 meters");
+  bounds_padding_=meters;
+}
+bool TerrainTileRenderer::visible(const Tile& tile,const Frustum& frustum) const {
+  const math::Vec3 pad{bounds_padding_,bounds_padding_,bounds_padding_};
+  return frustum.intersects_aabb(tile.lo-pad,tile.hi+pad);
+}
 void TerrainTileRenderer::set_retention_frames(std::uint32_t frames) {
   if(frames>kMaxTerrainRetentionFrames)throw std::invalid_argument("terrain retention must be 0..600 frames");
   retention_frames_=frames;
@@ -86,7 +97,7 @@ TerrainResidencyChange TerrainTileRenderer::synchronize_visible(const Frustum& f
   };
   for(std::size_t i=0;i<tiles_.size();++i) {
     const auto& tile=tiles_[i];
-    if(!cull || frustum.intersects_aabb(tile.lo,tile.hi)) {
+    if(!cull || visible(tile,frustum)) {
       wanted.push_back(i);wanted_bytes+=bytes(i);
     }else if(tile.gpu) {
       next_ages[i]=tile.hidden_frames+1; // At most 601; retained ages are capped at 600.
@@ -116,19 +127,21 @@ TerrainResidencyChange TerrainTileRenderer::synchronize_visible(const Frustum& f
   return change;
 }
 TerrainTileDrawStats TerrainTileRenderer::draw(PipelineHandle pipeline,BufferHandle camera,
-    std::optional<BufferHandle> fire,const Frustum& frustum,bool cull,std::optional<BufferHandle> layers) {
+    std::optional<BufferHandle> fire,const Frustum& frustum,bool cull,std::optional<BufferHandle> layers,
+    std::optional<BufferHandle> style) {
   if(!device_.active_render_pass_id())throw std::logic_error("terrain tiles require an active pass");
   // Reject an incomplete visible set before submitting any part of the surface.
   for(const auto& tile:tiles_)
-    if(!tile.gpu && (!cull || frustum.intersects_aabb(tile.lo,tile.hi)))
+    if(!tile.gpu && (!cull || visible(tile,frustum)))
       throw std::logic_error("visible terrain tile is not GPU resident");
   TerrainTileDrawStats stats;stats.total=tiles_.size();
   for(const auto& tile:tiles_) {
-    if(cull && !frustum.intersects_aabb(tile.lo,tile.hi)){++stats.culled;continue;}
+    if(cull && !visible(tile,frustum)){++stats.culled;continue;}
     DrawIndexed command{pipeline,tile.gpu->vertices,tile.gpu->indices,0,
         static_cast<std::uint32_t>(tile.recipe.indices.size()),{{0,camera}}, {}};
     if(fire)command.storage_buffers.push_back({1,*fire});
     if(layers)command.uniform_buffers.push_back({10,*layers});
+    if(style)command.uniform_buffers.push_back({kTerrainStyleSlot,*style});
     device_.draw_indexed(command);
     ++stats.visible;++stats.draws;stats.triangles+=tile.recipe.indices.size()/3;
   }

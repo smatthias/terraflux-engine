@@ -3,6 +3,7 @@
 #include <terraflux/graphics/render_pass.hpp>
 #include <terraflux/graphics/resource_owner.hpp>
 #include <terraflux/graphics/terrain_upload.hpp>
+#include <terraflux/graphics/terrain_shading.hpp>
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 #include <GL/glcorearb.h>
@@ -102,8 +103,10 @@ void verify(OpenGLRenderDevice& device) {
     const auto vb=owner.create_buffer({BufferUsage::Vertex,sizeof(vertices)},std::as_bytes(std::span(vertices)));
     const auto ib=owner.create_buffer({BufferUsage::Index,sizeof(indices)},std::as_bytes(std::span(indices)));
     const auto camera=owner.create_buffer({BufferUsage::Uniform,sizeof(identity)},std::as_bytes(std::span(identity)));
+    const auto style_packed=pack_terrain_style(TerrainStyle{});
+    const auto style=owner.create_buffer({BufferUsage::Uniform,sizeof(style_packed)},std::as_bytes(std::span(style_packed)));
     const auto pipeline=owner.create_pipeline({ShaderProgramId::Terrain,terrain_shader_layout()});
-    const DrawIndexed draw{pipeline,vb,ib,0,3,{{0,camera}}, {}};
+    const DrawIndexed draw{pipeline,vb,ib,0,3,{{0,camera},{kTerrainStyleSlot,style}}, {}};
     // A preserved 0.25 depth must reject the triangle at normalized depth 0.5.
     device.begin_render_pass(pass);device.draw_indexed(draw);
     check(device.capture_rgba(32,32)==green,"load pass lost depth occlusion");

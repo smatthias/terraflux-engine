@@ -33,15 +33,22 @@ class TerrainTileRenderer {
   // Zero preserves immediate eviction. Required visible tiles always win.
   void set_retention_frames(std::uint32_t frames);
   std::uint32_t retention_frames() const {return retention_frames_;}
+  // Expands every tile's culling bounds by this many meters on all axes so
+  // shader displacement (rock relief) never pops at the frustum edge. Bounds
+  // used for visibility only; geometry and recipes are unchanged. 0 .. 100.
+  void set_bounds_padding(double meters);
+  double bounds_padding() const {return bounds_padding_;}
   void set_residency_limit(std::size_t count) {residency_limit_=count;}
   std::size_t residency_limit() const {return residency_limit_;}
   std::vector<std::size_t> resident_tiles() const;
   std::size_t resident_tile_count() const;
   std::uint64_t resident_bytes() const;
   BufferHandle resident_vertex_buffer(std::size_t id) const;
+  // Binds camera (slot 0), optional fire field (storage 1), optional layer
+  // flags (slot 10) and optional terrain style (slot 11) on every tile draw.
   TerrainTileDrawStats draw(PipelineHandle pipeline,BufferHandle camera,
       std::optional<BufferHandle> fire,const Frustum& frustum,bool cull=true,
-      std::optional<BufferHandle> layers={});
+      std::optional<BufferHandle> layers={},std::optional<BufferHandle> style={});
   std::size_t tile_count() const {return tiles_.size();}
   std::uint64_t geometry_bytes() const {return geometry_bytes_;} // All CPU recipes / fully resident payload.
  private:
@@ -61,6 +68,8 @@ class TerrainTileRenderer {
   std::vector<Tile> tiles_;
   std::size_t residency_limit_=4096;
   std::uint32_t retention_frames_=0;
+  double bounds_padding_=0.0;
   std::uint64_t geometry_bytes_=0;
+  bool visible(const Tile& tile,const Frustum& frustum) const;
 };
 } // namespace terraflux::graphics

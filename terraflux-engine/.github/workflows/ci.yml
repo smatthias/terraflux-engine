@@ -1,0 +1,666 @@
+name: TerraFlux CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install Python dependencies
+        run: pip install -r intelligence/requirements.txt
+
+      - name: Install image libraries
+        run: sudo apt-get update && sudo apt-get install -y libpng-dev libjpeg-dev
+
+      - name: Build native engine
+        run: |
+          cmake -S native-compute -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --parallel 2
+
+      - name: Run native grid tests
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Run Python tests
+        env:
+          PYTHONPATH: intelligence
+        run: python -m unittest discover -s intelligence/tests -v
+
+      - name: Verify native parity
+        env:
+          PYTHONPATH: intelligence
+        run: |
+          python intelligence/scripts/verify_native_parity.py \
+            --runner build/terraflux-compute-runner \
+            --fixtures intelligence/tests/fixtures/grid_spread_cases.json
+
+  clang-debug-native:
+    name: Clang Debug and parity
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install Python dependencies
+        run: pip install -r intelligence/requirements.txt
+
+      - name: Install image libraries
+        run: sudo apt-get update && sudo apt-get install -y libpng-dev libjpeg-dev
+
+      - name: Build with Clang (Debug)
+        run: |
+          cmake -S native-compute -B build-clang \
+            -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_FLAGS="-Wall -Wextra -Wpedantic"
+          cmake --build build-clang --parallel 2
+
+      - name: Run native grid tests
+        run: ctest --test-dir build-clang --output-on-failure
+
+      - name: Verify native parity with Clang
+        env:
+          PYTHONPATH: intelligence
+        run: |
+          python intelligence/scripts/verify_native_parity.py \
+            --runner build-clang/terraflux-compute-runner \
+            --fixtures intelligence/tests/fixtures/grid_spread_cases.json
+
+  opengl-desktop:
+    name: OpenGL 4.3 desktop and Xvfb smoke
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install OpenGL and GLFW
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libglfw3-dev libgl-dev xvfb libpng-dev libjpeg-dev
+
+      - name: Compile OpenGL viewer
+        run: |
+          cmake -S native-compute -B build-gl -DCMAKE_BUILD_TYPE=Release \
+            -DTERRAFLUX_WITH_OPENGL=ON
+          cmake --build build-gl --parallel 2
+
+      - name: Run native tests with OpenGL enabled
+        run: ctest --test-dir build-gl --output-on-failure
+
+      - name: Verify owned offscreen framebuffer rendering
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: xvfb-run -a ./build-gl/terraflux-offscreen-tests
+
+      - name: Generate wildfire scenario and native simulation frames
+        run: |
+          python3 examples/generate_wildfire_scenario.py > /tmp/terraflux-request.json
+          ./build-gl/terraflux-compute-runner < /tmp/terraflux-request.json > /tmp/terraflux-response.json
+
+      - name: Verify terrain height/slope shading against the CPU reference
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --terrain-shading-test --smoke-test \
+            | tee /tmp/terraflux-terrain-shading.log
+          grep -q "Terrain shading passed" /tmp/terraflux-terrain-shading.log
+          grep -q "TERRAIN_MESH_JSON" /tmp/terraflux-terrain-shading.log
+          grep -q "TERRAIN_MATERIAL_JSON" /tmp/terraflux-terrain-shading.log
+          grep -q "TERRAIN_DETAIL_JSON" /tmp/terraflux-terrain-shading.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --terrain-shading-test --smoke-test \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --terrain-shading-test --smoke-test \
+            --offscreen --terrain-retain-frames 2 --terrain-tile-quads 8 \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --terrain-contours 25 \
+            --terrain-detail 0.5 --snow-line 0.6 \
+            --screenshot /tmp/terraflux-contours.ppm | tee /tmp/terraflux-contours.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --terrain-contours 0 --terrain-detail 0 --snow-line 1
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --rock-relief 0
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --terrain-shading-test --smoke-test --render-cell 0 \
+            | tee /tmp/terraflux-coarse.log
+          grep -q '"refinement":1' /tmp/terraflux-coarse.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --terrain-shading-test --smoke-test \
+            --render-cell 10 --max-render-vertices 50000 | tee /tmp/terraflux-budget-refine.log
+          grep -q '"refinement":2' /tmp/terraflux-budget-refine.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --water-test --smoke-test --render-cell 2.5
+          if ./build-gl/terraflux-terrain-viewer --max-render-vertices 10 > /tmp/terraflux-bad-budget.log 2>&1; then
+            echo "tiny render vertex budget was accepted" && exit 1
+          fi
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --terrain-tile-quads 8 --terrain-tile-test --smoke-test --rock-relief 12
+          if ./build-gl/terraflux-terrain-viewer --rock-relief 30 > /tmp/terraflux-bad-relief.log 2>&1; then
+            echo "rock relief above twenty meters was accepted" && exit 1
+          fi
+          grep -q "rock-relief" /tmp/terraflux-bad-relief.log
+          if ./build-gl/terraflux-terrain-viewer --terrain-detail 2 > /tmp/terraflux-bad-detail.log 2>&1; then
+            echo "detail strength above one was accepted" && exit 1
+          fi
+          grep -q "terrain-detail" /tmp/terraflux-bad-detail.log
+          grep -q "Screenshot written" /tmp/terraflux-contours.log
+          head -c 2 /tmp/terraflux-contours.ppm | grep -q "P6"
+          if ./build-gl/terraflux-terrain-viewer --terrain-contours -1 > /tmp/terraflux-bad-contours.log 2>&1; then
+            echo "negative contour interval was accepted" && exit 1
+          fi
+          grep -q "terrain-contours" /tmp/terraflux-bad-contours.log
+
+      - name: Verify animated fire effects respect fuel and fire breaks
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --fire-test --smoke-test \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json | tee /tmp/terraflux-fire.log
+          grep -q "Fire effects passed" /tmp/terraflux-fire.log
+          grep -q "FIRE_EFFECTS_JSON" /tmp/terraflux-fire.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --fire-test --smoke-test \
+            --offscreen --terrain-retain-frames 2 --terrain-tile-quads 8 \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --fire-test --smoke-test --vegetation low --tree-style conifer \
+            --flame-scale 1.5 --smoke-scale 0.5 \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json
+          # Flooding the burning area removes its flames: water is a fire break for the visual too.
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --water-level 57 \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json | tee /tmp/terraflux-fire-water.log
+          grep -q '"fuelless_samples":[1-9]' /tmp/terraflux-fire-water.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --hide-fire \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json | tee /tmp/terraflux-fire-hidden.log
+          if grep -q "FIRE_DRAW_JSON" /tmp/terraflux-fire-hidden.log; then
+            echo "fire effects drew while the fire layer was hidden" && exit 1
+          fi
+          if ./build-gl/terraflux-terrain-viewer --flame-scale 9 > /tmp/terraflux-bad-flame.log 2>&1; then
+            echo "flame scale above three was accepted" && exit 1
+          fi
+
+      - name: Verify 3D vegetation placement, meshes, variation and run-time swaps
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --vegetation-test --smoke-test | tee /tmp/terraflux-vegetation.log
+          grep -q "Vegetation passed" /tmp/terraflux-vegetation.log
+          grep -q "VEGETATION_JSON" /tmp/terraflux-vegetation.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --vegetation-test --smoke-test \
+            --offscreen --terrain-retain-frames 2 --terrain-tile-quads 8
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --vegetation-test --smoke-test \
+            --vegetation high --tree-style conifer --vegetation-seed 5
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --vegetation-test --smoke-test \
+            --tree-style custom --tree-obj examples/assets/pyramid_materials.obj
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --vegetation-test --smoke-test \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --vegetation off | tee /tmp/terraflux-no-vegetation.log
+          if grep -q "VEGETATION_DRAW_JSON" /tmp/terraflux-no-vegetation.log; then
+            echo "vegetation drew while disabled" && exit 1
+          fi
+          if ./build-gl/terraflux-terrain-viewer --tree-style custom > /tmp/terraflux-bad-tree.log 2>&1; then
+            echo "custom tree style without a model was accepted" && exit 1
+          fi
+          if ./build-gl/terraflux-terrain-viewer --tree-spacing 1 > /tmp/terraflux-bad-spacing.log 2>&1; then
+            echo "tree spacing below four meters was accepted" && exit 1
+          fi
+
+      - name: Verify water depth, reflection, waves and foam against the CPU reference
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --water-test --smoke-test | tee /tmp/terraflux-water.log
+          grep -q "Water passed" /tmp/terraflux-water.log
+          grep -q "WATER_JSON" /tmp/terraflux-water.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --water-test --smoke-test \
+            --offscreen --terrain-retain-frames 2 --terrain-tile-quads 8
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --water-test --smoke-test \
+            --water-level 57 --wave-height 1.5 --wave-direction 300 --wave-length 30 --wave-speed 4 \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --wave-height 0 --wave-speed 0 \
+            --screenshot /tmp/terraflux-still-water.ppm | grep -q "Screenshot written"
+          for floor in sand vegetation mud stones random; do
+            xvfb-run -a -s "-screen 0 1280x800x24" \
+              ./build-gl/terraflux-terrain-viewer --terrain-shading-test --smoke-test \
+              --water-floor "$floor" --floor-seed 7 | tee /tmp/terraflux-floor.log
+            grep -q "WATER_FLOOR_JSON" /tmp/terraflux-floor.log
+            grep -q "Terrain shading passed" /tmp/terraflux-floor.log
+          done
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --water-floor mixed --floor-patch-size 20 --water-clarity 10
+          if ./build-gl/terraflux-terrain-viewer --water-floor gravel > /tmp/terraflux-bad-floor.log 2>&1; then
+            echo "unknown water floor was accepted" && exit 1
+          fi
+          if ./build-gl/terraflux-terrain-viewer --wave-height 9 > /tmp/terraflux-bad-wave.log 2>&1; then
+            echo "wave height above five meters was accepted" && exit 1
+          fi
+          grep -q "wave-height" /tmp/terraflux-bad-wave.log
+          if ./build-gl/terraflux-terrain-viewer --water-test --smoke-test --wave-speed 0 > /tmp/terraflux-frozen-water.log 2>&1; then
+            echo "frozen waves were accepted for the water test" && exit 1
+          fi
+
+      - name: Verify tiled terrain pixels and frustum submission
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --terrain-tile-quads 8 \
+            --terrain-tile-test --smoke-test | tee /tmp/terraflux-terrain-tiles.log
+          grep -q "Terrain tiles passed" /tmp/terraflux-terrain-tiles.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --terrain-tile-quads 8 \
+            --terrain-tile-test --smoke-test --offscreen
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --terrain-tile-quads 8 --smoke-test \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --terrain-tile-quads 16 --smoke-test \
+            --offscreen --asset-lifecycle-test --scene examples/mixed_asset_scene.json
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --terrain-tile-quads 16 --smoke-test --no-culling
+
+      - name: Verify selective terrain GPU residency
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --terrain-residency --terrain-tile-quads 8 \
+            --terrain-residency-test --smoke-test | tee /tmp/terraflux-terrain-residency.log
+          grep -q "Terrain residency passed" /tmp/terraflux-terrain-residency.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --terrain-residency --terrain-tile-quads 8 \
+            --terrain-residency-test --smoke-test --offscreen
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --terrain-residency --terrain-tile-quads 8 --smoke-test \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --terrain-residency --terrain-tile-quads 16 --smoke-test \
+            --offscreen --asset-lifecycle-test --scene examples/mixed_asset_scene.json
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --terrain-residency --terrain-tile-quads 16 --smoke-test --no-culling
+          if xvfb-run -a ./build-gl/terraflux-terrain-viewer --terrain-residency \
+            --max-resident-terrain-tiles 0 --smoke-test > /tmp/terraflux-terrain-limit.log 2>&1; then
+            echo "Expected terrain resident count limit to reject visible tiles"; exit 1
+          fi
+          grep -q "terrain resident tile count limit exceeded" /tmp/terraflux-terrain-limit.log
+
+      - name: Verify terrain retention hysteresis
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --terrain-retain-frames 2 --terrain-tile-quads 8 \
+            --terrain-retention-test --smoke-test | tee /tmp/terraflux-terrain-retention.log
+          grep -q "Terrain retention passed" /tmp/terraflux-terrain-retention.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --terrain-retain-frames 2 --terrain-tile-quads 8 \
+            --terrain-retention-test --smoke-test --offscreen
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --terrain-retain-frames 2 --terrain-tile-quads 16 \
+            --smoke-test --offscreen --asset-lifecycle-test --scene examples/mixed_asset_scene.json
+
+      - name: Verify independent terrain and fire visibility
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --layers-test --smoke-test \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json \
+            | tee /tmp/terraflux-layers.log
+          grep -q "Layer visibility passed" /tmp/terraflux-layers.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --layers-test --smoke-test --offscreen \
+            --terrain-retain-frames 2 --terrain-tile-quads 8 \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --hide-terrain --hide-fire \
+            --terrain-residency --offscreen --scene examples/mixed_asset_scene.json
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --hide-fire \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json
+
+      - name: Verify deterministic replay controls and speed
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --replay-controls-test --smoke-test \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json \
+            | tee /tmp/terraflux-replay-controls.log
+          grep -q "Replay controls passed" /tmp/terraflux-replay-controls.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --replay-controls-test --smoke-test --offscreen \
+            --terrain-retain-frames 2 --terrain-tile-quads 8 \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --replay-speed 0.25 --smoke-test \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json \
+            | tee /tmp/terraflux-replay-quarter.log
+          grep -q '"speed":0.25' /tmp/terraflux-replay-quarter.log
+          if ./build-gl/terraflux-terrain-viewer --replay-speed 0.3 \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json \
+            > /tmp/terraflux-replay-invalid.log 2>&1; then
+            echo "Expected unsupported replay rate to reject"; exit 1
+          fi
+          grep -q "replay speed must be" /tmp/terraflux-replay-invalid.log
+
+      - name: Verify viewer offscreen composition and resize recovery
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --offscreen --smoke-test \
+            --offscreen-resize-test --scene examples/mixed_asset_scene.json \
+            | tee /tmp/terraflux-offscreen-resize.log
+          grep -q "Offscreen resize passed" /tmp/terraflux-offscreen-resize.log
+          grep -q '"fallback":true' /tmp/terraflux-offscreen-resize.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --offscreen --smoke-test \
+            --resource-budget-mib 16 --vegetation off | tee /tmp/terraflux-offscreen-fallback.log
+          grep -q '"width":0,"height":0' /tmp/terraflux-offscreen-fallback.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --offscreen --smoke-test --asset-lifecycle-test \
+            --scene examples/mixed_asset_scene.json
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --offscreen --smoke-test \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json
+
+      - name: Render one frame with Mesa under Xvfb
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test \
+            --obj examples/assets/pyramid.obj --texture examples/assets/checker.ppm
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test \
+            --obj examples/assets/pyramid_materials.obj
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test \
+            --obj examples/assets/pyramid.obj \
+            --scene examples/scenes/twin_pyramids.json
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test \
+            --scene examples/asset_scene.json | tee /tmp/terraflux-scene-assets.log
+          grep -q "2 meshes" /tmp/terraflux-scene-assets.log
+          grep -q "3 instances" /tmp/terraflux-scene-assets.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test \
+            --scene examples/mixed_asset_scene.json | tee /tmp/terraflux-mixed-scene.log
+          grep -q "7 meshes" /tmp/terraflux-mixed-scene.log
+          grep -q "17 instances" /tmp/terraflux-mixed-scene.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --residency-report \
+            --max-resident-meshes 7 --max-scene-instances 17 \
+            --scene examples/mixed_asset_scene.json | tee /tmp/terraflux-budget.log
+          python3 - <<'PYBUDGET'
+          import json
+          from pathlib import Path
+          line=next(s.split("=",1)[1] for s in Path("/tmp/terraflux-budget.log").read_text().splitlines()
+                    if s.startswith("RESIDENCY_JSON="))
+          stats=json.loads(line)
+          assert stats["referenced_meshes"]==7 and stats["instances"]==17
+          assert stats["max_meshes"]==7 and stats["max_instances"]==17
+          assert stats["detached_nodes"]==0 and stats["live_buffers"]>0
+          assert stats["total_resource_bytes"]==stats["buffer_bytes"]+stats["texture_bytes"]+stats["render_target_bytes"]
+          assert stats["buffer_bytes"]>0 and stats["texture_bytes"]>0
+          PYBUDGET
+          if xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --max-resident-meshes 6 \
+            --scene examples/mixed_asset_scene.json > /tmp/terraflux-over-budget.log 2>&1; then
+            echo "Expected over-budget scene to fail"; exit 1
+          fi
+          grep -q "scene residency budget exceeded" /tmp/terraflux-over-budget.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --residency-report \
+            --resource-budget-mib 64 --cpu-recipe-budget-mib 64 --scene examples/mixed_asset_scene.json \
+            | tee /tmp/terraflux-byte-budget.log
+          python3 - <<'PYBYTES'
+          import json
+          from pathlib import Path
+          stats=json.loads(next(s.split("=",1)[1] for s in Path("/tmp/terraflux-byte-budget.log").read_text().splitlines()
+                               if s.startswith("RESIDENCY_JSON=")))
+          assert stats["resource_budget_bytes"]==64*1024*1024
+          assert 0<stats["total_resource_bytes"]<=stats["resource_budget_bytes"]
+          assert stats["cpu_recipe_budget_bytes"]==64*1024*1024
+          assert stats["cpu_recipe_bytes"]==stats["cpu_vertex_bytes"]+stats["cpu_index_bytes"]+stats["cpu_image_bytes"]
+          assert 0<stats["cpu_recipe_bytes"]<=stats["cpu_recipe_budget_bytes"]
+          PYBYTES
+          if xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --resource-budget-mib 0 \
+            > /tmp/terraflux-byte-rejected.log 2>&1; then
+            echo "Expected zero byte budget to reject terrain allocation"; exit 1
+          fi
+          grep -q "resource byte budget exceeded" /tmp/terraflux-byte-rejected.log
+          if xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --start-inactive \
+            --cpu-recipe-budget-mib 0 --scene examples/mixed_asset_scene.json \
+            > /tmp/terraflux-cpu-rejected.log 2>&1; then
+            echo "Expected zero CPU recipe budget to reject retained models"; exit 1
+          fi
+          grep -q "CPU recipe payload budget exceeded" /tmp/terraflux-cpu-rejected.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --resource-recovery-test \
+            --residency-report --scene examples/mixed_asset_scene.json \
+            | tee /tmp/terraflux-resource-recovery.log
+          grep -q "Resource recovery passed" /tmp/terraflux-resource-recovery.log
+          python3 - <<'PYRECOVERY'
+          import json
+          from pathlib import Path
+          stats=[json.loads(s.split("=",1)[1]) for s in Path("/tmp/terraflux-resource-recovery.log").read_text().splitlines()
+                 if s.startswith("RESIDENCY_JSON=")]
+          assert any(s["budget_rejections"]>=1 and s["last_byte_rejection"] for s in stats)
+          assert stats[-1]["headroom_bytes"]>0 and not stats[-1]["over_byte_budget"]
+          assert stats[-1]["peak_total_bytes"]>=stats[-1]["total_resource_bytes"]
+          PYRECOVERY
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --residency-report \
+            --start-inactive --max-resident-meshes 1 --max-scene-instances 1 \
+            --activate-node 2 --save-state /tmp/terraflux-residency-state.json --scene examples/mixed_asset_scene.json \
+            | tee /tmp/terraflux-selected-node.log
+          python3 - <<'PYSELECT'
+          import json
+          from pathlib import Path
+          records=[json.loads(s.split("=",1)[1]) for s in Path("/tmp/terraflux-selected-node.log").read_text().splitlines()
+                   if s.startswith("RESIDENCY_JSON=")]
+          assert records[0]["instances"]==0 and records[0]["detached_nodes"]==5
+          assert records[-1]["instances"]==1 and records[-1]["referenced_meshes"]==1
+          assert records[-1]["selected_node"]==2 and records[-1]["detached_nodes"]==4
+          PYSELECT
+          if xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --start-inactive \
+            --max-resident-meshes 1 --activate-node 3 --scene examples/mixed_asset_scene.json \
+            > /tmp/terraflux-activation-rejected.log 2>&1; then
+            echo "Expected selected model activation to exceed mesh budget"; exit 1
+          fi
+          grep -q "scene residency budget exceeded" /tmp/terraflux-activation-rejected.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --residency-report \
+            --load-state /tmp/terraflux-residency-state.json \
+            --max-resident-meshes 1 --max-scene-instances 1 \
+            --scene examples/mixed_asset_scene.json | tee /tmp/terraflux-restored-state.log
+          python3 - <<'PYSTATE'
+          import json
+          from pathlib import Path
+          saved=json.loads(Path("/tmp/terraflux-residency-state.json").read_text())
+          assert saved["selected"]==2 and saved["inactive"]==[3,4,5,6]
+          stats=json.loads(next(s.split("=",1)[1] for s in Path("/tmp/terraflux-restored-state.log").read_text().splitlines()
+                               if s.startswith("RESIDENCY_JSON=")))
+          assert stats["selected_node"]==2 and stats["instances"]==1
+          assert stats["referenced_meshes"]==1 and stats["detached_nodes"]==4
+          PYSTATE
+          for source in "--scene examples/asset_scene.json" \
+                        "--scene examples/mixed_asset_scene.json" \
+                        "--obj examples/assets/pyramid.obj --scene examples/scenes/twin_pyramids.json"; do
+            xvfb-run -a -s "-screen 0 1280x800x24" \
+              ./build-gl/terraflux-terrain-viewer --smoke-test --scene-residency-test \
+              $source | tee /tmp/terraflux-residency.log
+            grep -q "Scene residency passed" /tmp/terraflux-residency.log
+          done
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --scene-residency-test \
+            --no-instancing --scene examples/mixed_asset_scene.json
+          for source in "--scene examples/asset_scene.json" \
+                        "--scene examples/mixed_asset_scene.json" \
+                        "--obj examples/assets/pyramid.obj --scene examples/scenes/twin_pyramids.json"; do
+            xvfb-run -a -s "-screen 0 1280x800x24" \
+              ./build-gl/terraflux-terrain-viewer --smoke-test --scene-detach-test \
+              $source | tee /tmp/terraflux-detach.log
+            grep -q "Scene detach passed" /tmp/terraflux-detach.log
+          done
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --scene-detach-test \
+            --no-instancing --scene examples/mixed_asset_scene.json
+          grep -Eq '[1-9][0-9]* transparent draws' /tmp/terraflux-mixed-scene.log
+          for mode in "--scene-controls-test" "--asset-lifecycle-test"; do
+            xvfb-run -a -s "-screen 0 1280x800x24" \
+              ./build-gl/terraflux-terrain-viewer --smoke-test $mode \
+              --scene examples/mixed_asset_scene.json
+          done
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --no-instancing \
+            --scene examples/mixed_asset_scene.json
+          for source in "--scene examples/asset_scene.json" \
+                        "--obj examples/assets/pyramid.obj --scene examples/scenes/twin_pyramids.json"; do
+            xvfb-run -a -s "-screen 0 1280x800x24" \
+              ./build-gl/terraflux-terrain-viewer --smoke-test --scene-controls-test \
+              $source | tee /tmp/terraflux-scene-controls.log
+            grep -q "Scene controls passed" /tmp/terraflux-scene-controls.log
+          done
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --scene-controls-test \
+            --scene examples/asset_scene.json \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json \
+            | tee /tmp/terraflux-scene-controls-replay.log
+          grep -q "Scene controls passed" /tmp/terraflux-scene-controls-replay.log
+          for source in "--scene examples/asset_scene.json" \
+                        "--obj examples/assets/pyramid.obj" \
+                        "--gltf examples/assets/tangent_blend.gltf --asset-preview"; do
+            xvfb-run -a -s "-screen 0 1280x800x24" \
+              ./build-gl/terraflux-terrain-viewer --smoke-test --asset-lifecycle-test \
+              $source | tee /tmp/terraflux-lifecycle.log
+            grep -q "Asset lifecycle passed" /tmp/terraflux-lifecycle.log
+            grep -q "rendered 4 frame(s)" /tmp/terraflux-lifecycle.log
+          done
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --asset-lifecycle-test \
+            --no-instancing --scene examples/asset_scene.json
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --no-instancing \
+            --scene examples/asset_scene.json
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test \
+            --obj examples/assets/pyramid.obj \
+            --scene examples/scenes/culling_demo.json | tee /tmp/terraflux-culling.log
+          grep -q "Visibility: 2 visible, 1 culled" /tmp/terraflux-culling.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer \
+            --obj examples/assets/pyramid.obj \
+            --scene examples/scenes/benchmark_culling.json \
+            --benchmark-frames 8 --no-instancing > /tmp/terraflux-benchmark-on.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer \
+            --obj examples/assets/pyramid.obj \
+            --scene examples/scenes/benchmark_culling.json \
+            --benchmark-frames 8 --no-culling --no-instancing > /tmp/terraflux-benchmark-off.log
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          def record(path):
+              line=next(s.partition("=")[2] for s in Path(path).read_text().splitlines()
+                        if s.startswith("BENCHMARK_JSON="))
+              return json.loads(line)
+          on=record("/tmp/terraflux-benchmark-on.log")
+          off=record("/tmp/terraflux-benchmark-off.log")
+          assert on["culling"] is True and off["culling"] is False
+          assert on["frames"]==8 and off["frames"]==8
+          assert on["gpu_samples"]>0 and off["gpu_samples"]>0
+          assert on["culled_per_frame"]>=75 and off["culled_per_frame"]==0
+          assert on["draws_per_frame"]<off["draws_per_frame"]
+          print("GPU timer and on/off comparison verified:",on,off)
+          PY
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer \
+            --obj examples/assets/pyramid.obj \
+            --scene examples/scenes/benchmark_culling.json \
+            --benchmark-frames 8 > /tmp/terraflux-instanced.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer \
+            --obj examples/assets/pyramid.obj \
+            --scene examples/scenes/benchmark_culling.json \
+            --benchmark-frames 8 --no-instancing > /tmp/terraflux-legacy.log
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          def read(name):
+              return json.loads(next(line.split("=",1)[1]
+                  for line in Path(name).read_text().splitlines()
+                  if line.startswith("BENCHMARK_JSON=")))
+          inst=read("/tmp/terraflux-instanced.log")
+          legacy=read("/tmp/terraflux-legacy.log")
+          assert inst["instancing"] is True and legacy["instancing"] is False
+          assert inst["visible_per_frame"]==legacy["visible_per_frame"]==20
+          assert inst["culled_per_frame"]==legacy["culled_per_frame"]==80
+          assert inst["draws_per_frame"]==2 and legacy["draws_per_frame"]==21
+          assert inst["gpu_samples"]>0 and legacy["gpu_samples"]>0
+          print("Hardware instancing verified:",inst,legacy)
+          PY
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test \
+            --gltf examples/assets/tetra.gltf
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test \
+            --gltf examples/assets/multi_mesh.gltf
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test \
+            --gltf examples/assets/textured_multi_mesh.gltf
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --asset-preview \
+            --gltf examples/assets/textured_multi_mesh.gltf
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --asset-preview \
+            --gltf examples/assets/tangent_blend.gltf | tee /tmp/terraflux-blend.log
+          grep -Eq '[1-9][0-9]* transparent draws' /tmp/terraflux-blend.log
+          grep -q 'Visible glTF changed pixels' /tmp/terraflux-blend.log
+          python3 examples/pack_gltf_fixture.py \
+            examples/assets/textured_multi_mesh.gltf /tmp/terraflux-textured.glb
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test \
+            --gltf /tmp/terraflux-textured.glb

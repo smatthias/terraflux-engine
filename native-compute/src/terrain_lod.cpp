@@ -91,6 +91,10 @@ std::optional<TerrainTile> simplify_tile(const TerrainTile& tile,
   out.x=tile.x;out.y=tile.y;out.bounds_min=tile.bounds_min;out.bounds_max=tile.bounds_max;
   out.mesh.origin_grid_x=tile.mesh.origin_grid_x;out.mesh.origin_grid_y=tile.mesh.origin_grid_y;
   out.mesh.cell_size_meters=tile.mesh.cell_size_meters;
+  out.mesh.min_elevation_meters=tile.mesh.min_elevation_meters;
+  out.mesh.max_elevation_meters=tile.mesh.max_elevation_meters;
+  out.mesh.refinement=tile.mesh.refinement;
+  out.mesh.simulation_cell_size_meters=tile.mesh.simulation_cell_size_meters;
   std::map<std::uint32_t,std::uint32_t> compact;
   const auto emit=[&](std::uint32_t old) {
     auto [it,inserted]=compact.emplace(old,static_cast<std::uint32_t>(out.mesh.vertices.size()));
