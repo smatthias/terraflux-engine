@@ -23,6 +23,15 @@ or physical-GPU certification.
 - Deterministic simulation fixtures
 - C++/Python parity verification
 - Optional OpenGL 4.3 desktop terrain and wildfire-replay viewer
+- Smooth terrain materials: relative height tints, dry/semi-dry/wet grass and forest from fuel data,
+  rock on steep slopes, scree on exposed ridges, snow and ice, hillshade, contours and procedural detail
+- 3D vegetation: instanced procedural or custom-OBJ trees and grass tufts placed from the fuel data,
+  with per-plant size/color variation, wind sway and run-time switchable meshes and densities
+- Animated 3D fire: fuel-gated flames and smoke on burning cells, crown fires in trees, charred
+  vegetation and ground after the front passes; rock, water, snow and bare soil never show fire
+- Animated water at a configurable level: depth-dependent color and transparency, Fresnel sky/sun
+  reflection, waves with configurable height, length, speed and direction that shoal, refract toward
+  the shore and break into foam on beaches and rocky shores
 - OBJ/MTL and static glTF/GLB assets, textures and a direct-light PBR subset
 - Scene hierarchies, shared OBJ/glTF/GLB asset references and deterministic Spin/Motion
 - Scene pause/resume, single stepping and transactional asset unload/reload
@@ -83,6 +92,279 @@ approximated as nonmetallic. Pure OBJ scenes retain the original diffuse path. L
   --obj examples/assets/pyramid.obj --scene examples/scenes/twin_pyramids.json
 ```
 
+### Render resolution: a 5 m lattice over the 30 m simulation grid
+
+The simulation grid (typically 30 m cells) is never changed, but rendering does
+not have to show its squares. `--render-cell METERS` (default 5; `0` keeps the
+simulation lattice) refines every complete simulation quad into N x N render
+quads (`refine_terrain_mesh`): heights follow a C1 bicubic Hermite surface that
+passes exactly through the measured vertices (per-vertex slopes from the
+measured neighbours, zero twist), normals are the analytic surface normals,
+fuel/moisture/curvature interpolate bilinearly, holes stay holes and nothing is
+invented beyond the measured surface. Water, tiles, residency, culling and the
+material shaders all work on the refined lattice; rock relief therefore becomes
+real geometry at 5 m instead of shading. `--max-render-vertices` (default
+4 000 000, 1000..20 000 000) lowers the subdivision automatically for large
+grids (a 1 000 x 1 000 DEM renders at 15 m, a 160 x 160 DEM at 5 m). Tile sizes
+given with `--terrain-tile-quads` count simulation cells and are scaled to the
+render lattice (capped at 256 render quads per side). `TERRAIN_MESH_JSON`
+reports both the simulation and render counts, the render spacing and the
+refinement factor. The simulation's fire grid, parity fixtures and outputs are
+untouched; render vertices map back to their simulation cell through
+`origin + (grid - origin) / refinement`.
+
+```bash
+./build-gl/terraflux-terrain-viewer --render-cell 2.5
+./build-gl/terraflux-terrain-viewer --render-cell 0          # the raw simulation lattice
+./build-gl/terraflux-terrain-viewer --request terrain-request.json \
+  --response terrain-response.json --hide-fire --render-cell 5 --max-render-vertices 2000000
+```
+
+### Terrain materials: height, slope, vegetation, rock, snow and ice
+
+The terrain and wildfire ground shaders build materials from the mesh itself
+and the simulation's per-cell fuel data:
+
+- **Height**: a five-stop hypsometric ramp (lowland green, meadow, dry grass,
+  upland brown, pale summit) spans the surface's own elevation range, recorded
+  by `build_terrain_mesh`; bare ground (no fuel) shows it directly.
+- **Vegetation**: `fuel_load` blends bare ground to grass and grass to forest
+  canopy, which thins out above the tree line (62..78 % of the range) and on
+  slopes steeper than 30..42 degrees. `fuel_moisture` distinguishes **dry**
+  (straw, below 0.10), **semi-dry** (olive, 0.20..0.26) and **wet** (lush green,
+  above 0.40) grass and canopy, blending smoothly in between.
+- **Rock and ridges**: per-pixel slope blends soil toward rock between 28 and
+  48 degrees; convex crests computed from the elevation grid become scree when
+  gentle and rock when steep. Rock is **flat-shaded** from the geometric facet
+  normal, carved by ridged crag noise with sharp creases and crevice shadow,
+  and layered by hard strata ledges; `--rock-relief 0..20` m (default 5)
+  additionally displaces rock vertices vertically by the same ridged field so
+  cliffs and crests get jagged, blocky silhouettes instead of smooth slopes.
+  The displacement is visualization only: measured elevations, contours, fire
+  lookups and the CPU reference are unaffected, it is scaled by
+  `--terrain-detail`, damped under snow and ice, and suppressed below and just
+  above the water line. Elsewhere vertex normals stay smooth and independent
+  of the triangulated diagonal, so grass and soil show no grid grain.
+- **Snow and ice**: once the relief reaches 300 m, snow covers ground above 72 %
+  of the range (except cliffs and wind-blown crests), and flat high basins and
+  summit caps turn to ice. `--snow-line 0..1` sets the fraction (1 disables).
+- **Detail**: procedural grass tufts and patches, tree crowns grouped into
+  stands with gaps, rock strata, grain and cracks, scree speckle, snow drifts
+  and sparkle, ice crack lines and a gradient-based bump, all fading with
+  distance. `--terrain-detail 0..1` scales it (0 shows the plain materials).
+- **Contours**: anti-aliased contour lines default to a 1-2-2.5-5 spacing giving
+  about ten levels; `--terrain-contours 50` sets the interval and `0` disables.
+- A directional hillshade (sun from the south-west, 50 degrees up, 30 % ambient)
+  lights all of it; snow and ice take a bluish tint on their shaded side.
+
+```bash
+./build-gl/terraflux-terrain-viewer
+./build-gl/terraflux-terrain-viewer --terrain-contours 0 --terrain-detail 0
+./build-gl/terraflux-terrain-viewer --request terrain-request.json \
+  --response terrain-response.json --hide-fire --snow-line 0.8 \
+  --screenshot /tmp/terrain.ppm
+LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a -s "-screen 0 1280x800x24" \
+  ./build-gl/terraflux-terrain-viewer --terrain-shading-test --smoke-test
+```
+
+`--screenshot PATH` writes the last presented frame as a binary PPM when the
+viewer exits (the single frame in smoke mode). The camera starts where the
+terrain's bounding sphere fills the vertical field of view. Smoke, profile,
+benchmark and residency-report runs print `TERRAIN_MESH_JSON` with vertex and
+triangle counts, the elevation range, maximum/mean slope, curvature extremes,
+vegetated vertices and the active style. The demo terrain is authored with a wet
+riparian strip, semi-dry lowland, dry plateau, irregular forest stands, a lake, a
+two-band escarpment with craggy faces and a scree crest, and a snow-capped ridge
+broken by ridged crags, so every class is visible.
+
+The style lives in `terraflux/graphics/terrain_shading.hpp` as a validated
+64-byte `TerrainStyle` uniform block shared by both ground shaders, with a CPU
+reference of the material classification (`terrain_material`,
+`dominant_material`) and lit color (`terrain_surface_color`) for detail
+strength zero. `--terrain-shading-test` renders the plain materials and compares
+the GPU pixel at every interior, unburned vertex against that reference per
+material class, checks the height ramp, hillshade range and visible rock, then
+toggles contours and full detail and checks their pixel statistics. It requires
+demo or replay smoke mode with both layers visible, default style options and no
+assets; tiled, resident and offscreen paths are allowed. Fire/burn overlays,
+layer visibility, fire-grid identity and replay timing are unchanged, and no
+material affects fire propagation. See
+[the backend contract](docs/GRAPHICS_BACKENDS.md#terrain-materials-height-slope-vegetation-rock-snow-and-ice).
+
+### 3D vegetation: trees and grass as run-time configurable meshes
+
+Trees and grass are no longer painted onto the ground: they are instanced 3D
+meshes placed from the material model (`place_vegetation`) and drawn by the
+`Vegetation` shader. Each plant has its own position on the rendered surface,
+height (0.7..1.3 x the nominal height, taller on wet ground), rotation, sway
+phase, lean on steep ground and **color tint** (species by moisture class — dry
+ground grows olive conifers, wet ground lush broadleaf trees — plus per-plant
+brightness/hue jitter), so no two trees in a forest look the same. The ground
+under 3D trees shows forest-floor litter instead of a second painted canopy.
+
+- **Meshes** (`vegetation.hpp`): procedural unit-height models with vertex
+  colors and a wind "flex" weight — `make_tree_mesh` (conifer tiers, lobed
+  broadleaf crowns or shrubs; segments, layers, trunk height, crown width and
+  colors are parameters) and `make_grass_mesh` (1..8 tapered blades) — or any
+  OBJ converted by `vegetation_mesh_from_model` (normalized to unit height,
+  section materials become vertex colors, green materials take the species tint).
+- **Placement**: seeded jittered-grid sampling over the render lattice with an
+  exact surface lookup (`TerrainSampler`), trees where the canopy cover, tree
+  line, slope, snow and water allow, grass where vegetation grows outside dense
+  canopy; instances are grouped into 120 m chunks for frustum and distance
+  culling and refilled into instance storage each frame (trees to 6 km, grass
+  to its draw distance, shrinking away instead of popping).
+- **Wind**: the wave direction/speed drive a gusting sway that moves tips more
+  than trunks; `--wave-direction`/`--wave-speed` therefore also steer the trees.
+
+```bash
+./build-gl/terraflux-terrain-viewer                               # medium density, mixed species
+./build-gl/terraflux-terrain-viewer --vegetation high --tree-style conifer --grass-distance 600
+./build-gl/terraflux-terrain-viewer --tree-style custom --tree-obj my_tree.obj --tree-height 20
+./build-gl/terraflux-terrain-viewer --vegetation off
+LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a -s "-screen 0 1280x800x24" \
+  ./build-gl/terraflux-terrain-viewer --vegetation-test --smoke-test
+```
+
+`--vegetation off|low|medium|high` sets density presets (tree spacing 18/12/8 m,
+grass off/300 m/450 m); `--tree-spacing 4..200`, `--grass-spacing 0.5..20`,
+`--grass-distance 0..5000`, `--tree-height 1..80` override them;
+`--tree-style conifer|broadleaf|mixed|custom` picks the meshes (`custom` needs
+`--tree-obj`); `--vegetation-seed` changes the layout. At run time **V** cycles
+the density, **B** cycles the tree meshes (conifer, broadleaf, mixed, custom),
+**G** cycles the grass distance, and **W/A/S/D** pan the camera target over the
+ground (it follows the terrain, so you can walk among the trees; zoom now goes
+down to 3 % of the framing distance). A rejected change keeps the previous
+state. `VEGETATION_JSON` reports counts, kinds, chunks, spacing and bytes;
+`VEGETATION_DRAW_JSON` the per-frame visible chunks, instances, draws and
+triangles. `--vegetation-test` renders vegetation off, on, with swapped tree
+meshes, 1.5 s later and off again, and checks that plants change a substantial
+share of the image, rise above the terrain silhouette, show at least two dozen
+distinct colors, differ after the mesh swap and after the wind step, and that
+disabling restores the reference exactly. Vegetation is a visualization of the
+fuel inputs and does not affect fire propagation; smoke runs freeze the sway.
+
+### Animated fire that respects fuel and fire breaks
+
+The simulation alone decides which cells ignite and burn (fuel-free cells never
+do; see the contract below). The viewer now turns that into a scene-aware
+visualisation instead of a flat square per cell:
+
+- **Flames** are instanced, camera-facing, noise-eroded tongues that flicker and
+  lean with the wind. Each burning cell gets up to `flames_per_cell x fuel`
+  ground flames at seeded sub-cell positions — and only where the sampled
+  ground actually carries fuel: the `fire_fuel_factor` gate (fuel above the
+  threshold and neither rock, water, snow nor ice) rejects rock outcrops,
+  shorelines, snow and bare soil inside a burning cell. Flame height and count
+  scale with the fuel load, so thin grass smoulders low while forest burns high.
+- **Crown fires**: every 3D tree standing in a burning cell carries a flame in its
+  canopy, and the plants themselves change state through the same fire field the
+  ground uses — burning foliage glows and flickers orange, burned trees are left
+  charred, burned grass is reduced to stubble.
+- **Smoke**: plumes rise from burning cells (more and denser with more fuel),
+  drift downwind and are lit warm at their base; burned cells keep sparse,
+  thin smouldering plumes.
+- **Ragged fronts**: flames, charring and the ground footprint all follow one
+  continuous front field — the cell states blurred over a 5 x 5 neighbourhood
+  and cut by world-space noise at three scales (broad bulges, lobes and a fine
+  fringe) — instead of cell membership, so the outline wanders up to about a
+  cell past the squares, leaves occasional unburned islands, and never appears
+  where no burning or burned cell is nearby. The burn footprint is gated by
+  the same fuel/material rule and fainter where fuel is thin, so fire breaks
+  such as rivers (zero fuel), rock and water stay visibly unburned.
+  Note that the large-scale shape still comes from the simulation: the
+  8-neighbour threshold automaton spreads at equal cell counts along axes and
+  diagonals (a Chebyshev metric), so in uniform fuel without wind or slope it
+  grows a square; the renderer can soften that, not remove it. Real fuel,
+  moisture, slope and wind variation break it up, and a distance-corrected or
+  stochastic spread rule would be a simulation (v3 contract) change.
+
+```bash
+./build-gl/terraflux-terrain-viewer --request /tmp/terraflux-request.json \
+  --response /tmp/terraflux-response.json --flame-scale 1.5 --smoke-scale 0.8
+LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a -s "-screen 0 1280x800x24" \
+  ./build-gl/terraflux-terrain-viewer --fire-test --smoke-test \
+  --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json
+```
+
+`--flame-scale 0..3` and `--smoke-scale 0..3` size the effects; the **F** layer
+key hides them together with the ground fire. Emitters are rebuilt when the
+replay frame or the vegetation changes (`FIRE_EFFECTS_JSON` reports burning and
+burned cells, flames, crown flames, plumes and samples rejected for lack of
+burnable ground; `FIRE_DRAW_JSON` the per-frame instances). `--fire-test`
+renders the ground fire alone, then the effects at two times, then hides them,
+and requires flames and smoke to be drawn, pixels to change well above the
+ground footprint, the effects to animate and the reference to be restored
+exactly. None of this feeds back into propagation or replay timing; smoke runs
+freeze the animation clock.
+
+### Water: level, depth, transparency, reflection and waves
+
+`--water-level METERS` places a still-water surface over the terrain (the demo
+terrain has an authored lake at 34 m; replay data gets water only on request).
+`build_water_mesh` clips the plane to every terrain triangle with a submerged
+corner and carries the bed height and bed gradient with each vertex, so the
+shader knows the exact depth beneath every pixel and which way the shore lies.
+Holes in the terrain stay holes; nothing is invented beyond the measured surface.
+
+- **Depth and transparency**: the color absorbs from turquoise shallows to deep
+  blue (63 % at 6 m) and the opacity rises with depth (63 % at 2.5 m), so beaches,
+  contour lines and vegetation remain visible through shallow water.
+- **Reflection**: a Fresnel-weighted procedural sky (horizon to zenith) plus sun
+  glitter from the same light as the terrain; grazing views turn opaque and sky
+  colored. There is no planar reflection of the terrain or assets.
+- **Waves**: `--wave-height 0..5` (amplitude, m), `--wave-length 1..1000` (m),
+  `--wave-speed 0..50` (deep-water phase speed, m/s; 0 freezes) and
+  `--wave-direction 0..360` (compass degrees the waves travel toward, 0 north,
+  90 east). The primary wave is joined by a long irregular swell, two cross
+  waves and ripples; gusts modulate the amplitude and a slow warp bends the
+  fronts. Over shallow ground waves slow, shorten and grow (shoaling), bend
+  toward rising ground (refraction) and are capped by the depth they travel in.
+- **Foam and breaking**: waves whose height the depth can no longer carry break
+  into foam at their crests; a surging swash line runs up the beach with each
+  arriving crest; rocky (steep) shores throw animated splashes. Flat water
+  (height 0) has no foam.
+- **Lake/sea floor**: ground below the water line renders as floor instead of
+  land, visible through shallow water (`--water-clarity 0.5..50` sets the depth
+  at which the surface becomes 63 % opaque; default 4 m). `--water-floor` selects
+  `sand`, `vegetation` (aquatic plants), `mud`, `stones`, `mixed` (default) or
+  `random`. The mixed floor is zoned by depth and bed slope — sand on gentle beds
+  down to about 2 m, plants in the sunlit 1.5–6 m band, mud deeper and flat,
+  stones on steep beds and in the surf — and broken into seeded patches
+  (`--floor-seed N`, `--floor-patch-size 5..500` m). `random` derives the kind
+  weights and patch size from a seed (random unless `--floor-seed` is given) and
+  prints it in `WATER_FLOOR_JSON`, so a floor you like can be reproduced. Detail
+  adds sand grain and ripple marks, plant clumps, mud mottling and pebbles with
+  dark gaps.
+- A long swell also lifts the coarse surface mesh itself, dying out toward the
+  shore so water never climbs onto land. Water belongs to the terrain layer
+  (hidden with T) and does not affect fire propagation or replay timing.
+
+```bash
+./build-gl/terraflux-terrain-viewer --wave-height 1.2 --wave-direction 300
+./build-gl/terraflux-terrain-viewer --water-floor random --water-clarity 8
+./build-gl/terraflux-terrain-viewer --water-floor stones --floor-seed 7 --floor-patch-size 20
+./build-gl/terraflux-terrain-viewer --request terrain-request.json \
+  --response terrain-response.json --hide-fire --water-level 80 --wave-length 40
+LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a -s "-screen 0 1280x800x24" \
+  ./build-gl/terraflux-terrain-viewer --water-test --smoke-test
+```
+
+Smoke, profile, benchmark and residency-report runs print `WATER_JSON` (level,
+triangles, submerged vertices, maximum depth and wave settings). The style lives
+in `terraflux/graphics/water_shading.hpp` as a validated 128-byte `WaterStyle`
+uniform block with CPU references for the shallow-water phase-speed ratio,
+refraction toward the shore, shoaling/breaking limits and the flat-water color
+and opacity. `--water-test` renders flat water and compares the blend over the
+ground at every visible surface vertex deeper than 0.3 m against that reference,
+then checks that waves change the surface and produce foam at time zero, animate
+0.7 s later, never touch land, and that flat water restores the reference
+exactly. It requires demo or replay smoke mode (replay with `--water-level`),
+moving waves, both layers visible and no assets or other scripted test; tiled,
+resident and offscreen paths are allowed. Smoke runs freeze the water clock so
+frame comparisons stay deterministic. See
+[the backend contract](docs/GRAPHICS_BACKENDS.md#water-surface).
+
 ### Viewer controls
 
 | Key | Action |
@@ -98,6 +380,8 @@ approximated as nonmetallic. Pure OBJ scenes retain the original diffuse path. L
 | Space | Pause/resume wildfire replay |
 | Home | Reset wildfire replay to its first frame and pause |
 | Comma / period | Previous / next wildfire frame, pausing replay |
+| V / B / G | Cycle vegetation density / tree meshes / grass distance |
+| W / A / S / D | Pan the camera target over the ground (A/D only without a scene file) |
 | Escape | Exit |
 
 P/N are edge-triggered: holding a key does not repeat it. Paused wall time
@@ -710,7 +994,7 @@ averages of the phase percentages. The PS4 backend is unimplemented.
 | 1 | Core extraction | 100% |
 | 2 | Rendering abstraction | ~89% (previously ~88%) |
 | 3 | OpenGL backend | ~91% (previously ~90%) |
-| 4 | 3D terrain renderer | ~90% ↑ (previously ~89%) |
+| 4 | 3D terrain renderer | ~93% ↑ (previously ~92%) |
 | 5 | Simulation visualization | ~80% (previously ~75%) |
 | 6 | Shader system | ~84% (previously ~82%) |
 | 7 | Scene and asset system | ~90% (previously 86%) |
@@ -725,7 +1009,7 @@ resolution, serializable Motion,
 shared mixed-format scene assets, isolated
 GPU asset lifetimes, unload/reload with failure recovery, and independent
 scene pause/resume and single-step controls. The mixed-format example includes
-OBJ, glTF, GLB, transparent materials and repeated model references. Native testing comprises 16
+OBJ, glTF, GLB, transparent materials and repeated model references. Native testing comprises 19
 CTest suites and 71 simulation parity fixtures; CI also exercises the viewer
 under Mesa/Xvfb. See the branch's CI results for validation of each commit.
 
@@ -741,7 +1025,7 @@ validated pass handles/extents, shared byte-budget admission, telemetry and scop
 cleanup. OpenGL creation checks framebuffer completeness and rolls back partial
 allocations. A dedicated Mesa test covers clear/load, depth occlusion, geometry,
 target switching, budget rejection and repeated cleanup. Native CTest now comprises
-16 display-independent suites; the extra GL test runs explicitly under Xvfb.
+19 display-independent suites; the extra GL test runs explicitly under Xvfb.
 Offscreen color now exposes a borrowed sampled texture view, with no duplicate
 byte charge and invalidation when its target is destroyed. The reusable
 `FullscreenComposite` helper copies it into a separate offscreen/window pass
@@ -786,9 +1070,43 @@ now supports opt-in CPU simplification; geometric error measurement is next.
 Progress this task: ↑ opt-in CPU level-1 geometry now reduces each eligible 4x4
 patch from 32 to 16 triangles, preserving boundaries and source attributes.
 Fallback patches remain full resolution; combined budgets include both variants.
-Terrain renderer planning estimate rises from ~89% to ~90%. Overall estimates
-remain ~93% desktop / ~64% full roadmap; weighting remains undocumented.
-Geometric error measurement and viewer integration are next. Native suites remain 16.
+Geometric error measurement and viewer integration are next.
+Progress this task: ↑ terrain generation now records the elevation range and
+produces diagonal-independent smooth normals with slope/summary helpers; the
+terrain and wildfire shaders share a validated `TerrainStyle` block that maps a
+hypsometric ramp onto the surface's own range, blends steep ground toward rock,
+applies a directional hillshade and optionally draws anti-aliased contours. The
+viewer frames the terrain from its bounding sphere, logs `TERRAIN_MESH_JSON`,
+writes `--screenshot` frames and runs the Mesa `--terrain-shading-test`, which
+compares rendered pixels against the CPU color reference.
+Progress this task: ↑ terrain vertices now carry fuel load, fuel moisture and
+curvature; the shared ground shaders classify dry/semi-dry/wet grass, forest,
+rock, scree on exposed ridges, snow and ice from height, slope, convexity and
+fuel data, add procedural detail (tufts, crowns, strata, cracks, drifts,
+sparkle, bump) that fades with distance, and draw automatic contours. The
+CPU material reference is verified per class by the Mesa shading test.
+Progress this task: ↑ a clipped still-water surface now carries bed depth and
+gradient per vertex; the Water shader blends depth-dependent color and opacity
+over the ground, reflects a procedural sky and the sun by Fresnel weight, and
+animates configurable waves (height, length, speed, direction) that shoal,
+refract toward the shore and break into foam, with swash lines on beaches and
+splashes on rocky shores. Submerged ground renders as a configurable lake/sea
+floor (sand, aquatic vegetation, mud, stones, depth/slope-zoned mixed or a
+seeded random floor) seen through the shallows. The CPU water and floor
+references are verified by the Mesa water and shading tests, and native
+testing grows to 17 suites. Rock now renders as flat-shaded, ridged, strata-
+layered crags with configurable vertical relief, and the demo escarpment became
+a craggy two-band cliff. Rendering now uses a C1-refined 5 m lattice over the
+untouched 30 m simulation grid (`--render-cell`, budget-bounded), so relief,
+crags, shorelines and contours are resolved far below the simulation cell.
+Trees and grass are now instanced 3D meshes (procedural conifer/broadleaf/shrub
+or any OBJ), placed from the fuel data with per-plant size and color variation,
+wind sway and run-time switchable meshes and densities. Fire is now animated:
+fuel-gated flames and smoke rise from burning cells, trees carry crown fires and
+char, and rock, water, snow and bare soil never show fire; native testing grows
+to 19 suites. Terrain renderer planning
+estimate rises from ~92% to ~93%. Overall estimates remain ~93% desktop / ~64%
+full roadmap; weighting remains undocumented.
 See the [prioritized gaps and acceptance criteria](docs/ENGINE_BASELINE.md#remaining-renderer-work-in-priority-order). GPU meshes are created on demand; CPU model data
 and decoded image recipes remain eager and retained for reattachment. Asynchronous streaming, skeletal animation
 and full glTF/IBL support remain future work.

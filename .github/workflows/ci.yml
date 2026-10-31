@@ -113,6 +113,164 @@ jobs:
           python3 examples/generate_wildfire_scenario.py > /tmp/terraflux-request.json
           ./build-gl/terraflux-compute-runner < /tmp/terraflux-request.json > /tmp/terraflux-response.json
 
+      - name: Verify terrain height/slope shading against the CPU reference
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --terrain-shading-test --smoke-test \
+            | tee /tmp/terraflux-terrain-shading.log
+          grep -q "Terrain shading passed" /tmp/terraflux-terrain-shading.log
+          grep -q "TERRAIN_MESH_JSON" /tmp/terraflux-terrain-shading.log
+          grep -q "TERRAIN_MATERIAL_JSON" /tmp/terraflux-terrain-shading.log
+          grep -q "TERRAIN_DETAIL_JSON" /tmp/terraflux-terrain-shading.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --terrain-shading-test --smoke-test \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --terrain-shading-test --smoke-test \
+            --offscreen --terrain-retain-frames 2 --terrain-tile-quads 8 \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --terrain-contours 25 \
+            --terrain-detail 0.5 --snow-line 0.6 \
+            --screenshot /tmp/terraflux-contours.ppm | tee /tmp/terraflux-contours.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --terrain-contours 0 --terrain-detail 0 --snow-line 1
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --rock-relief 0
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --terrain-shading-test --smoke-test --render-cell 0 \
+            | tee /tmp/terraflux-coarse.log
+          grep -q '"refinement":1' /tmp/terraflux-coarse.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --terrain-shading-test --smoke-test \
+            --render-cell 10 --max-render-vertices 50000 | tee /tmp/terraflux-budget-refine.log
+          grep -q '"refinement":2' /tmp/terraflux-budget-refine.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --water-test --smoke-test --render-cell 2.5
+          if ./build-gl/terraflux-terrain-viewer --max-render-vertices 10 > /tmp/terraflux-bad-budget.log 2>&1; then
+            echo "tiny render vertex budget was accepted" && exit 1
+          fi
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --terrain-tile-quads 8 --terrain-tile-test --smoke-test --rock-relief 12
+          if ./build-gl/terraflux-terrain-viewer --rock-relief 30 > /tmp/terraflux-bad-relief.log 2>&1; then
+            echo "rock relief above twenty meters was accepted" && exit 1
+          fi
+          grep -q "rock-relief" /tmp/terraflux-bad-relief.log
+          if ./build-gl/terraflux-terrain-viewer --terrain-detail 2 > /tmp/terraflux-bad-detail.log 2>&1; then
+            echo "detail strength above one was accepted" && exit 1
+          fi
+          grep -q "terrain-detail" /tmp/terraflux-bad-detail.log
+          grep -q "Screenshot written" /tmp/terraflux-contours.log
+          head -c 2 /tmp/terraflux-contours.ppm | grep -q "P6"
+          if ./build-gl/terraflux-terrain-viewer --terrain-contours -1 > /tmp/terraflux-bad-contours.log 2>&1; then
+            echo "negative contour interval was accepted" && exit 1
+          fi
+          grep -q "terrain-contours" /tmp/terraflux-bad-contours.log
+
+      - name: Verify animated fire effects respect fuel and fire breaks
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --fire-test --smoke-test \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json | tee /tmp/terraflux-fire.log
+          grep -q "Fire effects passed" /tmp/terraflux-fire.log
+          grep -q "FIRE_EFFECTS_JSON" /tmp/terraflux-fire.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --fire-test --smoke-test \
+            --offscreen --terrain-retain-frames 2 --terrain-tile-quads 8 \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --fire-test --smoke-test --vegetation low --tree-style conifer \
+            --flame-scale 1.5 --smoke-scale 0.5 \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json
+          # Flooding the burning area removes its flames: water is a fire break for the visual too.
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --water-level 57 \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json | tee /tmp/terraflux-fire-water.log
+          grep -q '"fuelless_samples":[1-9]' /tmp/terraflux-fire-water.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --hide-fire \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json | tee /tmp/terraflux-fire-hidden.log
+          if grep -q "FIRE_DRAW_JSON" /tmp/terraflux-fire-hidden.log; then
+            echo "fire effects drew while the fire layer was hidden" && exit 1
+          fi
+          if ./build-gl/terraflux-terrain-viewer --flame-scale 9 > /tmp/terraflux-bad-flame.log 2>&1; then
+            echo "flame scale above three was accepted" && exit 1
+          fi
+
+      - name: Verify 3D vegetation placement, meshes, variation and run-time swaps
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --vegetation-test --smoke-test | tee /tmp/terraflux-vegetation.log
+          grep -q "Vegetation passed" /tmp/terraflux-vegetation.log
+          grep -q "VEGETATION_JSON" /tmp/terraflux-vegetation.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --vegetation-test --smoke-test \
+            --offscreen --terrain-retain-frames 2 --terrain-tile-quads 8
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --vegetation-test --smoke-test \
+            --vegetation high --tree-style conifer --vegetation-seed 5
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --vegetation-test --smoke-test \
+            --tree-style custom --tree-obj examples/assets/pyramid_materials.obj
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --vegetation-test --smoke-test \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --vegetation off | tee /tmp/terraflux-no-vegetation.log
+          if grep -q "VEGETATION_DRAW_JSON" /tmp/terraflux-no-vegetation.log; then
+            echo "vegetation drew while disabled" && exit 1
+          fi
+          if ./build-gl/terraflux-terrain-viewer --tree-style custom > /tmp/terraflux-bad-tree.log 2>&1; then
+            echo "custom tree style without a model was accepted" && exit 1
+          fi
+          if ./build-gl/terraflux-terrain-viewer --tree-spacing 1 > /tmp/terraflux-bad-spacing.log 2>&1; then
+            echo "tree spacing below four meters was accepted" && exit 1
+          fi
+
+      - name: Verify water depth, reflection, waves and foam against the CPU reference
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --water-test --smoke-test | tee /tmp/terraflux-water.log
+          grep -q "Water passed" /tmp/terraflux-water.log
+          grep -q "WATER_JSON" /tmp/terraflux-water.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --water-test --smoke-test \
+            --offscreen --terrain-retain-frames 2 --terrain-tile-quads 8
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --water-test --smoke-test \
+            --water-level 57 --wave-height 1.5 --wave-direction 300 --wave-length 30 --wave-speed 4 \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --wave-height 0 --wave-speed 0 \
+            --screenshot /tmp/terraflux-still-water.ppm | grep -q "Screenshot written"
+          for floor in sand vegetation mud stones random; do
+            xvfb-run -a -s "-screen 0 1280x800x24" \
+              ./build-gl/terraflux-terrain-viewer --terrain-shading-test --smoke-test \
+              --water-floor "$floor" --floor-seed 7 | tee /tmp/terraflux-floor.log
+            grep -q "WATER_FLOOR_JSON" /tmp/terraflux-floor.log
+            grep -q "Terrain shading passed" /tmp/terraflux-floor.log
+          done
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --water-floor mixed --floor-patch-size 20 --water-clarity 10
+          if ./build-gl/terraflux-terrain-viewer --water-floor gravel > /tmp/terraflux-bad-floor.log 2>&1; then
+            echo "unknown water floor was accepted" && exit 1
+          fi
+          if ./build-gl/terraflux-terrain-viewer --wave-height 9 > /tmp/terraflux-bad-wave.log 2>&1; then
+            echo "wave height above five meters was accepted" && exit 1
+          fi
+          grep -q "wave-height" /tmp/terraflux-bad-wave.log
+          if ./build-gl/terraflux-terrain-viewer --water-test --smoke-test --wave-speed 0 > /tmp/terraflux-frozen-water.log 2>&1; then
+            echo "frozen waves were accepted for the water test" && exit 1
+          fi
+
       - name: Verify tiled terrain pixels and frustum submission
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
@@ -230,7 +388,7 @@ jobs:
           grep -q '"fallback":true' /tmp/terraflux-offscreen-resize.log
           xvfb-run -a -s "-screen 0 1280x800x24" \
             ./build-gl/terraflux-terrain-viewer --offscreen --smoke-test \
-            --resource-budget-mib 4 | tee /tmp/terraflux-offscreen-fallback.log
+            --resource-budget-mib 16 --vegetation off | tee /tmp/terraflux-offscreen-fallback.log
           grep -q '"width":0,"height":0' /tmp/terraflux-offscreen-fallback.log
           xvfb-run -a -s "-screen 0 1280x800x24" \
             ./build-gl/terraflux-terrain-viewer --offscreen --smoke-test --asset-lifecycle-test \
