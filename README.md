@@ -10,7 +10,7 @@ twin applications.
 ## Verified engine checkpoint
 
 The [desktop baseline checkpoint](docs/ENGINE_BASELINE.md) pins implementation
-revision `c64cb0470c28b2eb73dc81e0b01fedc8386676b8`, records its validation,
+revision `9196da2632abb408d93d7842453d9dc1a8fc48df`, records its validation,
 provides an isolated-worktree reproduction guide and lists remaining renderer
 gaps in priority order. It is a development baseline, not a completed roadmap
 or physical-GPU certification.
@@ -697,7 +697,9 @@ and must be kept in sync.
 
 Planning snapshot: 30 October 2026, desktop viewer feature branch.
 Percentages are rough engineering estimates, not measured coverage, approved
-hours or release-readiness guarantees. The PS4 backend is unimplemented.
+hours or release-readiness guarantees. Overall figures preserve the existing
+planning estimates; their weighting is undocumented and they are not arithmetic
+averages of the phase percentages. The PS4 backend is unimplemented.
 
 | Desktop engine — Phases 1–9 | Full roadmap including PS4 |
 | --- | --- |
@@ -708,7 +710,7 @@ hours or release-readiness guarantees. The PS4 backend is unimplemented.
 | 1 | Core extraction | 100% |
 | 2 | Rendering abstraction | ~89% (previously ~88%) |
 | 3 | OpenGL backend | ~91% (previously ~90%) |
-| 4 | 3D terrain renderer | ~89% (previously ~88%) |
+| 4 | 3D terrain renderer | ~90% ↑ (previously ~89%) |
 | 5 | Simulation visualization | ~80% (previously ~75%) |
 | 6 | Shader system | ~84% (previously ~82%) |
 | 7 | Scene and asset system | ~90% (previously 86%) |
@@ -723,7 +725,7 @@ resolution, serializable Motion,
 shared mixed-format scene assets, isolated
 GPU asset lifetimes, unload/reload with failure recovery, and independent
 scene pause/resume and single-step controls. The mixed-format example includes
-OBJ, glTF, GLB, transparent materials and repeated model references. Native testing comprises 15
+OBJ, glTF, GLB, transparent materials and repeated model references. Native testing comprises 16
 CTest suites and 71 simulation parity fixtures; CI also exercises the viewer
 under Mesa/Xvfb. See the branch's CI results for validation of each commit.
 
@@ -738,8 +740,8 @@ Owned offscreen targets now provide RGBA8 color and Depth32Float depth attachmen
 validated pass handles/extents, shared byte-budget admission, telemetry and scope
 cleanup. OpenGL creation checks framebuffer completeness and rolls back partial
 allocations. A dedicated Mesa test covers clear/load, depth occlusion, geometry,
-target switching, budget rejection and repeated cleanup. Native CTest remains
-15 display-independent suites; the extra GL test runs explicitly under Xvfb.
+target switching, budget rejection and repeated cleanup. Native CTest now comprises
+16 display-independent suites; the extra GL test runs explicitly under Xvfb.
 Offscreen color now exposes a borrowed sampled texture view, with no duplicate
 byte charge and invalidation when its target is destroyed. The reusable
 `FullscreenComposite` helper copies it into a separate offscreen/window pass
@@ -774,7 +776,19 @@ Replay now uses an exact fixed-tick controller with 0.25x/0.5x/1x/2x/4x rates,
 pause/resume, bounded stepping and endpoint restart. A seven-frame Mesa check
 verifies displayed fire data, backward/reset pixel restoration and independent
 engine timing. Native replay tests now cover nine groups.
-Next planned implementation: refresh the baseline checkpoint and remaining-work list.
+Baseline checkpoint and remaining-work list refreshed against successful CI.
+The [physical-GPU validation checklist](docs/GPU_VALIDATION.md) is ready, with
+logged smoke checks, interactive review and repeated benchmark commands.
+Hardware execution is pending. The [terrain LOD design](docs/TERRAIN_LOD.md)
+is complete: boundary-preserving 4x4 patch simplification, hole fallback,
+error measurement and transactional integration criteria. LOD implementation
+now supports opt-in CPU simplification; geometric error measurement is next.
+Progress this task: ↑ opt-in CPU level-1 geometry now reduces each eligible 4x4
+patch from 32 to 16 triangles, preserving boundaries and source attributes.
+Fallback patches remain full resolution; combined budgets include both variants.
+Terrain renderer planning estimate rises from ~89% to ~90%. Overall estimates
+remain ~93% desktop / ~64% full roadmap; weighting remains undocumented.
+Geometric error measurement and viewer integration are next. Native suites remain 16.
 See the [prioritized gaps and acceptance criteria](docs/ENGINE_BASELINE.md#remaining-renderer-work-in-priority-order). GPU meshes are created on demand; CPU model data
 and decoded image recipes remain eager and retained for reattachment. Asynchronous streaming, skeletal animation
 and full glTF/IBL support remain future work.
