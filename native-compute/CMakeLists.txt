@@ -19,6 +19,7 @@ add_library(terraflux_compute STATIC
   src/terrain_mesh.cpp
   src/terrain_tiles.cpp
   src/terrain_lod.cpp
+  src/terrain_water.cpp
 )
 find_package(PNG REQUIRED)
 find_package(JPEG REQUIRED)
@@ -34,6 +35,10 @@ add_library(terraflux_graphics STATIC
   src/graphics/composite.cpp
   src/graphics/render_device.cpp
   src/graphics/terrain_upload.cpp
+  src/graphics/terrain_shading.cpp
+  src/graphics/water_shading.cpp
+  src/graphics/vegetation.cpp
+  src/graphics/fire_effects.cpp
   src/graphics/terrain_tiles.cpp
   src/graphics/mesh_upload.cpp
   src/graphics/visibility.cpp
@@ -99,6 +104,19 @@ if(BUILD_TESTING)
 
   target_link_libraries(terraflux-terrain-mesh-tests PRIVATE terraflux_compute)
   add_test(NAME terraflux-terrain-mesh-tests COMMAND terraflux-terrain-mesh-tests)
+
+  add_executable(terraflux-vegetation-tests tests/vegetation_tests.cpp)
+  target_link_libraries(terraflux-vegetation-tests PRIVATE terraflux_graphics)
+  add_test(NAME terraflux-vegetation-tests COMMAND terraflux-vegetation-tests
+      "${CMAKE_SOURCE_DIR}/../examples/assets/pyramid_materials.obj")
+
+  add_executable(terraflux-fire-effects-tests tests/fire_effects_tests.cpp)
+  target_link_libraries(terraflux-fire-effects-tests PRIVATE terraflux_graphics)
+  add_test(NAME terraflux-fire-effects-tests COMMAND terraflux-fire-effects-tests)
+
+  add_executable(terraflux-water-tests tests/water_tests.cpp)
+  target_link_libraries(terraflux-water-tests PRIVATE terraflux_graphics)
+  add_test(NAME terraflux-water-tests COMMAND terraflux-water-tests)
 
   add_executable(terraflux-graphics-tests tests/graphics_tests.cpp)
   target_link_libraries(terraflux-graphics-tests PRIVATE terraflux_graphics)

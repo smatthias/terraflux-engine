@@ -14,6 +14,7 @@ struct TerrainGpuVertex {
   float position[3];
   float normal[3];
   float fire_state = 0.0f; // 0 unburned, 0.5 burned, 1 active
+  float surface[3] = {0.0f, 0.0f, 0.0f}; // fuel_load, fuel_moisture, curvature (see TerrainVertex)
 };
 
 struct TerrainUpload {
@@ -21,6 +22,9 @@ struct TerrainUpload {
   std::vector<std::uint32_t> indices;
 };
 
+// Terrain and wildfire layouts both declare the fragment-stage "TerrainStyle"
+// uniform block (see terrain_shading.hpp); draws must bind it alongside Camera.
+ShaderBinding terrain_style_binding();
 ShaderLayout terrain_shader_layout();
 ShaderLayout wildfire_shader_layout();
 ShaderLayout object_shader_layout();

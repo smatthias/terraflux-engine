@@ -1,5 +1,9 @@
 #include <terraflux/graphics/render_device.hpp>
 #include <terraflux/graphics/terrain_upload.hpp>
+#include <terraflux/graphics/terrain_shading.hpp>
+#include <terraflux/graphics/water_shading.hpp>
+#include <terraflux/graphics/vegetation.hpp>
+#include <terraflux/graphics/fire_effects.hpp>
 #include <terraflux/graphics/mesh_upload.hpp>
 
 #include <algorithm>
@@ -292,6 +296,9 @@ ShaderLayout shader_program_layout(ShaderProgramId program) {
     case ShaderProgramId::InstancedTexturedObject:return instanced_textured_object_shader_layout();
     case ShaderProgramId::PbrObject:return pbr_textured_object_shader_layout(false);
     case ShaderProgramId::PbrInstanced:return pbr_textured_object_shader_layout(true);
+    case ShaderProgramId::Water:return water_shader_layout();
+    case ShaderProgramId::Vegetation:return vegetation_shader_layout();
+    case ShaderProgramId::Fire:return fire_shader_layout();
     default:throw std::invalid_argument("shader program has no built-in layout");
   }
 }
@@ -300,8 +307,12 @@ void validate_pipeline_desc(const PipelineDesc& desc,bool allow_contract_only) {
   if(desc.program==ShaderProgramId::Composite &&
      (desc.depth_test || desc.depth_write || desc.alpha_blend))
     throw std::invalid_argument("composite pipeline requires disabled depth and blend state");
-  if(desc.alpha_blend && (!desc.depth_test || desc.depth_write || desc.program!=ShaderProgramId::PbrObject))
-    throw std::invalid_argument("transparent pipeline requires noninstanced PBR, depth testing and no depth writes");
+  if(desc.alpha_blend && (!desc.depth_test || desc.depth_write ||
+     (desc.program!=ShaderProgramId::PbrObject && desc.program!=ShaderProgramId::Water && desc.program!=ShaderProgramId::Fire)))
+    throw std::invalid_argument("transparent pipeline requires noninstanced PBR, water or fire, depth testing and no depth writes");
+  if((desc.program==ShaderProgramId::Water || desc.program==ShaderProgramId::Fire) &&
+     (!desc.alpha_blend || !desc.depth_test || desc.depth_write))
+    throw std::invalid_argument("water and fire pipelines require alpha blending, depth testing and no depth writes");
   if(desc.program==ShaderProgramId::ContractOnly) {
     if(!allow_contract_only)throw std::invalid_argument("contract-only shader program cannot render on a GPU");
     return;
@@ -376,6 +387,18 @@ void ValidatingRenderDevice::draw_indexed(const DrawIndexed& command) {
     if(bound==command.uniform_buffers.end() || buffers_.at(bound->buffer.id).desc.size_bytes<16)
       throw std::invalid_argument("LayerVisibility requires a bound 16-byte uniform buffer");
   }
+  // GPU backends require every declared block; here a bound style block must
+  // at least hold its std140 vec4s so a short buffer never reaches a driver.
+  for(const auto& required:layout.bindings)if(required.kind==ShaderResourceKind::UniformBuffer &&
+      (required.name=="TerrainStyle" || required.name=="WaterStyle" || required.name=="VegetationStyle" || required.name=="FireStyle")) {
+    const auto bound=std::find_if(command.uniform_buffers.begin(),command.uniform_buffers.end(),
+        [&](const auto& value){return value.slot==required.slot;});
+    const auto minimum=required.name=="TerrainStyle"?kTerrainStyleBytes:
+                       required.name=="WaterStyle"?kWaterStyleBytes:
+                       required.name=="VegetationStyle"?kVegetationStyleBytes:kFireStyleBytes;
+    if(bound!=command.uniform_buffers.end() && buffers_.at(bound->buffer.id).desc.size_bytes<minimum)
+      throw std::invalid_argument(required.name+" requires a "+std::to_string(minimum)+"-byte uniform buffer");
+  }
 
   std::unordered_set<std::uint32_t> storage_slots;
   for (const auto& bound : command.storage_buffers) {
@@ -401,7 +424,9 @@ void ValidatingRenderDevice::draw_indexed(const DrawIndexed& command) {
     if(item==command.storage_buffers.end())
       throw std::invalid_argument("missing instanced object storage");
     const auto& bytes=buffers_.at(item->buffer.id).bytes;
-    constexpr std::size_t object_stride=144; // std430: mat4+mat4+vec4
+    // std430 record per instance: mat4+mat4+vec4 for objects, three vec4s for vegetation.
+    const std::size_t object_stride=pipeline->second.program==ShaderProgramId::Vegetation?kVegetationInstanceBytes:
+                                    pipeline->second.program==ShaderProgramId::Fire?kFireInstanceBytes:144;
     if(command.instance_count>bytes.size()/object_stride)
       throw std::out_of_range("instance count exceeds storage buffer capacity");
   }

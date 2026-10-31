@@ -22,6 +22,8 @@ std::vector<TerrainTile> tile_terrain_mesh(const TerrainMesh& source,TerrainTile
   if(!options.quads_per_side || options.quads_per_side>256)
     throw std::invalid_argument("terrain tile size must be 1..256 quads per side");
   if(!std::isfinite(source.cell_size_meters) || source.cell_size_meters<=0 ||
+     !std::isfinite(source.min_elevation_meters) || !std::isfinite(source.max_elevation_meters) ||
+     source.min_elevation_meters>source.max_elevation_meters ||
      source.vertices.size()>std::numeric_limits<std::uint32_t>::max() || source.indices.size()%3)
     throw std::invalid_argument("invalid source terrain mesh metadata or triangle count");
   if(source.indices.size()>options.max_total_indices)
@@ -67,6 +69,12 @@ std::vector<TerrainTile> tile_terrain_mesh(const TerrainMesh& source,TerrainTile
       tile.x=x;tile.y=y;
       tile.mesh.origin_grid_x=source.origin_grid_x;tile.mesh.origin_grid_y=source.origin_grid_y;
       tile.mesh.cell_size_meters=source.cell_size_meters;
+      // Shading ranges are a property of the whole surface: every tile copies
+      // the source range so height colors never shift across tile seams.
+      tile.mesh.min_elevation_meters=source.min_elevation_meters;
+      tile.mesh.max_elevation_meters=source.max_elevation_meters;
+      tile.mesh.refinement=source.refinement;
+      tile.mesh.simulation_cell_size_meters=source.simulation_cell_size_meters;
     }
     auto& builder=it->second;
     auto& tile=builder.tile;

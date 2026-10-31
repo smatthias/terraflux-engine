@@ -1,6 +1,7 @@
 #include <terraflux/terrain_tiles.hpp>
 #include <terraflux/graphics/terrain_upload.hpp>
 #include <terraflux/graphics/terrain_tiles.hpp>
+#include <terraflux/graphics/terrain_shading.hpp>
 #include <terraflux/graphics/render_pass.hpp>
 #include <algorithm>
 #include <array>
@@ -25,9 +26,12 @@ compute::GridCell cell(int x,int y,std::optional<double> height) {
   compute::GridCell result{};result.x=x;result.y=y;result.elevation_meters=height;
   result.fuel_load=1;result.fuel_moisture=0.15;return result;
 }
+// One-quad tile: four packed vertices plus six uint32 indices.
+constexpr std::uint64_t kTileBytes=4*sizeof(graphics::TerrainGpuVertex)+6*sizeof(std::uint32_t);
 bool equal(math::Vec3 a,math::Vec3 b) {return a.x==b.x && a.y==b.y && a.z==b.z;}
 bool equal(const TerrainVertex& a,const TerrainVertex& b) {
-  return equal(a.position,b.position) && equal(a.normal,b.normal) && a.grid_x==b.grid_x && a.grid_y==b.grid_y;
+  return equal(a.position,b.position) && equal(a.normal,b.normal) && a.grid_x==b.grid_x && a.grid_y==b.grid_y &&
+         a.fuel_load==b.fuel_load && a.fuel_moisture==b.fuel_moisture && a.curvature==b.curvature;
 }
 std::vector<compute::GridCell> curved_cells() {
   std::vector<compute::GridCell> cells;
@@ -49,6 +53,11 @@ void verify(const TerrainMesh& source,const std::vector<TerrainTile>& tiles,std:
             "per-tile topology bounded by quad dimensions");
     require(tile.mesh.origin_grid_x==source.origin_grid_x && tile.mesh.origin_grid_y==source.origin_grid_y &&
             tile.mesh.cell_size_meters==source.cell_size_meters,"tiles retain global local-origin metadata");
+    require(tile.mesh.min_elevation_meters==source.min_elevation_meters &&
+            tile.mesh.max_elevation_meters==source.max_elevation_meters &&
+            tile.mesh.refinement==source.refinement &&
+            tile.mesh.simulation_cell_size_meters==source.simulation_cell_size_meters,
+            "tiles copy the global elevation range and render-lattice metadata");
     require(tile.source_vertex_indices.size()==tile.mesh.vertices.size(),"source map parallels local vertices");
     auto lo=tile.mesh.vertices.front().position,hi=lo;
     const auto packed=graphics::prepare_terrain_upload(tile.mesh);
@@ -64,8 +73,9 @@ void verify(const TerrainMesh& source,const std::vector<TerrainTile>& tiles,std:
       hi={std::max(hi.x,v.position.x),std::max(hi.y,v.position.y),std::max(hi.z,v.position.z)};
       for(std::size_t axis=0;axis<3;++axis)
         require(packed.vertices[i].position[axis]==packed_source.vertices[index].position[axis] &&
-                packed.vertices[i].normal[axis]==packed_source.vertices[index].normal[axis],
-                "GPU packed seams exactly match monolithic positions and normals");
+                packed.vertices[i].normal[axis]==packed_source.vertices[index].normal[axis] &&
+                packed.vertices[i].surface[axis]==packed_source.vertices[index].surface[axis],
+                "GPU packed seams exactly match monolithic positions, normals and surface attributes");
     }
     require(equal(lo,tile.bounds_min) && equal(hi,tile.bounds_max),"AABB exactly bounds referenced geometry");
     for(std::size_t i=0;i<tile.mesh.indices.size();i+=3) {
@@ -96,6 +106,11 @@ void dense_coverage_and_seams() {
           "render partition leaves simulation cell data untouched");
   const auto per_quad=tile_terrain_mesh(source,{1});
   require(per_quad.size()==30,"one-quad tile case");verify(source,per_quad,1);
+  // A render-refined mesh is a finer lattice with the same origin: tiles partition it unchanged.
+  const auto refined=refine_terrain_mesh(source,3);
+  const auto fine_tiles=tile_terrain_mesh(refined,{6});
+  require(fine_tiles.size()==9 && fine_tiles.front().mesh.refinement==3,"refined meshes tile on their own lattice");
+  verify(refined,fine_tiles,6);
 }
 void stable_under_permutation() {
   auto cells=curved_cells();const auto a=build_terrain_mesh(compute::Grid(cells),7.5);
@@ -149,6 +164,8 @@ void malformed_inputs() {
   bad=source;bad.vertices[0].position.y=std::numeric_limits<double>::infinity();rejects([&]{tile_terrain_mesh(bad);});
   bad=source;bad.vertices[0].normal.z=std::numeric_limits<double>::quiet_NaN();rejects([&]{tile_terrain_mesh(bad);});
   bad=source;bad.cell_size_meters=0;rejects([&]{tile_terrain_mesh(bad);});
+  bad=source;bad.min_elevation_meters=bad.max_elevation_meters+1;rejects([&]{tile_terrain_mesh(bad);});
+  bad=source;bad.max_elevation_meters=std::numeric_limits<double>::quiet_NaN();rejects([&]{tile_terrain_mesh(bad);});
 }
 void gpu_uploads_and_culling() {
   using namespace graphics;
@@ -173,7 +190,7 @@ void gpu_uploads_and_culling() {
   const auto buffer_count=device.live_buffer_count();
   {
     TerrainTileRenderer tiles(device,source,{1});
-    require(tiles.tile_count()==16 && tiles.geometry_bytes()==16*(4*28+6*4),"bounded tile uploads accounted exactly");
+    require(tiles.tile_count()==16 && tiles.geometry_bytes()==16*kTileBytes,"bounded tile uploads accounted exactly");
     rejects<std::logic_error>([&]{tiles.draw(pipeline,camera,{},frustum);});
     RenderPassScope pass(device,{{64,64}});
     const auto culled=tiles.draw(pipeline,camera,{},frustum);
@@ -181,9 +198,25 @@ void gpu_uploads_and_culling() {
             "frustum skips outside terrain tile draw submissions");
     const auto all=tiles.draw(pipeline,camera,{},frustum,false);
     require(all.visible==16 && !all.culled && all.draws==16 && all.triangles==32,"disabled culling submits complete surface");
+    RenderResourceOwner styles(device); // Released with the tiles, before the baseline check.
+    const auto style_packed=pack_terrain_style(terrain_style_for(source));
+    const auto style=styles.create_buffer({BufferUsage::Uniform,sizeof(style_packed)},std::as_bytes(std::span(style_packed)));
+    const auto styled=tiles.draw(pipeline,camera,{},frustum,true,{},style);
+    require(styled.draws==4,"tile draws bind the terrain style block");
+    const std::array<float,4> short_style{};
+    const auto truncated=styles.create_buffer({BufferUsage::Uniform,sizeof(short_style)},std::as_bytes(std::span(short_style)));
+    rejects([&]{tiles.draw(pipeline,camera,{},frustum,true,{},truncated);});
     const auto absent=Frustum::from_view_projection(math::Mat4::translation({100,100,100}));
     const auto none=tiles.draw(pipeline,camera,{},absent);
     require(none.culled==16 && !none.draws && !none.triangles,"fully hidden terrain emits no draws");
+    // Padding for shader displacement keeps tiles just outside the frustum drawable.
+    const auto shifted=Frustum::from_view_projection(math::Mat4::translation({-1.5,0,0}));
+    const auto tight=tiles.draw(pipeline,camera,{},shifted);
+    tiles.set_bounds_padding(2.0);
+    const auto padded=tiles.draw(pipeline,camera,{},shifted);
+    require(padded.visible>tight.visible && tiles.bounds_padding()==2.0,"bounds padding expands the visible set");
+    rejects([&]{tiles.set_bounds_padding(-1);});rejects([&]{tiles.set_bounds_padding(500);});
+    tiles.set_bounds_padding(0);
   }
   require(device.live_resource_bytes()==baseline && device.live_buffer_count()==buffer_count,
           "tile destruction restores shared resource baseline");
@@ -206,12 +239,12 @@ void selective_gpu_residency() {
   const auto frustum=Frustum::from_view_projection(math::Mat4::identity());
   {
     TerrainTileRenderer tiles(device,source,{1},false);
-    require(!tiles.resident_tile_count() && tiles.geometry_bytes()==16*136 && device.live_resource_bytes()==baseline,
+    require(!tiles.resident_tile_count() && tiles.geometry_bytes()==16*kTileBytes && device.live_resource_bytes()==baseline,
             "inactive construction retains CPU recipes without GPU admission");
     const std::array<std::size_t,2> initial{0,1};
     auto change=tiles.set_resident_tiles(initial);
     const auto shared_vertex=tiles.resident_vertex_buffer(1),old_vertex=tiles.resident_vertex_buffer(0);
-    require(change.admitted==2 && !change.evicted && tiles.resident_bytes()==272,"selective admission counts payload");
+    require(change.admitted==2 && !change.evicted && tiles.resident_bytes()==2*kTileBytes,"selective admission counts payload");
     const std::array<std::size_t,2> replacement{1,2};change=tiles.set_resident_tiles(replacement);
     require(change.admitted==1 && change.evicted==1 && tiles.resident_vertex_buffer(1)==shared_vertex &&
             !tiles.resident_vertex_buffer(0),"overlap preserves resident handles and retires hidden geometry");
@@ -290,9 +323,9 @@ void retention_hysteresis() {
     {
       RenderResourceOwner other(device);const std::array<std::byte,8> payload{};
       other.create_buffer({BufferUsage::Uniform,payload.size()},payload);
-      device.set_resource_byte_budget(3*136);change=tiles.synchronize_visible(absent);
-      require(change.retained==2 && change.trimmed==2 && tiles.resident_bytes()==2*136 &&
-              device.live_resource_bytes().total()==2*136+payload.size(),
+      device.set_resource_byte_budget(3*kTileBytes);change=tiles.synchronize_visible(absent);
+      require(change.retained==2 && change.trimmed==2 && tiles.resident_bytes()==2*kTileBytes &&
+              device.live_resource_bytes().total()==2*kTileBytes+payload.size(),
               "byte retention cap includes other owners' live resources");
       device.set_resource_byte_budget(std::numeric_limits<std::uint64_t>::max());
     }

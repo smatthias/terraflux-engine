@@ -1,0 +1,1 @@
+Extract into your TerraFlux repository root. Read docs/REAL_TERRAIN.md. README-link.patch is optional: git apply README-link.patch. No existing source files are overwritten by this package. A real georeferenced DEM is required and is not bundled.

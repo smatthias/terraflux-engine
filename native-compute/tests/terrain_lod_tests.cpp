@@ -20,7 +20,9 @@ bool equal(math::Vec3 a,math::Vec3 b) {return a.x==b.x && a.y==b.y && a.z==b.z;}
 void same_mesh(const TerrainMesh& a,const TerrainMesh& b) {
   require(a.indices==b.indices && a.vertices.size()==b.vertices.size(),"exact topology");
   require(a.origin_grid_x==b.origin_grid_x && a.origin_grid_y==b.origin_grid_y &&
-          a.cell_size_meters==b.cell_size_meters,"exact metadata");
+          a.cell_size_meters==b.cell_size_meters &&
+          a.min_elevation_meters==b.min_elevation_meters && a.max_elevation_meters==b.max_elevation_meters,
+          "exact metadata including the shading elevation range");
   for(std::size_t i=0;i<a.vertices.size();++i) {
     const auto& x=a.vertices[i];const auto& y=b.vertices[i];
     require(equal(x.position,y.position) && equal(x.normal,y.normal) &&
@@ -160,6 +162,9 @@ void simplification() {
   const auto result=build_terrain_lods(source,o);
   require(result.tiles.size()==1 && result.tiles[0].level1.has_value(),"coarse variant exists");
   const auto& fine=result.tiles[0].level0;const auto& coarse=*result.tiles[0].level1;
+  require(coarse.mesh.min_elevation_meters==fine.mesh.min_elevation_meters &&
+          coarse.mesh.max_elevation_meters==fine.mesh.max_elevation_meters &&
+          coarse.mesh.cell_size_meters==fine.mesh.cell_size_meters,"simplified level keeps shading metadata");
   require(fine.mesh.indices.size()==96 && coarse.mesh.indices.size()==48,"32 to 16 triangles");
   require(coarse.mesh.vertices.size()==17,"center plus full perimeter compacted");
   require(boundary(fine)==boundary(coarse),"exact boundary segments");

@@ -19,8 +19,11 @@ The current terrain upload layout is:
 - `POSITION`, location 0, three floats at byte offset 0
 - `NORMAL`, location 1, three floats at byte offset 12
 - `FIRE_STATE`, location 2, one float at byte offset 24 (legacy terrain input)
-- stride 28 bytes; wildfire rendering uses the same upload stride but reads fire state from an SSBO
+- `SURFACE`, location 3, three floats at byte offset 28: fuel load, fuel moisture and
+  vertex curvature (crests positive), copied from the simulation grid for material shading
+- stride 40 bytes; wildfire rendering uses the same upload stride but reads fire state from an SSBO
 - `Camera` uniform buffer at vertex-stage binding slot 0
+- `TerrainStyle` uniform buffer at fragment-stage binding slot 11 (terrain and wildfire ground shading)
 
 Buffers are initialized fully at creation; subranges can subsequently be updated,
 for example to animate the camera uniform buffer. Index draws currently use unsigned 32-bit indices and triangles.
@@ -150,21 +153,24 @@ auto pipeline = device.create_pipeline({
 
 | Identity | Contract |
 | --- | --- |
-| Terrain | Terrain vertex layout and camera uniform |
-| Wildfire | Terrain upload stride, camera, FireState storage and LayerVisibility uniform |
+| Terrain | Terrain vertex layout, camera and TerrainStyle uniforms |
+| Wildfire | Terrain upload stride, camera, FireState storage, LayerVisibility and TerrainStyle uniforms |
 | Object | Local untextured geometry and object uniform |
 | TexturedObject | Textured local geometry, object uniform and albedo sampler |
 | InstancedTexturedObject | Textured geometry with InstanceData storage |
 | PbrObject | Textured per-object PBR material/resources; optional sorted alpha blend |
 | PbrInstanced | Opaque instanced PBR material/resources |
 | Composite | Fullscreen POSITION/TEXCOORD geometry and SourceColor sampler; depth/blend disabled |
+| Water | POSITION/BED/BED_GRADIENT surface, camera and WaterStyle uniforms; alpha blend, depth test, no depth write |
+| Vegetation | POSITION/NORMAL/COLOR/FLEX/TINT_WEIGHT plant meshes, camera, VegetationStyle uniform, 48-byte InstanceData records and PlantFireState storage |
+| Fire | POSITION/TEXCOORD billboard quad, camera and FireStyle uniforms, 48-byte InstanceData records; alpha blend, depth test, no depth write |
 | ContractOnly | CPU validation of custom layouts; rejected by GPU creation |
 
 Unspecified and unknown IDs reject. A declared built-in must match its full
 layout (stride, attribute format/offset/location and binding name/kind/slot/
 stages), independent of declaration order. Transparent blending requires
-PbrObject with depth testing enabled and depth writes disabled; transparent
-instancing remains unsupported. Both devices use the shared descriptor validator
+PbrObject or Water with depth testing enabled and depth writes disabled (Water
+additionally requires blending); transparent instancing remains unsupported. Both devices use the shared descriptor validator
 before allocating a pipeline handle; OpenGL also rejects ContractOnly before
 compilation. Existing callers must supply an identity when constructing a
 PipelineDesc; there is deliberately no automatic layout-based fallback.
@@ -496,6 +502,358 @@ layer hiding. Separate smoke checks verify objects with both surface layers hidd
 The diagnostic requires visible active fire plus unaffected ground in view.
 
 Replay speed controls are described below. Physical GPU validation remains outstanding.
+
+## Render-resolution refinement
+
+`refine_terrain_mesh(source, n, max_vertices)` (compute library) turns a
+simulation-resolution `TerrainMesh` into a render-resolution one: each complete
+simulation quad (detected from `build_terrain_mesh`'s `a b c / b d c`
+triangulation) becomes n x n render quads on a shared lattice with spacing
+`cell / n`, same origin, `refinement = n` and `simulation_cell_size_meters`
+recorded. Heights come from a Ferguson patch (tensor-product cubic Hermite with
+zero twist) using per-vertex slopes from central differences over the measured
+neighbours (one-sided at borders and holes, zero when none), so the surface is
+C1 across quad edges, reproduces every measured vertex exactly and never
+extends over holes; isolated measured vertices are kept so the elevation range
+is preserved. Normals are the analytic partial derivatives of the patch;
+fuel, moisture and curvature interpolate bilinearly. n = 1 returns the source;
+0 or more than 64 subdivisions, vertices off the lattice, duplicate lattice
+vertices and a result beyond `max_vertices` (length_error, nothing published)
+are rejected. `refinement_for_cell_size(source, target, max_vertices)` picks the
+largest n whose spacing is at most the target and whose vertex estimate
+(`vertices + quads (n^2 + 2n)`) fits the budget. Tiles and LOD copy the new
+metadata; the tile partition, water mesh, residency and culling simply operate
+on the finer lattice (the viewer scales `--terrain-tile-quads` by the
+refinement, capped at 256). Consumers that need the simulation cell of a render
+vertex use `origin + (grid - origin) / refinement`; the viewer's shading test
+does so to find interior, unburned vertices. Fire lookups use plan positions
+and are unaffected. Mesa renders the demo's 363k-triangle refined mesh in about
+160 ms per frame; the 160 x 160 bundled DEM refines to 1.8M triangles within the
+default 4M-vertex budget.
+
+## Terrain materials: height, slope, vegetation, rock, snow and ice
+
+`terrain_shading.hpp` defines the backend-neutral `TerrainStyle`: the surface's
+elevation range, a contour interval, the slope angles at which soil starts to
+blend toward rock and is fully rock (defaults 28 and 48 degrees), the world-space
+direction toward the light (default south-west, 50 degrees up), an ambient
+floor, the relative snow line (`auto_snow_line`: 72 % of the range once the
+relief reaches 300 m, otherwise disabled), the vertex curvature that counts as a
+fully exposed crest (0.12 slope units per cell) and the procedural detail
+strength (0..1). `pack_terrain_style` validates every field and packs a 96-byte
+std140 block of six float4s: `elevationRange` (min, max, inverse range or zero
+when flat, contour interval), `slopeStyle` (rock start/full degrees, snow line,
+ridge curvature), `sunLight` (unit direction, ambient), `detail` (strength),
+`waterFloor` (submerged level, kind index or -1, patch size, seed offset) and
+`floorWeights` (normalized sand, vegetation, mud, stones). `detail.y` carries
+`rock_relief_meters` (0..20, default 5).
+`terrain_style_for(mesh, contours)` reads the range recorded by
+`build_terrain_mesh` (tiles and LOD variants copy it verbatim), chooses
+`auto_contour_interval` (a 1-2-2.5-5 step giving about ten levels) unless a
+non-negative interval is given, and the automatic snow line.
+
+Both ground shaders (Terrain and Wildfire) declare the uniform block
+`TerrainStyle` at slot 11 in both stages, read the `SURFACE` vertex attribute and
+share one GLSL material function, `terrainMaterial()`, whose CPU twin is
+`terrain_material()`:
+
+- **Height**: a five-stop hypsometric ramp (lowland green, meadow, dry grass,
+  upland brown, pale summit) across the *relative* range colors bare ground, so
+  a DEM without fuel data still reads as a relief map.
+- **Vegetation**: fuel load blends bare ground toward grass (from 0.04 to 0.25)
+  and grass toward forest canopy (from 0.45 to 0.80); canopy thins out above
+  62..78 % of the range and on slopes steeper than 30..42 degrees. Fuel moisture
+  selects **dry** (straw, below 0.10), **semi-dry** (olive, 0.20..0.26) and
+  **wet** (lush green, above 0.40) grass and canopy palettes with smooth blends
+  between the classes; `TerrainMaterial` reports the class weights and
+  `dominant_material()` names the winner.
+- **Rock and exposed ridges**: slope blends the surface toward rock between the
+  start and full angles; convex crests (`curvature / ridge_curvature` from 0.2 to
+  0.7, above 30..60 % of the range) become scree when gentle and rock when steep,
+  and rock is paler at height.
+- **Snow and ice**: above the snow line (±5 % blend) snow covers everything that
+  is not steeper than 42..60 degrees; wind-blown crests lose 12 % of their
+  effective height. Flat ground (below 6..14 degrees) in concave basins or on
+  summit caps above 93 % turns to ice.
+- **Lake/sea floor**: when `submerged_level_meters` is set, ground below it
+  blends (over ±0.3 m) from the land albedo to a floor albedo. `WaterFloorStyle`
+  selects sand, vegetation, mud, stones or mixed; single kinds are one-hot, the
+  mixed floor zones the configured weights by depth and bed slope
+  (`floor_weights()` / GLSL `floorWeightsFor()`: sand on gentle beds down to
+  about 2 m, plants in 1.5..6 m, mud deep and flat, stones on steep beds and in
+  the surf) and normalizes them. `random_water_floor(seed)` derives weights in
+  0.2..1.5 and a patch size in 25..75 m from the seed alone.
+- **Lighting**: `ambient + (1 - ambient) * max(dot(normal, light), 0)`.
+
+Composition order is shared exactly: ground = mix(ramp, grass, vegetation);
+albedo = mix(mix(ground, canopy, trees x vegetation), stone, rock), then snow,
+then ice, then mix(albedo, floor, submerged). `terrain_surface_color()` is the lit CPU reference for detail strength
+zero; `terrainBaseColor()` is its GLSL twin.
+
+With detail enabled (default 1.0) the GPU adds texture that needs screen-space
+derivatives and therefore has no CPU twin: analytic-gradient value noise gives
+grass patches and tufts; forests are built from eight-meter crowns grouped into
+stands and clumps with gaps revealing the ground beneath, rounded by a
+gradient-based bump, and blending to stand- and clump-scale coverage as crowns
+drop below the pixel footprint; rock shows elevation-following strata, grain,
+dark cracks and a bump, scree a speckle; snow has soft drifts, sparse sparkle
+and a bluish ambient tint on its shaded side; ice is smooth with dark crack
+lines; the lake/sea floor breaks the zoned mix into seeded patches (cubed
+noise-weighted kinds) and shows sand grain and ripple marks, plant clumps over
+sand, mud mottling and pebbles with dark gaps and a rounded bump. Every
+frequency fades out as its wavelength approaches the pixel footprint
+(`terrainDetailFade`), so distant terrain stays calm.
+
+Rock gets three further treatments so cliffs read as rock rather than hills.
+(1) **Relief**: the vertex stage (both ground shaders now include the material
+snippet, which has no derivative functions) adds `rockRelief()` to the vertex
+height: `detail.x * detail.y * rock * (1 - 0.6 max(snow, ice)) * (1 - submerged)
+* (2 ridgedFbm(p * 0.045) - 1)`, further multiplied by `smoothstep(level, level +
+2 relief, elevation)` when water is present so no gap can open under the water
+surface. `ridgedFbm` is three octaves of `(1 - |2 n - 1|)^2` with analytic
+gradients. The displacement is vertical only (grid/fire lookups keep their plan
+position), deterministic in world space (tile seams stay exact) and zero at
+detail zero, so the CPU reference and the pixel tests are untouched; the
+fragment stage receives both the displaced position and the measured
+`baseElevation` for materials, contours and water. `TerrainTileRenderer::
+set_bounds_padding(meters)` (0..100) inflates culling bounds by the relief so
+displaced tiles never pop at the frustum edge. (2) **Faceting**: the shading
+normal blends `rock * (1 - snowy) * (1 - submerged) * 0.85 * detail` toward the
+geometric facet normal `normalize(cross(dFdx(worldPosition), dFdy(worldPosition)))`,
+so displaced crags are flat-shaded with hard edges. (3) **Surface**: the same
+ridged field plus a finer octave perturb the normal with slopes consistent with
+the relief, creases darken the albedo (`crevice * 0.32`), strata become hard
+ledges (`smoothstep(0.38, 0.62, strataNoise)`), and grain, cracks and scree
+speckle remain. The Mesa shading test tolerates up to 3 % silhouette pixels
+changing in its detail frame (relief moves rock edges); contour and restoration
+frames must leave the sky untouched. Contour lines
+(`applyTerrainContours`) are anti-aliased with `fwidth`, darken light ground and
+lift very dark forest so they remain visible, and fade where they would merge.
+
+The Mesa `--terrain-shading-test` renders four frames: (0) detail and contours
+off, comparing the pixel at every interior, unburned, on-screen vertex with the
+CPU reference (12/255 tolerance; a majority must match overall and within every
+material class with at least twenty firm candidates — vertices not within the
+shoreline blend and, on the floor, with a dominant zone weight of at least 0.75,
+since neighbouring render vertices are only a few pixels apart — the matched set must span the
+ramp and a hillshade range, vertices where rock visibly changes the color must
+match, and the demo must exhibit at least seven material classes); (1) eight
+contour levels, which may change 0.5..40 % of terrain pixels and must mostly
+darken; (2) exact restoration; (3) full detail, which must change at least half
+of the terrain pixels with a mean absolute difference between 0.6 and 40 levels
+while leaving the sky untouched. Fire/burn overlays, layer visibility, fire-grid
+identity and replay timing are unchanged; the shader animation clock is frozen
+only during that diagnostic. `TERRAIN_MATERIAL_JSON` lists candidates/matches per
+class; `TERRAIN_CONTOUR_JSON` and `TERRAIN_DETAIL_JSON` report the pixel statistics.
+
+The shared validator rejects a bound `TerrainStyle` buffer shorter than 96 bytes
+and OpenGL reflects the block name, binding and size before publication. Like
+LayerVisibility, this fragment-only block uses the fragment-stage reflection
+fallback. `TerrainTileRenderer::draw` accepts the style buffer as its final
+optional argument; every tile draw binds it. Object, textured and PBR shaders
+declare neither the block nor the `SURFACE` attribute.
+
+Smooth normals come from the mesh generator: each complete quad contributes the
+area-weighted face normals of both of its diagonal splits to its four corners,
+so the shading normal is independent of the rendered diagonal, exact for planar
+terrain, symmetric under grid rotation and never influenced by holes or missing
+neighbours. Curvature is minus the discrete Laplacian over the measured
+east/west and north/south neighbours, skipping any axis that lacks one. Rendered
+geometry still uses one diagonal per quad; very sharp steps narrower than a few
+cells can still show the triangulation in the rock blend because the data, not
+the shading, is under-sampled. Material classes are a visualization of the
+simulation's fuel inputs, not a land-cover model: a request without fuel data
+renders bare hypsometric ground, and no vegetation, snow or rock affects fire
+propagation.
+
+
+## Water surface
+
+`terrain_water.hpp` (compute library) builds a still-water plane at a given
+level from the terrain mesh: every terrain triangle with at least one corner
+below the level is copied with its winding, each vertex moved to the level and
+annotated with the bed height and the bed gradient (from the terrain's smooth
+normal, capped at 87 degrees). Interpolating those across the same triangles
+recovers the exact piecewise-linear bed, so depth = level - bed is exact per
+pixel and the land corners of shoreline triangles (depth <= 0) are discarded.
+Holes stay holes; the terrain is not modified; a non-finite level is rejected.
+
+`water_shading.hpp` (graphics library) defines `WaterStyle` and packs it into a
+128-byte std140 block of eight float4s at slot 12 (`surface`: level, wave height,
+wave length, wave speed; `travel`: unit direction in world xz, time, foam depth;
+`shallow`/`deep`: color and absorption/clarity depth; `eye`: camera position and
+choppiness; `horizon`/`zenith`: sky colors with specular power and reflectivity;
+`sun`: light direction and specular intensity). Validation covers every range
+documented in the header. Compass degrees map to world xz as 0 -> (0, -1) north
+and 90 -> (1, 0) east. The `Water` program identity uses a 24-byte
+POSITION/BED/BED_GRADIENT vertex stream, the Camera block at slot 0 and the
+style block in both stages; the pipeline must blend, depth-test and not write
+depth, and the validator rejects a style buffer shorter than 128 bytes.
+
+The fragment shader computes, per pixel: the phase-speed ratio
+`sqrt(tanh(k d))` (clamped to [0.3, 1]); the travel direction refracted toward
+the bed gradient by `0.75 (1 - ratio) min(20 |grad|, 1)`; for each wave the local
+wave number `k / ratio`, Green's-law growth `1 / sqrt(ratio)` (capped at 1.8), a
+depth limit `0.6 d` on the amplitude and a breaking weight as the limit engages;
+the primary wave (gust-modulated, front-warped), a long swell at 1.9 wavelengths,
+two cross waves at ±32 degrees and 0.55 wavelengths, and noise ripples, all
+accumulated into a height slope that perturbs the normal. Foam is the sum of a
+shoreline band inside the foam depth with a swash line advancing at the wave
+period, splashes where the bed gradient exceeds 0.35..0.9 near the shore, and
+breaking crests; it vanishes for zero wave height. Color mixes the absorbed body
+color (`exp(-d / absorption)`), a horizon-to-zenith sky by Schlick Fresnel times
+reflectivity, and a sun highlight; opacity is `max(1 - exp(-d / clarity),
+reflection)` and foam is opaque. The vertex shader lifts the mesh by a swell six
+wavelengths long, attenuated by `1 - exp(-d / (2 H + 0.05))`.
+
+CPU twins: `wave_shallowness`, `wave_travel_direction`, `wave_shoaling` and the
+flat-water `water_surface_sample` (wave height zero, no foam) mirror the GLSL
+exactly; the animated wave field, ripples and foam need screen-space derivatives
+and time and have no CPU twin. The Mesa `--water-test` renders four frames:
+(0) flat water at t = 0, comparing `blend(before, sample)` with the GPU pixel at
+every visible surface vertex deeper than 0.3 m (12/255 tolerance, majority
+match, at least fifty candidates, a depth range of at least one meter and at
+least five hundred covered pixels); (1) configured waves at t = 0, which must
+change at least 30 % of covered pixels and show bright foam while changing at
+most 1 % as many pixels outside the three-pixel-dilated coverage mask; (2) the
+same waves at t = 0.7 s, which must differ from frame 1 on at least 30 % of the
+surface; (3) flat water again, which must restore frame 0 exactly. Smoke runs
+freeze the water clock; interactive runs animate with the engine clock.
+
+The viewer draws the water at the end of the terrain pass, after the tile and
+shading diagnostics and before the asset snapshot, so existing asset checks
+compare against the complete ground. Objects therefore draw over water rather
+than being refracted or blended beneath it; planar scene reflections, caustics,
+shadows and per-cell water bodies (rivers without a level) remain future work.
+Submerged cells are visualization only and do not affect fire propagation.
+The viewer passes the water level and the `--water-floor` configuration into
+the terrain style, so the terrain pass already draws the floor that the
+transparent water then tints; `WATER_FLOOR_JSON` records kind, seed, weights and
+patch size. The shading test's per-class comparison covers the floor classes
+(`floor_sand`, `floor_vegetation`, `floor_mud`, `floor_stones`).
+
+
+## 3D vegetation
+
+`vegetation.hpp` (graphics library) turns the material model's canopy and
+vegetation cover into instanced 3D plants. **Meshes** are unit-height models
+(`VegetationVertex`: position, normal, color, flex 0..1 from base to tip, and
+a tint weight that is 1 on foliage/blades and 0 on wood) produced by
+`make_tree_mesh` (conifer: tapered trunk plus `layers` stacked cones with closed
+undersides; broadleaf/shrub: trunk plus a lobed low-poly ellipsoid; `segments`
+3..24, `layers` 1..6, trunk height 0.05..0.6, crown width 0.1..1.5, colors),
+`make_grass_mesh` (1..8 tapered two-sided blades) or `vegetation_mesh_from_model`
+(any `assets::Mesh`, normalized to unit height with its base at y = 0, section
+base colors as vertex colors, green materials tintable; empty, flat or over-wide
+models are rejected). **Placement** (`place_vegetation`) samples a seeded
+jittered grid at the tree and grass spacings over the render lattice through
+`TerrainSampler` (barycentric lookup on the drawn triangle, so plants stand
+exactly on the surface; outside the lattice and over holes it returns nothing),
+evaluates `terrain_material` at each sample and keeps a tree with probability
+`trees x vegetation x (1 - snow)(1 - ice)(1 - submerged)(1 - rock)` and a grass
+tuft with `vegetation (1 - 0.7 trees) ...`; species kind (0 conifer-like,
+1 broadleaf-like) follows the moisture classes (wet 85 % broadleaf, semi-dry
+25 %, dry 5 %), tints are multipliers on the mesh foliage color (dry olive,
+semi-dry unchanged, wet lush) with per-plant brightness and hue jitter
+(`color_variation`), heights vary 0.7..1.3 x the nominal height, and instances
+are bucketed into 120 m chunks with height-inclusive bounds. The budget
+(`max_instances`, default 3M) and the sample-grid limit reject oversized
+requests without publishing.
+
+The `Vegetation` program uses a 44-byte vertex stream, the Camera block, the
+64-byte `VegetationStyle` block at slot 13 in both stages (wind direction and
+speed, time, light and ambient, sway amplitude, grass fade start/end, tree fade
+end, eye) and 48-byte std430 `InstanceData` records (position and height,
+rotation, phase, bend, kind, tint) at slot 4; the validator sizes instance
+capacity by that record for this program (144 bytes for objects). The vertex
+stage rotates and scales the plant, shrinks it to nothing across its fade band
+(no blending), sways it by `flex^2` with a gust that travels along the wind and
+leans it on steep ground; the fragment stage uses two-sided wrapped lighting and
+darkens toward the base. `VegetationRenderer` owns the mesh buffers per slot
+(two tree kinds, grass) and one instance storage buffer per slot sized to the
+kind's total (trees) or to the densest grass disc within the draw distance;
+each frame it culls chunks by frustum and distance nearest first, refills the
+buffers and issues one instanced draw per slot (batches of at most 65535).
+`set_tree_meshes`, `set_grass_mesh` and `set_placement` replace resources at
+run time; a failed replacement keeps the current ones.
+
+The viewer wires the wave direction/speed into the wind, lowers the terrain's
+painted canopy to forest-floor litter (`canopy_on_ground` 0.35) while 3D trees
+are drawn, draws vegetation at the start of the object pass (after the terrain
+snapshot, so asset diagnostics are unchanged), freezes the sway in smoke runs and
+exposes V/B/G and W/A/S/D controls. The Mesa `--vegetation-test` renders five
+frames (off, on, swapped tree meshes, the same meshes 1.5 s later, off) from a
+close camera and requires trees and grass to be drawn, at least 2 % of pixels to
+change, formerly-sky pixels to be covered (plants have height), at least 24
+distinct color buckets, visible differences after the mesh swap and the wind
+step, and exact restoration. Vegetation does not affect fire propagation; planar
+shadows, billboard impostors and per-species LOD remain future work.
+
+
+## Animated fire effects
+
+`fire_effects.hpp` (graphics library) visualises the replay's fire field as 3D
+flames and smoke without touching propagation. `build_fire_emitters` walks the
+field: for every burning cell it draws `ceil(flames_per_cell)` seeded sample
+points inside the cell, looks each up on the render surface (`TerrainSampler`)
+and evaluates `terrain_material`; `fire_fuel_factor` (mirrored in the ground
+shader) is `smoothstep(threshold, threshold + 0.1, fuel) (1 - rock)(1 -
+submerged)(1 - max(snow, ice))` and a sample with factor zero is counted as
+fuelless and skipped, so rock, water, snow, ice and bare soil never carry
+flames. Surviving samples are kept with probability ~1.2 x fuel, sized
+`flame_height x flame_scale x (0.35 + 0.65 fuel) x factor` with ±30 % jitter,
+and given the fuel as intensity; every tree of the optional placement standing
+in the cell adds a crown flame at 55 % of its height (at most eight per cell);
+one to three plumes rise from fuel-bearing spots; burned cells keep a thin
+smouldering plume in about a third of cases. Budgets keep crown flames and
+plumes first and trim ground flames. The `Fire` program draws a shared
+billboard quad per 48-byte std430 record (position, height, phase, intensity,
+kind 0/1/2, seed) with the 64-byte `FireStyle` block (wind, time, eye, flame
+scale, smoke scale/height, draw distance, light) at slot 14; the vertex stage
+builds a cylindrical billboard, flickers and sways flames and leans smoke
+downwind, and the fragment stage erodes a narrowing tongue with rising noise
+(core, orange and red bands by heat) or a widening grey plume that thins with
+height and is lit warm at its base. `FireEffectsRenderer` refills one instance
+buffer per draw with the records inside the draw distance and frustum, smoke
+before flames, in batches of 65535; the pipeline must blend, depth-test and not
+write depth.
+
+All three layers share one **continuous front field** instead of cell
+membership, so fronts are ragged rather than square. `fire_front_at` (CPU;
+GLSL twins in the wildfire and vegetation shaders) sums, with saturation, the
+radial kernel `1 - smoothstep(0.45, 1.55, d)` of every burning (active) and
+burned cell within the 5 x 5 neighbourhood of the nearest cell, in grid units;
+`fire_edge_noise` adds world-space value noise at three scales (±0.4 at ~80 m,
+±0.25 at ~20 m, ±0.08 at ~4 m, sampled in local grid metres with north
+positive, as the ground shader does); a point burns when `active > 0.02` and
+`active + noise > 0.6`, and is charred when not burning, `burned > 0.02` and
+`burned + noise > 0.6`. The `> 0.02` guards mean noise can only reshape an
+outline that exists — the outline wanders up to about a cell past the
+squares, occasionally leaves unburned islands inside, and never ignites ground
+with no burning or burned cell nearby. Emitters sample a jittered sub-grid over
+every burning cell *and* its neighbours and keep the samples on the burning
+side; crown flames use the tree's own position in the field. Plants react
+through the `PlantFireState` storage buffer (slot 5) and the fire grid in the
+96-byte `VegetationStyle` block (`vegetation_fire_state` remains the exact
+nearest-cell CPU helper): burned grass is reduced to stubble and burned trees
+to 90 %, burned plants are charred and burning foliage flickers as self-lit
+embers. The ground fire shader gates burn and flame by the same fuel factor,
+scales flames by `0.45 + 0.55 fuel`, mottles the char, and adds a slow flicker
+to the flame outline. The large-scale shape still comes from the simulation:
+the 8-neighbour threshold automaton spreads by a Chebyshev metric and grows a
+square in uniform fuel without wind or slope; the renderer softens that but a
+distance-corrected or stochastic spread rule would be a simulation change.
+
+The viewer rebuilds emitters when the replay frame or the vegetation placement
+changes, draws them after the transparent object queue, hides them with the
+fire layer and freezes their clock in smoke runs. The Mesa `--fire-test`
+renders the ground fire alone, the effects at t = 0 and t = 0.6 s and the ground
+fire again: flames and smoke must be drawn, at least 200 pixels change, at least
+40 changed pixels lie more than three rows above the tallest ground-fire pixel
+of their column (flames have height), at least a fifth of the changed region
+moves between the two times, and the final frame equals the first. Fire
+lighting of the surroundings, ember particles, heat distortion and wind-driven
+flame lean beyond the lean term remain future work.
 
 
 ## Fixed-tick replay clock

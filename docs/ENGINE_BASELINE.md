@@ -180,6 +180,50 @@ with explicit fallback reasons. Opt-in CPU simplification now preserves every
 patch boundary while reducing eligible patches from 32 to 16 triangles.
 Both levels count toward element/byte caps; measured error and GPU integration remain pending. See [LOD implementation status](TERRAIN_LOD.md).
 
+The terrain renderer increment after that adds height/slope shading: the mesh
+generator records the elevation range and produces diagonal-independent smooth
+normals with slope and summary helpers; a validated 48-byte `TerrainStyle`
+uniform block shared by the terrain and wildfire shaders maps a hypsometric ramp
+onto the surface's own range, blends steep ground toward rock, applies a
+directional hillshade and optionally draws anti-aliased contours. The viewer
+frames terrain from its bounding sphere, prints `TERRAIN_MESH_JSON`, writes
+`--screenshot` frames and runs the Mesa `--terrain-shading-test`, which compares
+rendered pixels with the CPU color reference. Native suites remain 16 (graphics
+contracts grow to 23 tests and terrain mesh tests to 14). See
+[terrain shading](GRAPHICS_BACKENDS.md#terrain-height-and-slope-shading).
+Physical-GPU evidence is still pending for this increment as well.
+
+The following increment turns the shading into materials: terrain vertices carry
+fuel load, fuel moisture and curvature (`SURFACE`, stride 40); the shared ground
+shaders classify dry/semi-dry/wet grass, forest, rock, scree on exposed ridges,
+snow and ice from height, slope, convexity and fuel data, add distance-faded
+procedural detail and automatic contours. `TerrainStyle` grows to 64 bytes with
+snow line, ridge curvature and detail strength. The CPU material reference
+(`terrain_material`/`dominant_material`) is verified per class by the Mesa
+shading test; graphics contracts grow to 24 tests and terrain mesh tests to 15.
+See [terrain materials](GRAPHICS_BACKENDS.md#terrain-materials-height-slope-vegetation-rock-snow-and-ice).
+
+The water increment adds `build_water_mesh` (a level-clipped surface with per-vertex
+bed depth and gradient), the `Water` shader identity with a validated 128-byte
+`WaterStyle` block, depth-dependent color/opacity, Fresnel sky/sun reflection,
+configurable shoaling/refracting/breaking waves with foam, and the Mesa
+`--water-test`; native testing grows to a seventeenth suite (`terraflux-water-tests`).
+Submerged ground renders as a configurable lake/sea floor (sand, aquatic
+vegetation, mud, stones, depth/slope-zoned mixed or seeded random) seen through
+the shallows; `TerrainStyle` grows to 96 bytes. Rock is flat-shaded from facet
+normals, carved by ridged crag noise with hard strata ledges and displaced by a
+configurable, visualization-only vertical relief (`--rock-relief`, tile culling
+bounds padded accordingly). Rendering uses a C1 bicubic-Hermite refinement of
+the untouched simulation lattice (`refine_terrain_mesh`, default 5 m, vertex
+budget 4M) so relief and shorelines resolve below the simulation cell; terrain
+mesh tests grow to 16. Trees and grass are instanced 3D meshes (procedural or
+OBJ, `vegetation.hpp`) placed from the fuel data with per-plant variation, wind
+sway and run-time switchable meshes/densities; an eighteenth suite
+(`terraflux-vegetation-tests`) and the Mesa `--vegetation-test` cover them. Fire
+is visualised as fuel-gated 3D flames and smoke with crown fires and charred
+plants (`fire_effects.hpp`, a nineteenth suite and the Mesa `--fire-test`). See
+[the water surface contract](GRAPHICS_BACKENDS.md#water-surface).
+
 ## Implementation references
 
 - [Shader identities, render passes, offscreen targets and replay clock](GRAPHICS_BACKENDS.md)

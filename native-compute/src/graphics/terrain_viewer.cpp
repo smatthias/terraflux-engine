@@ -2,6 +2,11 @@
 #include <terraflux/graphics/composite.hpp>
 #include <terraflux/graphics/render_pass.hpp>
 #include <terraflux/graphics/terrain_upload.hpp>
+#include <terraflux/graphics/terrain_shading.hpp>
+#include <terraflux/graphics/water_shading.hpp>
+#include <terraflux/graphics/vegetation.hpp>
+#include <terraflux/graphics/fire_effects.hpp>
+#include <terraflux/terrain_water.hpp>
 #include <terraflux/graphics/terrain_tiles.hpp>
 #include <terraflux/graphics/layer_visibility.hpp>
 #include <terraflux/graphics/mesh_upload.hpp>
@@ -42,6 +47,8 @@
 #include <iostream>
 #include <memory>
 #include <optional>
+#include <random>
+#include <set>
 #include <span>
 #include <sstream>
 #include <stdexcept>
@@ -87,13 +94,33 @@ struct Options {
   double replay_speed=1.0;
   bool replay_speed_requested=false;
   bool terrain_tiles=false,terrain_tile_test=false,terrain_residency=false,terrain_residency_test=false,terrain_retention_test=false;
+  bool terrain_shading_test=false;
+  std::optional<double> terrain_contour_interval; // unset: automatic spacing
+  double terrain_detail=1.0,rock_relief=5.0;
+  double render_cell=5.0;                    // render lattice spacing in meters; 0 keeps the simulation lattice
+  std::size_t max_render_vertices=4'000'000;
+  std::optional<double> snow_line; // unset: automatic (relief-dependent)
+  std::optional<double> water_level; // unset: the demo's authored lake; none for replay data
+  double wave_height=0.6,wave_length=24.0,wave_speed=3.0,wave_direction=90.0,water_clarity=4.0;
+  bool water_test=false;
+  std::string water_floor="mixed"; // sand|vegetation|mud|stones|mixed|random
+  std::string vegetation="medium";  // off|low|medium|high
+  std::string tree_style="mixed";   // conifer|broadleaf|mixed|custom
+  std::string tree_obj;             // custom tree model (OBJ) for the "custom" style
+  std::optional<double> tree_spacing,grass_spacing,grass_distance,tree_height;
+  std::uint32_t vegetation_seed=0;
+  bool vegetation_test=false;
+  double flame_scale=1.0,smoke_scale=1.0;
+  bool fire_test=false;
+  std::optional<std::uint32_t> floor_seed;
+  std::optional<double> floor_patch_size;
   std::uint32_t max_resident_terrain_tiles=4096,terrain_retention_frames=0;
   std::uint32_t terrain_tile_quads=32;
   std::optional<terraflux::scene::NodeId> selected_node,activate_node;
   std::uint32_t max_resident_meshes=512,max_scene_instances=1024;
   std::optional<std::uint64_t> resource_budget_bytes,cpu_recipe_budget_bytes;
   std::uint32_t benchmark_frames=0;
-  std::string load_state,save_state;
+  std::string load_state,save_state,screenshot_file;
   std::string request_file, response_file, obj_file, gltf_file, texture_file, scene_file;
 };
 
@@ -131,6 +158,115 @@ Options parse_args(int argc, char** argv) {
         throw std::invalid_argument("--max-resident-terrain-tiles must be 0..4096");
       options.terrain_residency=true;options.terrain_tiles=true;options.max_resident_terrain_tiles=n;
     }
+    else if(arg=="--terrain-contours" && i+1<argc) {
+      const std::string text=argv[++i];double meters=0;
+      const auto parsed=std::from_chars(text.data(),text.data()+text.size(),meters);
+      if(parsed.ec!=std::errc{} || parsed.ptr!=text.data()+text.size() || !std::isfinite(meters) ||
+         meters<0 || meters>10000)
+        throw std::invalid_argument("--terrain-contours must be 0..10000 meters");
+      options.terrain_contour_interval=meters;
+    }
+    else if((arg=="--terrain-detail" || arg=="--snow-line") && i+1<argc) {
+      const std::string text=argv[++i];double value=0;
+      const auto parsed=std::from_chars(text.data(),text.data()+text.size(),value);
+      if(parsed.ec!=std::errc{} || parsed.ptr!=text.data()+text.size() || !std::isfinite(value) || value<0 || value>1)
+        throw std::invalid_argument(arg+" must be 0..1");
+      if(arg=="--terrain-detail")options.terrain_detail=value;else options.snow_line=value;
+    }
+    else if(arg=="--render-cell" && i+1<argc) {
+      const std::string text=argv[++i];double meters=0;
+      const auto parsed=std::from_chars(text.data(),text.data()+text.size(),meters);
+      if(parsed.ec!=std::errc{} || parsed.ptr!=text.data()+text.size() || !std::isfinite(meters) || meters<0 || meters>10000)
+        throw std::invalid_argument("--render-cell must be 0..10000 meters (0 keeps the simulation lattice)");
+      options.render_cell=meters;
+    }
+    else if(arg=="--max-render-vertices" && i+1<argc) {
+      const std::string text=argv[++i];std::size_t count=0;
+      const auto parsed=std::from_chars(text.data(),text.data()+text.size(),count);
+      if(parsed.ec!=std::errc{} || parsed.ptr!=text.data()+text.size() || count<1000 || count>20'000'000)
+        throw std::invalid_argument("--max-render-vertices must be 1000..20000000");
+      options.max_render_vertices=count;
+    }
+    else if(arg=="--rock-relief" && i+1<argc) {
+      const std::string text=argv[++i];double meters=0;
+      const auto parsed=std::from_chars(text.data(),text.data()+text.size(),meters);
+      if(parsed.ec!=std::errc{} || parsed.ptr!=text.data()+text.size() || !std::isfinite(meters) || meters<0 || meters>20)
+        throw std::invalid_argument("--rock-relief must be 0..20 meters");
+      options.rock_relief=meters;
+    }
+    else if((arg=="--water-level" || arg=="--wave-height" || arg=="--wave-length" || arg=="--wave-speed" ||
+             arg=="--wave-direction" || arg=="--water-clarity") && i+1<argc) {
+      const std::string text=argv[++i];double value=0;
+      const auto parsed=std::from_chars(text.data(),text.data()+text.size(),value);
+      if(parsed.ec!=std::errc{} || parsed.ptr!=text.data()+text.size() || !std::isfinite(value))
+        throw std::invalid_argument(arg+" must be a finite number");
+      const auto bounded=[&](double lo,double hi,const char* what) {
+        if(value<lo || value>hi)throw std::invalid_argument(arg+" must be "+what);
+      };
+      if(arg=="--water-level"){bounded(-12000,12000,"-12000..12000 meters");options.water_level=value;}
+      else if(arg=="--wave-height"){bounded(0,5,"0..5 meters");options.wave_height=value;}
+      else if(arg=="--wave-length"){bounded(1,1000,"1..1000 meters");options.wave_length=value;}
+      else if(arg=="--wave-speed"){bounded(0,50,"0..50 m/s");options.wave_speed=value;}
+      else if(arg=="--water-clarity"){bounded(0.5,50,"0.5..50 meters");options.water_clarity=value;}
+      else {bounded(0,360,"0..360 compass degrees");options.wave_direction=value;}
+    }
+    else if(arg=="--water-test")options.water_test=true;
+    else if(arg=="--vegetation" && i+1<argc) {
+      options.vegetation=argv[++i];
+      if(options.vegetation!="off" && options.vegetation!="low" && options.vegetation!="medium" && options.vegetation!="high")
+        throw std::invalid_argument("--vegetation must be off, low, medium or high");
+    }
+    else if(arg=="--tree-style" && i+1<argc) {
+      options.tree_style=argv[++i];
+      if(options.tree_style!="conifer" && options.tree_style!="broadleaf" && options.tree_style!="mixed" && options.tree_style!="custom")
+        throw std::invalid_argument("--tree-style must be conifer, broadleaf, mixed or custom");
+    }
+    else if(arg=="--tree-obj" && i+1<argc)options.tree_obj=argv[++i];
+    else if((arg=="--tree-spacing" || arg=="--grass-spacing" || arg=="--grass-distance" || arg=="--tree-height") && i+1<argc) {
+      const std::string text=argv[++i];double value=0;
+      const auto parsed=std::from_chars(text.data(),text.data()+text.size(),value);
+      if(parsed.ec!=std::errc{} || parsed.ptr!=text.data()+text.size() || !std::isfinite(value))
+        throw std::invalid_argument(arg+" must be a finite number");
+      const auto bounded=[&](double lo,double hi,const char* what){if(value<lo || value>hi)throw std::invalid_argument(arg+" must be "+what);};
+      if(arg=="--tree-spacing"){bounded(4,200,"4..200 meters");options.tree_spacing=value;}
+      else if(arg=="--grass-spacing"){bounded(0.5,20,"0.5..20 meters");options.grass_spacing=value;}
+      else if(arg=="--grass-distance"){bounded(0,5000,"0..5000 meters");options.grass_distance=value;}
+      else {bounded(1,80,"1..80 meters");options.tree_height=value;}
+    }
+    else if(arg=="--vegetation-seed" && i+1<argc) {
+      const std::string text=argv[++i];std::uint32_t seed=0;
+      const auto parsed=std::from_chars(text.data(),text.data()+text.size(),seed);
+      if(parsed.ec!=std::errc{} || parsed.ptr!=text.data()+text.size())throw std::invalid_argument("--vegetation-seed must be an unsigned 32-bit integer");
+      options.vegetation_seed=seed;
+    }
+    else if(arg=="--vegetation-test")options.vegetation_test=true;
+    else if((arg=="--flame-scale" || arg=="--smoke-scale") && i+1<argc) {
+      const std::string text=argv[++i];double value=0;
+      const auto parsed=std::from_chars(text.data(),text.data()+text.size(),value);
+      if(parsed.ec!=std::errc{} || parsed.ptr!=text.data()+text.size() || !std::isfinite(value) || value<0 || value>3)
+        throw std::invalid_argument(arg+" must be 0..3");
+      if(arg=="--flame-scale")options.flame_scale=value;else options.smoke_scale=value;
+    }
+    else if(arg=="--fire-test")options.fire_test=true;
+    else if(arg=="--water-floor" && i+1<argc) {
+      options.water_floor=argv[++i];
+      if(options.water_floor!="random")(void)terraflux::graphics::parse_water_floor(options.water_floor.c_str());
+    }
+    else if(arg=="--floor-seed" && i+1<argc) {
+      const std::string text=argv[++i];std::uint32_t seed=0;
+      const auto parsed=std::from_chars(text.data(),text.data()+text.size(),seed);
+      if(parsed.ec!=std::errc{} || parsed.ptr!=text.data()+text.size())
+        throw std::invalid_argument("--floor-seed must be an unsigned 32-bit integer");
+      options.floor_seed=seed;
+    }
+    else if(arg=="--floor-patch-size" && i+1<argc) {
+      const std::string text=argv[++i];double meters=0;
+      const auto parsed=std::from_chars(text.data(),text.data()+text.size(),meters);
+      if(parsed.ec!=std::errc{} || parsed.ptr!=text.data()+text.size() || !std::isfinite(meters) || meters<5 || meters>500)
+        throw std::invalid_argument("--floor-patch-size must be 5..500 meters");
+      options.floor_patch_size=meters;
+    }
+    else if(arg=="--terrain-shading-test")options.terrain_shading_test=true;
     else if(arg=="--terrain-tiles")options.terrain_tiles=true;
     else if(arg=="--terrain-tile-test")options.terrain_tile_test=true;
     else if(arg=="--terrain-tile-quads" && i+1<argc) {
@@ -194,9 +330,10 @@ Options parse_args(int argc, char** argv) {
     else if (arg == "--texture" && i + 1 < argc) options.texture_file = argv[++i];
     else if (arg == "--load-state" && i+1<argc)options.load_state=argv[++i];
     else if (arg == "--save-state" && i+1<argc)options.save_state=argv[++i];
+    else if (arg == "--screenshot" && i+1<argc)options.screenshot_file=argv[++i];
     else if (arg == "--scene" && i + 1 < argc) options.scene_file = argv[++i];
     else throw std::invalid_argument(
-        "usage: terraflux-terrain-viewer [--request request.json --response response.json] [--obj model.obj | --gltf model.gltf] [--texture texture.ppm] [--scene scene.json (legacy scenes require --obj)] [--replay-speed 1] [--replay-controls-test with replay --smoke-test] [--hide-terrain] [--hide-fire] [--layers-test with replay --smoke-test] [--terrain-tiles] [--terrain-residency] [--terrain-retain-frames 30] [--terrain-retention-test with --smoke-test --terrain-retain-frames 2] [--max-resident-terrain-tiles 4096] [--terrain-residency-test with --smoke-test --terrain-residency] [--terrain-tile-quads 32] [--terrain-tile-test with --smoke-test --terrain-tiles] [--offscreen] [--offscreen-resize-test with --offscreen --smoke-test] [--profile] [--no-culling] [--no-instancing] [--asset-preview with --gltf] [--benchmark-frames 60] [--smoke-test] [--asset-lifecycle-test with --smoke-test]");
+        "usage: terraflux-terrain-viewer [--request request.json --response response.json] [--obj model.obj | --gltf model.gltf] [--texture texture.ppm] [--scene scene.json (legacy scenes require --obj)] [--replay-speed 1] [--replay-controls-test with replay --smoke-test] [--hide-terrain] [--hide-fire] [--layers-test with replay --smoke-test] [--terrain-contours 50] [--render-cell 5] [--max-render-vertices 4000000] [--terrain-detail 1] [--rock-relief 5] [--snow-line 0.72] [--terrain-shading-test with --smoke-test] [--water-level 35] [--wave-height 0.6] [--wave-length 24] [--wave-speed 3] [--wave-direction 90] [--water-clarity 4] [--water-floor sand|vegetation|mud|stones|mixed|random] [--floor-seed 7] [--floor-patch-size 45] [--water-test with --smoke-test] [--vegetation off|low|medium|high] [--tree-style conifer|broadleaf|mixed|custom] [--tree-obj model.obj] [--tree-spacing 12] [--grass-spacing 2.5] [--grass-distance 300] [--tree-height 16] [--vegetation-seed 0] [--vegetation-test with --smoke-test] [--flame-scale 1] [--smoke-scale 1] [--fire-test with replay --smoke-test] [--terrain-tiles] [--terrain-residency] [--terrain-retain-frames 30] [--terrain-retention-test with --smoke-test --terrain-retain-frames 2] [--max-resident-terrain-tiles 4096] [--terrain-residency-test with --smoke-test --terrain-residency] [--terrain-tile-quads 32] [--terrain-tile-test with --smoke-test --terrain-tiles] [--offscreen] [--offscreen-resize-test with --offscreen --smoke-test] [--profile] [--no-culling] [--no-instancing] [--asset-preview with --gltf] [--benchmark-frames 60] [--screenshot frame.ppm] [--smoke-test] [--asset-lifecycle-test with --smoke-test]");
   }
   if(options.replay_speed_requested && options.request_file.empty())
     throw std::invalid_argument("--replay-speed requires replay input");
@@ -213,6 +350,37 @@ Options parse_args(int argc, char** argv) {
       options.scene_controls_test || options.scene_detach_test || options.scene_residency_test ||
       options.terrain_tile_test || options.terrain_residency_test || options.terrain_retention_test))
     throw std::invalid_argument("--layers-test requires replay smoke mode without assets, initial hidden layers or another scripted test");
+  if(options.terrain_shading_test && (!options.smoke_test || !options.scene_file.empty() ||
+      !options.obj_file.empty() || !options.gltf_file.empty() || options.hide_terrain || options.hide_fire ||
+      options.terrain_contour_interval || options.terrain_detail!=1.0 || options.snow_line ||
+      options.layers_test || options.replay_controls_test ||
+      options.offscreen_resize_test || options.asset_lifecycle_test || options.scene_controls_test ||
+      options.scene_detach_test || options.scene_residency_test || options.terrain_tile_test ||
+      options.terrain_residency_test || options.terrain_retention_test))
+    throw std::invalid_argument("--terrain-shading-test requires smoke mode with visible layers, default style options and no assets or other scripted test");
+  if(options.tree_style=="custom" && options.tree_obj.empty())
+    throw std::invalid_argument("--tree-style custom requires --tree-obj");
+  if(options.fire_test && (!options.smoke_test || options.request_file.empty() || !options.scene_file.empty() ||
+      !options.obj_file.empty() || !options.gltf_file.empty() || options.hide_terrain || options.hide_fire ||
+      options.vegetation=="off" || options.layers_test || options.replay_controls_test || options.terrain_shading_test ||
+      options.water_test || options.vegetation_test || options.offscreen_resize_test || options.asset_lifecycle_test ||
+      options.scene_controls_test || options.scene_detach_test || options.scene_residency_test || options.terrain_tile_test ||
+      options.terrain_residency_test || options.terrain_retention_test))
+    throw std::invalid_argument("--fire-test requires replay smoke mode with both layers and vegetation enabled and no assets or other scripted test");
+  if(options.vegetation_test && (!options.smoke_test || !options.scene_file.empty() || !options.obj_file.empty() ||
+      !options.gltf_file.empty() || options.hide_terrain || options.vegetation=="off" || options.layers_test ||
+      options.replay_controls_test || options.terrain_shading_test || options.water_test || options.offscreen_resize_test ||
+      options.asset_lifecycle_test || options.scene_controls_test || options.scene_detach_test ||
+      options.scene_residency_test || options.terrain_tile_test || options.terrain_residency_test || options.terrain_retention_test))
+    throw std::invalid_argument("--vegetation-test requires smoke mode with vegetation enabled, visible terrain and no assets or other scripted test");
+  if(options.water_test && (!options.smoke_test || !options.scene_file.empty() || !options.obj_file.empty() ||
+      !options.gltf_file.empty() || options.hide_terrain || options.hide_fire || options.layers_test ||
+      options.replay_controls_test || options.terrain_shading_test || options.offscreen_resize_test ||
+      options.asset_lifecycle_test || options.scene_controls_test || options.scene_detach_test ||
+      options.scene_residency_test || options.terrain_tile_test || options.terrain_residency_test ||
+      options.terrain_retention_test || (options.water_level.has_value()==false && !options.request_file.empty()) ||
+      options.wave_height<=0 || options.wave_speed<=0))
+    throw std::invalid_argument("--water-test requires smoke mode with visible layers, a water level (demo or --water-level), moving waves and no assets or other scripted test");
   if(options.terrain_retention_test && (!options.terrain_residency || !options.smoke_test ||
       options.terrain_retention_frames!=2 || !options.request_file.empty() || !options.scene_file.empty() ||
       !options.obj_file.empty() || !options.gltf_file.empty() || options.offscreen_resize_test ||
@@ -279,6 +447,33 @@ Options parse_args(int argc, char** argv) {
   return options;
 }
 
+// Deterministic value noise for authoring the demo's vegetation pattern.
+double demo_noise(double x, double y) {
+  const auto hash = [](int i, int j) {
+    std::uint32_t h = static_cast<std::uint32_t>(i) * 374761393u + static_cast<std::uint32_t>(j) * 668265263u;
+    h = (h ^ (h >> 13)) * 1274126177u;
+    return static_cast<double>(h ^ (h >> 16)) / 4294967296.0;
+  };
+  const double fx = std::floor(x), fy = std::floor(y);
+  const int i = static_cast<int>(fx), j = static_cast<int>(fy);
+  const double u = x - fx, v = y - fy;
+  const double su = u * u * (3 - 2 * u), sv = v * v * (3 - 2 * v);
+  const double a = hash(i, j), b = hash(i + 1, j), c = hash(i, j + 1), d = hash(i + 1, j + 1);
+  return (a + (b - a) * su) * (1 - sv) + (c + (d - c) * su) * sv;
+}
+double demo_fbm(double x, double y) {
+  return 0.5 * demo_noise(x, y) + 0.3 * demo_noise(x * 2.1 + 7.3, y * 2.1 + 3.1) +
+         0.2 * demo_noise(x * 4.3 + 1.7, y * 4.3 + 9.2);
+}
+// Ridged multifractal: sharp crests and creases for crags and rock faces.
+double demo_ridged(double x, double y) {
+  const auto ridge = [](double n) { const double v = 1.0 - std::abs(2.0 * n - 1.0); return v * v; };
+  return 0.55 * ridge(demo_noise(x, y)) + 0.30 * ridge(demo_noise(x * 2.3 + 4.1, y * 2.3 + 2.7)) +
+         0.15 * ridge(demo_noise(x * 4.9 + 8.3, y * 4.9 + 5.9));
+}
+
+constexpr double kDemoWaterLevel = 34.0; // meters; the demo lake's still-water level
+
 terraflux::compute::Grid make_demo_terrain() {
   constexpr int kSide = 72;
   std::vector<terraflux::compute::GridCell> cells;
@@ -287,14 +482,68 @@ terraflux::compute::Grid make_demo_terrain() {
     for (int x = 0; x < kSide; ++x) {
       terraflux::compute::GridCell cell{};
       cell.x = x; cell.y = y;
-      cell.fuel_load = 1.0; cell.fuel_moisture = 0.15; cell.burn_susceptibility = 0.8;
+      cell.burn_susceptibility = 0.8;
+      // Rolling hills, an eastern plateau behind a winding two-band escarpment
+      // and a craggy ridge on top of it. The cliff bands rise about 45 degrees
+      // at the 30 m grid; ridged noise breaks faces and crest into crags and
+      // ledges instead of smooth slopes.
       const double hill = 55.0 * std::sin(x * 0.065) * std::cos(y * 0.075);
-      const double ridge = 25.0 * std::exp(-std::pow((x-48.0)/16,2) - std::pow((y-26.0)/13,2));
-      cell.elevation_meters = 70.0 + hill + ridge;
+      const double u = x - 44.0 - 5.0 * std::sin(y * 0.18);
+      const double scarp = 42.0 * (1.0 + std::tanh(u / 1.1)) + 24.0 * (1.0 + std::tanh((u - 4.5) / 0.9));
+      const double cliff_mask = std::exp(-std::pow(u / 2.4, 2)) + std::exp(-std::pow((u - 4.5) / 2.2, 2));
+      const double ridge_dome = 110.0 * std::exp(-std::pow((x-56.0)/12,2) - std::pow((y-30.0)/10,2));
+      const double crag = (demo_ridged(x * 0.19, y * 0.19) - 0.45) * (16.0 * std::min(cliff_mask, 1.0) +
+                          14.0 * std::clamp((ridge_dome - 25.0) / 60.0, 0.0, 1.0));
+      const double ridge = ridge_dome + crag;
+      // A lake basin at the foot of the escarpment: its eastern shore is the
+      // rocky scarp, the other shores are gentle beaches (see kDemoWaterLevel).
+      const double basin = -18.0 * std::exp(-(std::pow(x-34.0,2) + std::pow(y-48.0,2))/(2*11.0*11.0));
+      const double elevation = 70.0 + hill + scarp + ridge + basin;
+      cell.elevation_meters = elevation;
+      // Vegetation: a wet riparian strip winds through the western lowland,
+      // moisture otherwise falls with height (dry plateau, semi-dry lowland)
+      // with noisy local variation; irregular forest stands cover the mid
+      // slopes and thin out toward the summit, where the ground is bare.
+      const double relative = std::clamp((elevation - 15.0) / 305.0, 0.0, 1.0);
+      const double riparian = std::exp(-std::pow((x - 14.0 - 6.0 * std::sin(y * 0.15)) / 4.0, 2));
+      const double moisture = 0.08 + 0.17 * (1.0 - relative) + 0.45 * riparian +
+                              0.12 * (demo_fbm(x * 0.07 + 5.0, y * 0.07) - 0.5);
+      const double patches = demo_fbm(x * 0.09, y * 0.09) + 0.15 * (1.0 - relative) + 0.12 * riparian;
+      const double forest = std::clamp((patches - 0.50) / 0.16, 0.0, 1.0);
+      const double alpine = std::clamp((relative - 0.78) / 0.10, 0.0, 1.0);
+      cell.fuel_moisture = std::clamp(moisture, 0.0, 1.0);
+      cell.fuel_load = std::clamp((0.30 + 0.65 * forest * forest * (3 - 2 * forest)) * (1.0 - alpine), 0.0, 1.0);
+      // Vegetation thins smoothly across the first meters of the lake bed so the
+      // shoreline fringe interpolates cleanly instead of stepping per triangle.
+      cell.fuel_load *= std::clamp((elevation - (kDemoWaterLevel - 6.0)) / 6.0, 0.0, 1.0);
       cells.push_back(cell);
     }
   }
   return terraflux::compute::Grid(std::move(cells));
+}
+
+// Binary PPM of the last presented frame. OpenGL rows start at the bottom;
+// the file is written top-down. A failed write leaves no partial destination.
+void write_ppm(const std::string& path,int width,int height,const std::vector<std::uint8_t>& rgba) {
+  if(width<=0 || height<=0 || rgba.size()!=static_cast<std::size_t>(width)*height*4)
+    throw std::invalid_argument("screenshot dimensions do not match captured pixels");
+  const std::string temporary=path+".tmp";
+  {
+    std::ofstream file(temporary,std::ios::binary|std::ios::trunc);
+    if(!file)throw std::runtime_error("cannot create screenshot "+path);
+    file<<"P6\n"<<width<<' '<<height<<"\n255\n";
+    std::vector<char> row(static_cast<std::size_t>(width)*3);
+    for(int y=height-1;y>=0;--y) {
+      const auto* source=rgba.data()+static_cast<std::size_t>(y)*width*4;
+      for(int x=0;x<width;++x)for(int c=0;c<3;++c)row[static_cast<std::size_t>(x)*3+c]=static_cast<char>(source[x*4+c]);
+      file.write(row.data(),static_cast<std::streamsize>(row.size()));
+    }
+    file.close();
+    if(!file)throw std::runtime_error("error writing screenshot "+path);
+  }
+  std::error_code error;
+  std::filesystem::rename(temporary,path,error);
+  if(error){std::filesystem::remove(temporary);throw std::runtime_error("cannot replace screenshot "+path);}
 }
 
 template <class T>
@@ -308,6 +557,7 @@ struct CameraGeometry {
 };
 
 CameraGeometry camera_geometry(const terraflux::terrain::TerrainMesh& mesh) {
+  using terraflux::math::Vec3;
   if (mesh.vertices.empty()) throw std::runtime_error("terrain mesh contains no vertices");
   auto lower = mesh.vertices.front().position;
   auto upper = lower;
@@ -316,12 +566,24 @@ CameraGeometry camera_geometry(const terraflux::terrain::TerrainMesh& mesh) {
     lower.x = std::min(lower.x, p.x); lower.y = std::min(lower.y, p.y); lower.z = std::min(lower.z, p.z);
     upper.x = std::max(upper.x, p.x); upper.y = std::max(upper.y, p.y); upper.z = std::max(upper.z, p.z);
   }
+  // Start where the terrain's bounding sphere exactly fills the 60-degree
+  // vertical field of view. Terrain is far flatter than its sphere, which
+  // leaves a margin around the oblique default view; interactive zoom is
+  // later clamped to 0.2x..4x of this distance.
+  constexpr double kHalfFovSine = 0.5;  // sin(60 deg / 2)
+  const Vec3 extent = upper - lower;
+  const double radius = 0.5 * extent.length();
   return {{(lower.x + upper.x) * 0.5, (lower.y + upper.y) * 0.5,
            (lower.z + upper.z) * 0.5},
-          std::max(200.0, 2.1 * std::max(upper.x - lower.x, upper.z - lower.z))};
+          std::max(200.0, radius / kHalfFovSine)};
 }
 
-terraflux::math::Mat4 update_camera(terraflux::graphics::RenderDevice& device,
+struct CameraFrame {
+  terraflux::math::Mat4 view_projection;
+  terraflux::math::Vec3 eye;
+};
+
+CameraFrame update_camera(terraflux::graphics::RenderDevice& device,
                    terraflux::graphics::BufferHandle uniform, int width, int height,
                    const CameraGeometry& camera_geometry,
                    double yaw, double pitch, double distance,
@@ -348,7 +610,7 @@ terraflux::math::Mat4 update_camera(terraflux::graphics::RenderDevice& device,
   camera[18] = static_cast<float>(fire_height);
   camera[19] = static_cast<float>(now);
   device.update_buffer(uniform, 0, std::as_bytes(std::span(camera)));
-  return vp;
+  return {vp, eye};
 }
 }  // namespace
 
@@ -374,13 +636,91 @@ int main(int argc, char** argv) {
     terraflux::compute::fill_elevation_voids(grid);
     for (auto& cell : grid.cells)
       if (!cell.elevation_meters && cell.fuel_load > 0) cell.elevation_meters = 0.0;
-    const auto mesh = terraflux::terrain::build_terrain_mesh(grid, cell_size);
+    // The simulation lattice stays untouched; rendering uses a finer C1 surface
+    // through the measured vertices (default 5 m), bounded by a vertex budget.
+    const auto simulation_mesh = terraflux::terrain::build_terrain_mesh(grid, cell_size);
+    const std::uint32_t refinement = options.render_cell > 0.0
+        ? terraflux::terrain::refinement_for_cell_size(simulation_mesh, options.render_cell, options.max_render_vertices) : 1U;
+    const auto mesh = terraflux::terrain::refine_terrain_mesh(simulation_mesh, refinement, options.max_render_vertices);
     auto upload = (!options.terrain_tiles || options.smoke_test)?
         terraflux::graphics::prepare_terrain_upload(mesh):terraflux::graphics::TerrainUpload{};
     std::optional<terraflux::replay::FireField> fire_field;
     if (playback) fire_field.emplace(terraflux::replay::make_fire_field(grid));
     if (mesh.indices.empty()) throw std::runtime_error("scenario terrain has no drawable triangles");
-    const auto scene_camera = camera_geometry(mesh);
+    const auto framing_camera = camera_geometry(mesh);
+    auto scene_camera = framing_camera;  // target pans with W/A/S/D and follows the ground
+    const terraflux::graphics::TerrainSampler ground_sampler(mesh);
+    const auto mesh_summary=terraflux::terrain::summarize_terrain_mesh(mesh);
+    // Height colors span this surface's own range; contour spacing defaults to
+    // an automatic 1-2-2.5-5 step, detail and snow line are style options.
+    auto terrain_style=terraflux::graphics::terrain_style_for(mesh,options.terrain_contour_interval.value_or(-1.0));
+    terrain_style.detail_strength=options.terrain_detail;
+    terrain_style.rock_relief_meters=options.rock_relief;
+    if(options.snow_line)terrain_style.snow_line_fraction=*options.snow_line;
+    (void)terraflux::graphics::pack_terrain_style(terrain_style); // Validate the combined style early.
+    if(options.smoke_test || options.profile || options.residency_report || options.benchmark_frames)
+      std::cout<<"TERRAIN_MESH_JSON={\"vertices\":"<<mesh_summary.vertex_count
+               <<",\"triangles\":"<<mesh_summary.triangle_count
+               <<",\"simulation_vertices\":"<<simulation_mesh.vertices.size()
+               <<",\"simulation_triangles\":"<<simulation_mesh.indices.size()/3
+               <<",\"simulation_cell_m\":"<<simulation_mesh.cell_size_meters
+               <<",\"render_cell_m\":"<<mesh.cell_size_meters<<",\"refinement\":"<<mesh.refinement
+               <<",\"min_elevation_m\":"<<mesh_summary.min_elevation_meters
+               <<",\"max_elevation_m\":"<<mesh_summary.max_elevation_meters
+               <<",\"max_slope_deg\":"<<mesh_summary.max_slope_degrees
+               <<",\"mean_slope_deg\":"<<mesh_summary.mean_slope_degrees
+               <<",\"curvature\":["<<mesh_summary.min_curvature<<","<<mesh_summary.max_curvature<<"]"
+               <<",\"vegetated_vertices\":"<<mesh_summary.vegetated_vertices
+               <<",\"contour_interval_m\":"<<terrain_style.contour_interval_meters
+               <<",\"rock_slope_deg\":["<<terrain_style.rock_slope_start_degrees<<","<<terrain_style.rock_slope_full_degrees<<"]"
+               <<",\"snow_line\":"<<terrain_style.snow_line_fraction
+               <<",\"detail\":"<<terrain_style.detail_strength
+               <<",\"rock_relief_m\":"<<terrain_style.rock_relief_meters<<"}\n";
+
+    // Still-water surface: the demo lake by default, otherwise only on request.
+    std::optional<terraflux::graphics::WaterStyle> water_style;
+    terraflux::graphics::WaterUpload water_upload;
+    if(options.water_level || !playback) {
+      terraflux::graphics::WaterStyle style;
+      style.level_meters=options.water_level.value_or(kDemoWaterLevel);
+      style.wave_height_meters=options.wave_height;style.wave_length_meters=options.wave_length;
+      style.wave_speed_mps=options.wave_speed;style.wave_direction_degrees=options.wave_direction;
+      style.clarity_meters=options.water_clarity;
+      style.light_direction=terrain_style.light_direction;
+      (void)terraflux::graphics::pack_water_style(style,{},0); // Validate before building geometry.
+      const auto water_mesh=terraflux::terrain::build_water_mesh(mesh,style.level_meters);
+      if(options.smoke_test || options.profile || options.residency_report || options.benchmark_frames)
+        std::cout<<"WATER_JSON={\"level_m\":"<<style.level_meters<<",\"triangles\":"<<water_mesh.indices.size()/3
+                 <<",\"submerged_vertices\":"<<water_mesh.submerged_vertices<<",\"max_depth_m\":"<<water_mesh.max_depth_meters
+                 <<",\"wave_height_m\":"<<style.wave_height_meters<<",\"wave_length_m\":"<<style.wave_length_meters
+                 <<",\"wave_speed_mps\":"<<style.wave_speed_mps<<",\"wave_direction_deg\":"<<style.wave_direction_degrees
+                 <<",\"clarity_m\":"<<style.clarity_meters<<"}\n";
+      if(options.water_test && water_mesh.submerged_vertices<50)
+        throw std::invalid_argument("--water-test needs a water level that submerges at least fifty vertices");
+      if(!water_mesh.indices.empty()) {
+        water_upload=terraflux::graphics::prepare_water_upload(water_mesh);
+        water_style=style;
+        // Submerged ground renders as lake/sea floor. "random" derives weights
+        // and patch layout from a seed (random unless --floor-seed) and prints it.
+        terraflux::graphics::WaterFloorStyle floor;
+        if(options.water_floor=="random") {
+          const std::uint32_t seed=options.floor_seed.value_or(static_cast<std::uint32_t>(std::random_device{}()));
+          floor=terraflux::graphics::random_water_floor(seed);
+        } else {
+          floor.kind=terraflux::graphics::parse_water_floor(options.water_floor.c_str());
+          if(options.floor_seed)floor.seed=*options.floor_seed;
+        }
+        if(options.floor_patch_size)floor.patch_size_meters=*options.floor_patch_size;
+        terrain_style.submerged_level_meters=style.level_meters;
+        terrain_style.floor=floor;
+        (void)terraflux::graphics::pack_terrain_style(terrain_style);
+        if(options.smoke_test || options.profile || options.residency_report || options.benchmark_frames)
+          std::cout<<"WATER_FLOOR_JSON={\"kind\":\""<<terraflux::graphics::water_floor_name(floor.kind)
+                   <<"\",\"requested\":\""<<options.water_floor<<"\",\"seed\":"<<floor.seed
+                   <<",\"weights\":["<<floor.sand<<","<<floor.vegetation<<","<<floor.mud<<","<<floor.stones<<"]"
+                   <<",\"patch_size_m\":"<<floor.patch_size_meters<<"}\n";
+      }
+    }
 
     GlfwSession glfw;
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
@@ -422,11 +762,145 @@ int main(int argc, char** argv) {
       return std::string(" | T terrain ")+(layer_visibility.terrain?"on":"off")+
              " | F fire "+(playback?(layer_visibility.fire?"on":"off"):"unavailable");
     };
+    const auto style_packed=pack_terrain_style(terrain_style);
+    const auto style_buffer=owned.create_buffer({BufferUsage::Uniform,sizeof(style_packed)},
+                                                std::as_bytes(std::span(style_packed)));
+    struct WaterGpu { BufferHandle vb,ib,style; PipelineHandle pipeline; std::uint32_t indices=0; };
+    std::optional<WaterGpu> water;
+    if(water_style) {
+      const auto water_vertices=bytes_of(water_upload.vertices);
+      const auto water_indices=bytes_of(water_upload.indices);
+      const auto water_packed=pack_water_style(*water_style,{},0);
+      water=WaterGpu{owned.create_buffer({BufferUsage::Vertex,water_vertices.size()},water_vertices),
+                     owned.create_buffer({BufferUsage::Index,water_indices.size()},water_indices),
+                     owned.create_buffer({BufferUsage::Uniform,sizeof(water_packed)},std::as_bytes(std::span(water_packed))),
+                     {},static_cast<std::uint32_t>(water_upload.indices.size())};
+      // Transparent surface over the opaque terrain: depth-tested, no depth writes.
+      water->pipeline=owned.create_pipeline({ShaderProgramId::Water,water_shader_layout(),true,true,false});
+    }
+
     std::optional<BufferHandle> fire_buffer;
     if (fire_field) {
       const auto fire_bytes = std::as_bytes(std::span(fire_field->states));
       fire_buffer = owned.create_buffer({BufferUsage::Storage, fire_bytes.size()}, fire_bytes);
     }
+    // 3D vegetation: procedural or custom tree meshes and grass tufts, placed
+    // from the material model, instanced, wind-swayed and swappable at run time.
+    VegetationStyle vegetation_style;
+    vegetation_style.seed=options.vegetation_seed;
+    vegetation_style.light_direction=terrain_style.light_direction;
+    if(water_style){vegetation_style.wind_direction_degrees=water_style->wave_direction_degrees;vegetation_style.wind_speed_mps=std::min(30.0,water_style->wave_speed_mps);}
+    std::string vegetation_level=options.vegetation,tree_style=options.tree_style;
+    const auto apply_vegetation_level=[&](const std::string& level) {
+      vegetation_style.trees=level!="off";vegetation_style.grass=level=="medium" || level=="high";
+      vegetation_style.tree_spacing_meters=level=="low"?18.0:level=="high"?8.0:12.0;
+      vegetation_style.grass_spacing_meters=level=="high"?2.0:2.5;
+      vegetation_style.grass_distance_meters=level=="high"?450.0:300.0;
+      if(options.tree_spacing)vegetation_style.tree_spacing_meters=*options.tree_spacing;
+      if(options.grass_spacing)vegetation_style.grass_spacing_meters=*options.grass_spacing;
+      if(options.grass_distance)vegetation_style.grass_distance_meters=*options.grass_distance;
+      if(options.tree_height)vegetation_style.tree_height_meters=*options.tree_height;
+    };
+    apply_vegetation_level(vegetation_level);
+    std::optional<VegetationMesh> custom_tree;
+    if(!options.tree_obj.empty()) {
+      std::ifstream model_file(options.tree_obj);
+      if(!model_file)throw std::runtime_error("cannot open tree model "+options.tree_obj);
+      auto model=terraflux::assets::import_obj(model_file);
+      terraflux::assets::MaterialLibrary materials;
+      for(const auto& [name,located]:terraflux::assets::load_obj_materials(model,std::filesystem::path(options.tree_obj).parent_path()))
+        materials.emplace(name,located.material);
+      custom_tree=vegetation_mesh_from_model(model,materials,{0.2,0.4,0.17},std::filesystem::path(options.tree_obj).filename().string());
+    }
+    const auto tree_meshes_for=[&](const std::string& style)->std::vector<VegetationMesh> {
+      TreeMeshOptions conifer;conifer.shape=TreeShape::Conifer;conifer.segments=6;conifer.layers=3;
+      TreeMeshOptions broadleaf;broadleaf.shape=TreeShape::Broadleaf;broadleaf.segments=7;broadleaf.layers=3;
+      broadleaf.crown_width=0.8;broadleaf.foliage_color={0.16,0.40,0.17};
+      if(style=="conifer")return {make_tree_mesh(conifer)};
+      if(style=="broadleaf")return {make_tree_mesh(broadleaf)};
+      if(style=="custom"){if(!custom_tree)throw std::invalid_argument("custom tree style needs --tree-obj");return {*custom_tree};}
+      return {make_tree_mesh(conifer),make_tree_mesh(broadleaf)};
+    };
+    // The ground under 3D trees shows litter rather than a second painted canopy.
+    const auto canopy_for=[&](bool trees){return trees?0.35:1.0;};
+    const auto refresh_terrain_style=[&] {
+      const auto packed=pack_terrain_style(terrain_style);
+      device.update_buffer(style_buffer,0,std::as_bytes(std::span(packed)));
+    };
+    terrain_style.canopy_on_ground=canopy_for(vegetation_style.trees);
+    refresh_terrain_style();
+    bool fire_emitters_dirty=true;
+    std::unique_ptr<VegetationRenderer> vegetation;
+    std::optional<BufferHandle> vegetation_style_buffer;
+    std::optional<PipelineHandle> vegetation_pipeline;
+    const auto report_vegetation=[&](const char* event) {
+      if(!(options.smoke_test || options.profile || options.residency_report || options.benchmark_frames))return;
+      const auto& placement=vegetation?vegetation->placement():VegetationPlacement{};
+      std::cout<<"VEGETATION_JSON={\"event\":\""<<event<<"\",\"level\":\""<<vegetation_level<<"\",\"tree_style\":\""<<tree_style
+               <<"\",\"trees\":"<<placement.trees.size()<<",\"conifer_like\":"<<placement.trees_per_kind[0]
+               <<",\"broadleaf_like\":"<<placement.trees_per_kind[1]<<",\"grass\":"<<placement.grass.size()
+               <<",\"chunks\":"<<placement.chunks.size()<<",\"tree_spacing_m\":"<<vegetation_style.tree_spacing_meters
+               <<",\"grass_distance_m\":"<<vegetation_style.grass_distance_meters
+               <<",\"grass_capacity\":"<<(vegetation?vegetation->grass_capacity():0)
+               <<",\"geometry_bytes\":"<<(vegetation?vegetation->geometry_bytes():0)<<"}\n";
+    };
+    const auto rebuild_vegetation=[&] {
+      terrain_style.canopy_on_ground=canopy_for(vegetation_style.trees);
+      refresh_terrain_style();
+      fire_emitters_dirty=true;
+      if(!vegetation_style.trees && !vegetation_style.grass){vegetation.reset();return;}
+      auto placement=place_vegetation(mesh,terrain_style,vegetation_style);
+      if(vegetation)vegetation->set_placement(std::move(placement),vegetation_style.grass_distance_meters,vegetation_style.grass_spacing_meters);
+      else vegetation=std::make_unique<VegetationRenderer>(device,std::move(placement),tree_meshes_for(tree_style),make_grass_mesh(3),
+                                                           vegetation_style.grass_distance_meters,vegetation_style.grass_spacing_meters);
+    };
+    {
+      const auto packed=pack_vegetation_style(vegetation_style,{},0);
+      vegetation_style_buffer=owned.create_buffer({BufferUsage::Uniform,sizeof(packed)},std::as_bytes(std::span(packed)));
+      vegetation_pipeline=owned.create_pipeline({ShaderProgramId::Vegetation,vegetation_shader_layout(),true});
+      rebuild_vegetation();
+      report_vegetation("initial");
+    }
+    // Burn states for plants come from the same fire field the ground uses; a
+    // one-record buffer stands in when there is no replay.
+    VegetationFireGrid vegetation_fire;
+    if(fire_field) {
+      vegetation_fire.present=true;vegetation_fire.cell_size_meters=cell_size;
+      vegetation_fire.width=fire_field->width;vegetation_fire.height=fire_field->height;
+      vegetation_fire.origin_offset_x=static_cast<std::int64_t>(mesh.origin_grid_x)-fire_field->min_x;
+      vegetation_fire.origin_offset_y=static_cast<std::int64_t>(mesh.origin_grid_y)-fire_field->min_y;
+    }
+    const std::uint32_t no_fire_state=0;
+    const auto no_fire_buffer=owned.create_buffer({BufferUsage::Storage,sizeof(no_fire_state)},std::as_bytes(std::span(&no_fire_state,1)));
+    const BufferHandle vegetation_fire_buffer=fire_buffer?*fire_buffer:no_fire_buffer;
+
+    // Animated flames and smoke for the replay's burning and burned cells.
+    FireStyle fire_style;
+    fire_style.flame_scale=options.flame_scale;fire_style.smoke_scale=options.smoke_scale;
+    fire_style.wind_direction_degrees=vegetation_style.wind_direction_degrees;fire_style.wind_speed_mps=vegetation_style.wind_speed_mps;
+    fire_style.light_direction=terrain_style.light_direction;fire_style.seed=options.vegetation_seed;
+    std::unique_ptr<FireEffectsRenderer> fire_effects;
+    std::optional<BufferHandle> fire_style_buffer;
+    std::optional<PipelineHandle> fire_pipeline;
+    if(fire_field) {
+      const auto packed=pack_fire_style(fire_style,{},0);
+      fire_style_buffer=owned.create_buffer({BufferUsage::Uniform,sizeof(packed)},std::as_bytes(std::span(packed)));
+      fire_pipeline=owned.create_pipeline({ShaderProgramId::Fire,fire_shader_layout(),true,true,false});
+      const std::size_t capacity=std::clamp<std::size_t>(grid.cells.size()*static_cast<std::size_t>(fire_style.flames_per_cell+3),4096,200'000);
+      fire_effects=std::make_unique<FireEffectsRenderer>(device,capacity);
+    }
+    const auto rebuild_fire_emitters=[&] {
+      if(!fire_effects || !fire_field)return;
+      fire_effects->set_emitters(build_fire_emitters(*fire_field,mesh.origin_grid_x,mesh.origin_grid_y,cell_size,ground_sampler,
+                                                     terrain_style,vegetation?&vegetation->placement():nullptr,fire_style));
+      fire_emitters_dirty=false;
+      if(options.smoke_test || options.profile || options.residency_report) {
+        const auto& e=fire_effects->emitters();
+        std::cout<<"FIRE_EFFECTS_JSON={\"active_cells\":"<<e.active_cells<<",\"burned_cells\":"<<e.burned_cells
+                 <<",\"flames\":"<<e.flames.size()<<",\"crown_flames\":"<<e.crown_flames<<",\"smoke\":"<<e.smoke.size()
+                 <<",\"fuelless_samples\":"<<e.fuelless_samples<<",\"capacity\":"<<fire_effects->capacity()<<"}\n";
+      }
+    };
     std::array<float, 20> initial_camera{};
     const auto camera_bytes = std::as_bytes(std::span(initial_camera));
     const auto camera = owned.create_buffer({BufferUsage::Uniform, camera_bytes.size()}, camera_bytes);
@@ -435,11 +909,16 @@ int main(int argc, char** argv) {
         playback ? wildfire_shader_layout() : terrain_shader_layout(), true});
 
     std::unique_ptr<TerrainTileRenderer> tiled_terrain;
+    // Tile sizes are given in simulation cells; scale them to the render lattice.
+    const std::uint32_t tile_quads=static_cast<std::uint32_t>(std::min<std::uint64_t>(256,
+        static_cast<std::uint64_t>(options.terrain_tile_quads)*mesh.refinement));
     if(options.terrain_tiles)tiled_terrain=std::make_unique<TerrainTileRenderer>(
-        device,mesh,terraflux::terrain::TerrainTileOptions{options.terrain_tile_quads},!options.terrain_residency);
+        device,mesh,terraflux::terrain::TerrainTileOptions{tile_quads},!options.terrain_residency);
     if(tiled_terrain) {
       tiled_terrain->set_residency_limit(options.max_resident_terrain_tiles);
       tiled_terrain->set_retention_frames(options.terrain_retention_frames);
+      // Rock relief displaces vertices vertically; keep culling conservative.
+      tiled_terrain->set_bounds_padding(terrain_style.rock_relief_meters*terrain_style.detail_strength);
     }
     std::vector<std::size_t> terrain_initial_residents;
     std::vector<BufferHandle> terrain_initial_handles;
@@ -1052,12 +1531,17 @@ int main(int argc, char** argv) {
     terraflux::runtime::FixedStepScheduler scheduler(1.0/60.0,0.25,8);
     terraflux::runtime::ScenePlayback scene_playback;
     bool previous_pause=false,previous_step=false,previous_terrain_key=false,previous_fire_key=false;
-    std::vector<std::uint8_t> layers_both,layers_ground,layers_fire;
+    bool previous_vegetation_key=false,previous_tree_key=false,previous_grass_key=false;
+    std::vector<std::uint8_t> vegetation_reference,vegetation_frame,fire_reference,fire_frame;
+    std::vector<int> fire_top_row;
+    std::vector<std::uint8_t> layers_both,layers_ground,layers_fire,shading_reference,water_reference,water_waves;
+    std::vector<bool> water_mask;
     std::vector<std::uint32_t> layers_field_snapshot;
     std::size_t layers_frame_snapshot=0;
     glfwSetWindowTitle(window.get(),(std::string("TerraFlux")+layer_title()).c_str());
     if(!options.smoke_test && !options.benchmark_frames)
-      std::cout<<"Layer controls: T terrain | F fire (visibility only; replay continues)\n";
+      std::cout<<"Layer controls: T terrain | F fire (visibility only; replay continues)\n"
+               <<"Vegetation controls: V density | B tree meshes | G grass distance\n";
     std::string last_scene_title;
     std::optional<terraflux::scene::Scene> expected_controls_scene;
     if(options.scene_controls_test) {
@@ -1075,6 +1559,8 @@ int main(int argc, char** argv) {
     bool previous_unload=false,previous_reload=false,previous_detach=false,previous_attach=false,previous_prev_node=false,previous_next_node=false;
     bool previous_space = false, previous_home = false, previous_back = false, previous_forward = false;
     unsigned rendered_frames = 0;
+    std::vector<std::uint8_t> screenshot_pixels;
+    int screenshot_width=0,screenshot_height=0;
     std::vector<std::uint8_t> lifecycle_terrain;
     terraflux::scene::NodeId residency_node=0;
     std::vector<BufferHandle> residency_handles;
@@ -1135,7 +1621,8 @@ int main(int argc, char** argv) {
       const double now = glfwGetTime();
       const double profile_update_start = glfwGetTime();
       const double elapsed=options.replay_controls_test?0.1:
-          (options.benchmark_frames || options.scene_controls_test || options.layers_test)?
+          (options.benchmark_frames || options.scene_controls_test || options.layers_test ||
+           options.water_test || options.terrain_shading_test || options.vegetation_test || options.fire_test)?
           (1.0/60.0):std::max(0.0,now-previous_time);
       const double delta = std::clamp(elapsed, 0.0, 0.1);
       previous_time = now;
@@ -1182,6 +1669,39 @@ int main(int argc, char** argv) {
           throw std::runtime_error("scene clock pause/step affected independent engine time");
       }
 
+      {
+        // V cycles vegetation density, B the tree mesh style, G the grass distance.
+        const bool vegetation_key=glfwGetKey(window.get(),GLFW_KEY_V)==GLFW_PRESS;
+        const bool tree_key=glfwGetKey(window.get(),GLFW_KEY_B)==GLFW_PRESS;
+        const bool grass_key=glfwGetKey(window.get(),GLFW_KEY_G)==GLFW_PRESS;
+        if(!options.smoke_test && !options.benchmark_frames) {
+          try {
+            if(vegetation_key && !previous_vegetation_key) {
+              vegetation_level=vegetation_level=="off"?"low":vegetation_level=="low"?"medium":vegetation_level=="medium"?"high":"off";
+              apply_vegetation_level(vegetation_level);rebuild_vegetation();report_vegetation("level");
+              std::cout<<"Vegetation: "<<vegetation_level<<'\n';
+            }
+            if(tree_key && !previous_tree_key && vegetation) {
+              tree_style=tree_style=="conifer"?"broadleaf":tree_style=="broadleaf"?"mixed":tree_style=="mixed"?(custom_tree?"custom":"conifer"):"conifer";
+              vegetation->set_tree_meshes(tree_meshes_for(tree_style));report_vegetation("tree_style");
+              std::cout<<"Tree meshes: "<<tree_style<<'\n';
+            }
+            if(grass_key && !previous_grass_key) {
+              const double d=vegetation_style.grass_distance_meters;
+              vegetation_style.grass=true;
+              vegetation_style.grass_distance_meters=d<=0?150:d<=150?300:d<=300?600:0;
+              if(vegetation_style.grass_distance_meters<=0)vegetation_style.grass=false;
+              rebuild_vegetation();report_vegetation("grass");
+              std::cout<<"Grass distance: "<<vegetation_style.grass_distance_meters<<" m\n";
+            }
+          } catch(const std::exception& error) {
+            std::cerr<<"Vegetation change rejected; previous state preserved: "<<error.what()<<'\n';
+          }
+          if((vegetation_key && !previous_vegetation_key) || (tree_key && !previous_tree_key) || (grass_key && !previous_grass_key))
+            previous_time=glfwGetTime();
+        }
+        previous_vegetation_key=vegetation_key;previous_tree_key=tree_key;previous_grass_key=grass_key;
+      }
       const bool terrain_key=glfwGetKey(window.get(),GLFW_KEY_T)==GLFW_PRESS;
       const bool fire_key=glfwGetKey(window.get(),GLFW_KEY_F)==GLFW_PRESS;
       const bool layer_changed=(terrain_key && !previous_terrain_key) || (fire_key && !previous_fire_key);
@@ -1193,6 +1713,18 @@ int main(int argc, char** argv) {
         layer_visibility=states.at(rendered_frames);
       }
       if(layer_changed)glfwSetWindowTitle(window.get(),(std::string("TerraFlux")+layer_title()).c_str());
+      if(options.terrain_shading_test) {
+        // Frames 0 and 2: base materials without contours or detail (CPU reference
+        // parity). Frame 1: eight contour levels. Frame 3: full procedural detail.
+        auto staged=terrain_style;
+        staged.contour_interval_meters=0;staged.detail_strength=0;
+        const double range=terrain_style.max_elevation_meters-terrain_style.min_elevation_meters;
+        if(!(range>0))throw std::runtime_error("terrain shading test requires terrain with relief");
+        if(rendered_frames==1)staged.contour_interval_meters=range/8.0;
+        if(rendered_frames==3)staged.detail_strength=1.0;
+        const auto packed=pack_terrain_style(staged);
+        device.update_buffer(style_buffer,0,std::as_bytes(std::span(packed)));
+      }
       const bool space = glfwGetKey(window.get(), GLFW_KEY_SPACE) == GLFW_PRESS;
       const bool home = glfwGetKey(window.get(), GLFW_KEY_HOME) == GLFW_PRESS;
       const bool back = glfwGetKey(window.get(), GLFW_KEY_COMMA) == GLFW_PRESS;
@@ -1231,6 +1763,7 @@ int main(int argc, char** argv) {
         if(frame_changed) {
           terraflux::replay::apply_frame(playback->frames[playback_frame],*fire_field);
           device.update_buffer(*fire_buffer,0,std::as_bytes(std::span(fire_field->states)));
+          fire_emitters_dirty=true;
           uploaded_frame=playback_frame;
         }
         if(frame_changed || speed_changed || options.smoke_test || (space && !previous_space) ||
@@ -1267,6 +1800,25 @@ int main(int argc, char** argv) {
         }
       }
 
+      {
+        // W/A/S/D pan the orbit target over the ground (faster when zoomed out);
+        // the target height follows the terrain so the camera can walk among
+        // the vegetation. Home/End are unaffected; the framing distance is kept.
+        const double step=std::max(5.0,distance*0.6)*delta;
+        const terraflux::math::Vec3 forward{-std::sin(yaw),0,-std::cos(yaw)},right{std::cos(yaw),0,-std::sin(yaw)};
+        terraflux::math::Vec3 pan{};
+        if(glfwGetKey(window.get(),GLFW_KEY_W)==GLFW_PRESS)pan=pan+forward*step;
+        if(glfwGetKey(window.get(),GLFW_KEY_S)==GLFW_PRESS)pan=pan-forward*step;
+        if(glfwGetKey(window.get(),GLFW_KEY_D)==GLFW_PRESS && !(imported && imported->uses_scene_file))pan=pan+right*step;
+        if(glfwGetKey(window.get(),GLFW_KEY_A)==GLFW_PRESS && !(imported && imported->uses_scene_file))pan=pan-right*step;
+        if(pan.length()>0 && !options.smoke_test && !options.benchmark_frames) {
+          auto target=scene_camera.target+pan;
+          target.x=std::clamp(target.x,ground_sampler.lower_bound().x,ground_sampler.upper_bound().x);
+          target.z=std::clamp(target.z,ground_sampler.lower_bound().z,ground_sampler.upper_bound().z);
+          if(const auto ground=ground_sampler.sample(target.x,target.z))target.y=std::max(ground->position.y,water_style?water_style->level_meters:ground->position.y)+1.5;
+          scene_camera.target=target;
+        }
+      }
       if (glfwGetKey(window.get(), GLFW_KEY_LEFT) == GLFW_PRESS) yaw -= delta;
       if (glfwGetKey(window.get(), GLFW_KEY_RIGHT) == GLFW_PRESS) yaw += delta;
       if (glfwGetKey(window.get(), GLFW_KEY_UP) == GLFW_PRESS) pitch += delta;
@@ -1278,7 +1830,9 @@ int main(int argc, char** argv) {
       if (glfwGetKey(window.get(), GLFW_KEY_MINUS) == GLFW_PRESS ||
           glfwGetKey(window.get(), GLFW_KEY_KP_SUBTRACT) == GLFW_PRESS)
         distance += scene_camera.starting_distance * 0.65 * delta;
-      distance = std::clamp(distance, scene_camera.starting_distance * 0.2,
+      // Zoom in far enough to walk among the trees and grass (3 % of the start
+      // distance, at least 25 m) and out to four times the framing distance.
+      distance = std::clamp(distance, std::max(25.0, scene_camera.starting_distance * 0.03),
                            scene_camera.starting_distance * 4.0);
 
       int width = 0, height = 0;
@@ -1332,6 +1886,10 @@ int main(int argc, char** argv) {
         distance=scene_camera.starting_distance*(close?0.2:1.0);
         yaw=rendered_frames==3?1.95:0.45;pitch=close?0.55:0.75;
       }
+      if(options.vegetation_test) {
+        // Close enough to the ground that grass tufts are inside their draw distance.
+        distance=scene_camera.starting_distance*0.12;yaw=0.4;pitch=0.3;
+      }
       if(options.terrain_tile_test && rendered_frames>0) {
         distance=scene_camera.starting_distance*0.2;
         yaw=rendered_frames==1?0.45:1.95;pitch=0.55;
@@ -1346,10 +1904,13 @@ int main(int argc, char** argv) {
                  <<",\"fire\":"<<(layer_visibility.fire?"true":"false")
                  <<",\"fire_available\":"<<(playback?"true":"false")
                  <<",\"surface_visible\":"<<(draw_surface?"true":"false")<<"}\n";
-      const auto camera_vp=update_camera(device, camera, scene_width, scene_height, scene_camera,
+      const auto camera_frame=update_camera(device, camera, scene_width, scene_height, scene_camera,
                     yaw, pitch, distance,
                     cell_size, fire_field ? fire_field->width : 1,
-                    fire_field ? fire_field->height : 1, (options.layers_test || options.replay_controls_test)?0.0:engine_time);
+                    fire_field ? fire_field->height : 1,
+                    (options.layers_test || options.replay_controls_test || options.terrain_shading_test || options.water_test ||
+                     options.vegetation_test || options.fire_test)?0.0:engine_time);
+      const auto& camera_vp=camera_frame.view_projection;
       const auto terrain_frustum=Frustum::from_view_projection(camera_vp);
       TerrainResidencyChange terrain_residency_change;
       if(options.terrain_residency) {
@@ -1361,7 +1922,8 @@ int main(int argc, char** argv) {
           report_residency();
       }
       if(record_gpu)device.begin_gpu_timing();
-      DrawIndexed command{pipeline,vb,ib,0,static_cast<std::uint32_t>(upload.indices.size()),{{0,camera}}, {}};
+      DrawIndexed command{pipeline,vb,ib,0,static_cast<std::uint32_t>(upload.indices.size()),
+                          {{0,camera},{kTerrainStyleSlot,style_buffer}}, {}};
       if(fire_buffer)command.storage_buffers.push_back({1,*fire_buffer});
       if(layer_buffer)command.uniform_buffers.push_back({10,*layer_buffer});
       std::vector<std::uint8_t> terrain_reference;
@@ -1373,7 +1935,7 @@ int main(int argc, char** argv) {
       RenderPassScope terrain_pass(device,{scene_target});
       TerrainTileDrawStats terrain_stats;
       if(tiled_terrain) {
-        if(draw_surface)terrain_stats=tiled_terrain->draw(pipeline,camera,fire_buffer,terrain_frustum,!options.no_culling,layer_buffer);
+        if(draw_surface)terrain_stats=tiled_terrain->draw(pipeline,camera,fire_buffer,terrain_frustum,!options.no_culling,layer_buffer,style_buffer);
         else terrain_stats.total=tiled_terrain->tile_count();
         frame_draws+=static_cast<std::uint32_t>(terrain_stats.draws);
         if(options.smoke_test && device.capture_rgba(scene_width,scene_height)!=terrain_reference)
@@ -1396,6 +1958,154 @@ int main(int argc, char** argv) {
                    <<",\"retained_hidden\":"<<terrain_residency_change.retained
                    <<",\"pressure_trimmed\":"<<terrain_residency_change.trimmed<<"}\n";
       } else if(draw_surface){device.draw_indexed(command);++frame_draws;}
+      if(options.terrain_shading_test) {
+        const auto pixels=device.capture_rgba(scene_width,scene_height);
+        const auto sample=[&](int px,int py,int channel) {
+          return static_cast<int>(pixels[(static_cast<std::size_t>(py)*scene_width+px)*4+channel]);
+        };
+        const auto base_style=[&] {
+          auto style=terrain_style;style.contour_interval_meters=0;style.detail_strength=0;return style;
+        }();
+        if(rendered_frames==0) {
+          // Compare the GPU image with the CPU reference color at every interior,
+          // unburned, on-screen vertex. Occluded vertices legitimately differ, so a
+          // majority must match overall and within every material class that has
+          // enough candidates; the matched set must also span the height ramp,
+          // show a slope-dependent hillshade range and include rock where it exists.
+          constexpr int kTolerance=12;
+          const double range=base_style.max_elevation_meters-base_style.min_elevation_meters;
+          const auto light=base_style.light_direction.normalized();
+          auto soil_only=base_style; // Same style without any rock blend, to find where rock is visible.
+          soil_only.rock_slope_start_degrees=89.0;soil_only.rock_slope_full_degrees=90.0;
+          std::size_t candidates=0,matched=0,rock_candidates=0,rock_matched=0;
+          double min_height=1,max_height=0,min_diffuse=1,max_diffuse=0;
+          constexpr std::size_t kClasses=kTerrainMaterialClassCount;
+          std::array<std::size_t,kClasses> class_candidates{},class_matched{};
+          for(const auto& vertex:mesh.vertices) {
+            // Render vertices lie inside or on a simulation quad; require the
+            // surrounding 4x4 block of measured cells so no edge or hole is near.
+            const std::int64_t sim_x=mesh.origin_grid_x+(static_cast<std::int64_t>(vertex.grid_x)-mesh.origin_grid_x)/mesh.refinement;
+            const std::int64_t sim_y=mesh.origin_grid_y+(static_cast<std::int64_t>(vertex.grid_y)-mesh.origin_grid_y)/mesh.refinement;
+            bool interior=true;
+            for(int dy=-1;dy<=2 && interior;++dy)for(int dx=-1;dx<=2;++dx) {
+              const auto neighbour=grid.find(static_cast<int>(sim_x+dx),static_cast<int>(sim_y+dy));
+              if(neighbour==terraflux::compute::kAbsent || !grid.cells[static_cast<std::size_t>(neighbour)].elevation_meters) {
+                interior=false;break;
+              }
+            }
+            if(!interior)continue;
+            if(fire_field) { // Fire footprints reach into neighbouring cells; stay clear of them.
+              bool near_fire=false;
+              for(int dy=-2;dy<=3 && !near_fire;++dy)for(int dx=-2;dx<=3;++dx) {
+                const std::int64_t fx=sim_x+dx-fire_field->min_x;
+                const std::int64_t fy=sim_y+dy-fire_field->min_y;
+                if(fx<0 || fy<0 || fx>=fire_field->width || fy>=fire_field->height)continue;
+                const auto state=fire_field->states[static_cast<std::size_t>(fy)*fire_field->width+static_cast<std::size_t>(fx)];
+                if(state==1 || state==2){near_fire=true;break;}
+              }
+              if(near_fire)continue;
+            }
+            const auto clip=camera_vp.transform({vertex.position.x,vertex.position.y,vertex.position.z,1});
+            if(!(clip.w>0))continue;
+            const double nx=clip.x/clip.w,ny=clip.y/clip.w;
+            if(nx<-0.98 || nx>0.98 || ny<-0.98 || ny>0.98)continue;
+            const int px=std::clamp(static_cast<int>(std::floor((nx*0.5+0.5)*scene_width)),0,scene_width-1);
+            const int py=std::clamp(static_cast<int>(std::floor((ny*0.5+0.5)*scene_height)),0,scene_height-1);
+            const TerrainSurfacePoint point{vertex.position.y,vertex.normal,vertex.fuel_load,vertex.fuel_moisture,vertex.curvature};
+            const auto expected=terrain_surface_color(point,base_style);
+            const auto soil=terrain_surface_color(point,soil_only);
+            const auto material_weights=terrain_material(point,base_style);
+            const auto material=static_cast<std::size_t>(dominant_material(material_weights));
+            // Per-class statistics use vertices firmly inside their class: on the
+            // render lattice neighbouring vertices are only a few pixels apart, so a
+            // pixel at a shoreline or floor-zone transition legitimately blends classes.
+            const double floor_peak=std::max({material_weights.floor_sand,material_weights.floor_vegetation,
+                                              material_weights.floor_mud,material_weights.floor_stones});
+            const bool firm=material_weights.submerged<0.02 || (material_weights.submerged>0.98 && floor_peak>=0.75);
+            const double height=(vertex.position.y-base_style.min_elevation_meters)/range;
+            const double diffuse=std::max(vertex.normal.dot(light),0.0);
+            const double rock_shift=std::max({std::abs(expected.x-soil.x),std::abs(expected.y-soil.y),std::abs(expected.z-soil.z)})*255.0;
+            const bool rock_visible=rock_shift>2*kTolerance; // Rock changes this vertex beyond tolerance.
+            ++candidates;if(firm)++class_candidates.at(material);if(rock_visible)++rock_candidates;
+            const double channels[3]={expected.x,expected.y,expected.z};
+            bool ok=true;
+            for(int c=0;c<3;++c) {
+              const int want=static_cast<int>(std::lround(std::clamp(channels[c],0.0,1.0)*255.0));
+              if(std::abs(want-sample(px,py,c))>kTolerance)ok=false;
+            }
+            if(!ok)continue;
+            ++matched;if(firm)++class_matched[material];if(rock_visible)++rock_matched;
+            min_height=std::min(min_height,height);max_height=std::max(max_height,height);
+            min_diffuse=std::min(min_diffuse,diffuse);max_diffuse=std::max(max_diffuse,diffuse);
+          }
+          std::cout<<"TERRAIN_SHADING_JSON={\"candidates\":"<<candidates<<",\"matched\":"<<matched
+                   <<",\"height_span\":["<<min_height<<","<<max_height<<"]"
+                   <<",\"diffuse_span\":["<<min_diffuse<<","<<max_diffuse<<"]"
+                   <<",\"rock_candidates\":"<<rock_candidates<<",\"rock_matched\":"<<rock_matched<<"}\n";
+          std::cout<<"TERRAIN_MATERIAL_JSON={";
+          std::size_t present_classes=0;
+          for(std::size_t i=0;i<kClasses;++i) {
+            const auto name=terrain_material_name(static_cast<TerrainMaterialClass>(i));
+            std::cout<<(i?",":"")<<'"'<<name<<"\":["<<class_candidates[i]<<","<<class_matched[i]<<"]";
+            if(class_candidates[i]>=20)++present_classes;
+          }
+          std::cout<<"}\n";
+          if(candidates<100)throw std::runtime_error("terrain shading test has too few comparable vertices");
+          if(matched*10<candidates*6)throw std::runtime_error("terrain pixels do not match the CPU shading reference");
+          if(max_height-min_height<0.5)throw std::runtime_error("terrain shading did not span the height ramp");
+          if(max_diffuse-min_diffuse<0.05)throw std::runtime_error("terrain shading shows no slope-dependent hillshade");
+          if(rock_matched*10<rock_candidates*6)throw std::runtime_error("steep terrain did not render as rock");
+          for(std::size_t i=0;i<kClasses;++i)
+            if(class_candidates[i]>=20 && class_matched[i]*10<class_candidates[i]*6)
+              throw std::runtime_error(std::string("material did not match the CPU reference: ")+
+                                       terrain_material_name(static_cast<TerrainMaterialClass>(i)));
+          // The demo terrain is authored to show every material family.
+          if(!playback && present_classes<7)throw std::runtime_error("demo terrain does not exhibit the expected material variety");
+          shading_reference=pixels;
+        } else {
+          std::size_t terrain_pixels=0,changed=0,brightened=0,silhouette=0;
+          double absolute_difference=0;
+          const auto clear=RenderPassDesc{}.clear_color; // Sky pixels keep the pass clear color.
+          std::array<std::uint8_t,3> sky{};
+          for(std::size_t c=0;c<3;++c)sky[c]=static_cast<std::uint8_t>(std::lround(clear[c]*255.0));
+          for(std::size_t i=0;i<pixels.size();i+=4) {
+            if(shading_reference[i]==sky[0] && shading_reference[i+1]==sky[1] && shading_reference[i+2]==sky[2]) {
+              if(pixels[i]!=sky[0] || pixels[i+1]!=sky[1] || pixels[i+2]!=sky[2])++silhouette;
+              continue;
+            }
+            ++terrain_pixels;
+            bool differs=false,lighter=false;
+            for(std::size_t c=0;c<3;++c) {
+              const int delta=int(pixels[i+c])-int(shading_reference[i+c]);
+              lighter=lighter || delta>1;
+              absolute_difference+=std::abs(delta);
+              differs=differs || delta!=0;
+            }
+            if(differs)++changed;
+            if(lighter)++brightened;
+          }
+          const double mean_difference=terrain_pixels?absolute_difference/(3.0*terrain_pixels):0.0;
+          // Only rock relief (frame 3) may move the silhouette, and only a little.
+          if(silhouette && (rendered_frames!=3 || silhouette*33>terrain_pixels))
+            throw std::runtime_error("terrain style changed sky pixels");
+          if(rendered_frames==1) {
+            std::cout<<"TERRAIN_CONTOUR_JSON={\"terrain_pixels\":"<<terrain_pixels<<",\"changed\":"<<changed<<"}\n";
+            // Contours darken light ground and lift only very dark ground (dense forest).
+            if(brightened*2>changed)throw std::runtime_error("contour lines brightened most terrain pixels");
+            if(!terrain_pixels || changed*200<terrain_pixels || changed*10>terrain_pixels*4)
+              throw std::runtime_error("contour lines changed an implausible share of terrain pixels");
+          } else if(rendered_frames==2) {
+            if(pixels!=shading_reference)throw std::runtime_error("restoring the terrain style changed reference pixels");
+          } else {
+            std::cout<<"TERRAIN_DETAIL_JSON={\"terrain_pixels\":"<<terrain_pixels<<",\"changed\":"<<changed
+                     <<",\"mean_abs_difference\":"<<mean_difference<<",\"silhouette_pixels\":"<<silhouette<<"}\n";
+            // Procedural detail must texture most of the surface while staying a
+            // modulation of the base materials rather than a different picture.
+            if(!terrain_pixels || changed*10<terrain_pixels*5)throw std::runtime_error("procedural detail left the terrain untextured");
+            if(mean_difference<0.6 || mean_difference>40.0)throw std::runtime_error("procedural detail deviates implausibly from the base materials");
+          }
+        }
+      }
       if(options.layers_test) {
         const auto pixels=device.capture_rgba(scene_width,scene_height);
         if(rendered_frames==0) {
@@ -1442,6 +2152,105 @@ int main(int argc, char** argv) {
            (rendered_frames==6 && pixels!=replay_initial_pixels))
           throw std::runtime_error("replay backward/reset pixels did not restore selected frame");
       }
+      // Water belongs to the surface layer: it follows the terrain in the same
+      // pass so asset diagnostics still compare against the complete ground.
+      std::vector<std::uint8_t> water_before;
+      if(water && layer_visibility.terrain) {
+        auto staged=*water_style;
+        // Smoke diagnostics compare frames, so their water does not animate.
+        double water_time=options.smoke_test?0.0:engine_time;
+        if(options.water_test) {
+          // Frames 0 and 3: flat water at t=0 (CPU reference parity). Frame 1:
+          // configured waves at t=0. Frame 2: the same waves 0.7 s later.
+          if(rendered_frames==0 || rendered_frames==3)staged.wave_height_meters=0;
+          water_time=rendered_frames==2?0.7:0.0;
+          water_before=device.capture_rgba(scene_width,scene_height);
+        }
+        const auto packed=pack_water_style(staged,camera_frame.eye,water_time);
+        device.update_buffer(water->style,0,std::as_bytes(std::span(packed)));
+        device.draw_indexed({water->pipeline,water->vb,water->ib,0,water->indices,
+                             {{0,camera},{kWaterStyleSlot,water->style}},{}});
+        ++frame_draws;
+      }
+      if(options.water_test) {
+        if(!water)throw std::runtime_error("water test has no water surface");
+        const auto pixels=device.capture_rgba(scene_width,scene_height);
+        if(rendered_frames==0) {
+          // Flat water: every on-screen surface vertex deeper than 0.3 m must blend
+          // the CPU reference color over the ground pixel captured before the draw.
+          constexpr int kTolerance=12;
+          auto flat=*water_style;flat.wave_height_meters=0;
+          std::size_t candidates=0,matched=0;
+          double min_depth=1e9,max_depth=0;
+          for(const auto& v:water_upload.vertices) {
+            const double depth=flat.level_meters-v.bed_height;
+            if(depth<0.3)continue;
+            const auto clip=camera_vp.transform({v.position[0],v.position[1],v.position[2],1});
+            if(!(clip.w>0))continue;
+            const double nx=clip.x/clip.w,ny=clip.y/clip.w;
+            if(nx<-0.98 || nx>0.98 || ny<-0.98 || ny>0.98)continue;
+            const int px=std::clamp(static_cast<int>(std::floor((nx*0.5+0.5)*scene_width)),0,scene_width-1);
+            const int py=std::clamp(static_cast<int>(std::floor((ny*0.5+0.5)*scene_height)),0,scene_height-1);
+            const auto sample=water_surface_sample({v.position[0],v.position[1],v.position[2]},depth,camera_frame.eye,flat);
+            const std::size_t offset=(static_cast<std::size_t>(py)*scene_width+px)*4;
+            const double water_rgb[3]={sample.color.x,sample.color.y,sample.color.z};
+            bool ok=true;
+            for(int c=0;c<3;++c) {
+              const double blended=std::clamp(water_rgb[c],0.0,1.0)*sample.alpha+(water_before[offset+c]/255.0)*(1-sample.alpha);
+              if(std::abs(static_cast<int>(std::lround(blended*255.0))-static_cast<int>(pixels[offset+c]))>kTolerance)ok=false;
+            }
+            ++candidates;if(ok)++matched;
+            min_depth=std::min(min_depth,depth);max_depth=std::max(max_depth,depth);
+          }
+          std::size_t water_pixels=0;
+          for(std::size_t i=0;i<pixels.size();i+=4)
+            if(pixels[i]!=water_before[i] || pixels[i+1]!=water_before[i+1] || pixels[i+2]!=water_before[i+2])++water_pixels;
+          std::cout<<"WATER_TEST_JSON={\"candidates\":"<<candidates<<",\"matched\":"<<matched
+                   <<",\"depth_span\":["<<min_depth<<","<<max_depth<<"],\"water_pixels\":"<<water_pixels<<"}\n";
+          if(candidates<50)throw std::runtime_error("water test has too few visible surface vertices");
+          if(matched*10<candidates*6)throw std::runtime_error("flat water pixels do not match the CPU reference");
+          if(max_depth-min_depth<1.0)throw std::runtime_error("water test needs a range of depths");
+          if(water_pixels<500)throw std::runtime_error("water surface covered too few pixels");
+          water_reference=pixels;
+          // Flat water is nearly invisible in the last centimeters of depth, so the
+          // coverage mask is dilated by three pixels to include the shoreline fringe
+          // where foam legitimately appears.
+          std::vector<bool> covered(pixels.size()/4,false);
+          for(std::size_t i=0;i<pixels.size();i+=4)
+            covered[i/4]=pixels[i]!=water_before[i] || pixels[i+1]!=water_before[i+1] || pixels[i+2]!=water_before[i+2];
+          water_mask.assign(covered.size(),false);
+          for(int y=0;y<scene_height;++y)for(int x=0;x<scene_width;++x) {
+            bool near_water=false;
+            for(int dy=-3;dy<=3 && !near_water;++dy)for(int dx=-3;dx<=3;++dx) {
+              const int sx=x+dx,sy=y+dy;
+              if(sx<0 || sy<0 || sx>=scene_width || sy>=scene_height)continue;
+              if(covered[static_cast<std::size_t>(sy)*scene_width+sx]){near_water=true;break;}
+            }
+            water_mask[static_cast<std::size_t>(y)*scene_width+x]=near_water;
+          }
+        } else {
+          std::size_t water_pixels=0,changed=0,land_changed=0,bright=0;
+          for(std::size_t i=0;i<pixels.size();i+=4) {
+            const auto& previous=rendered_frames==2?water_waves:water_reference;
+            const bool differs=pixels[i]!=previous[i] || pixels[i+1]!=previous[i+1] || pixels[i+2]!=previous[i+2];
+            if(!water_mask[i/4]){if(differs)++land_changed;continue;}
+            ++water_pixels;if(differs)++changed;
+            if(pixels[i]>200 && pixels[i+1]>200 && pixels[i+2]>200)++bright; // foam
+          }
+          std::cout<<"WATER_WAVES_JSON={\"frame\":"<<rendered_frames<<",\"water_pixels\":"<<water_pixels
+                   <<",\"changed\":"<<changed<<",\"land_changed\":"<<land_changed<<",\"foam_pixels\":"<<bright<<"}\n";
+          // Shallow puddles that flat water left invisible may still gain foam.
+          if(land_changed*100>water_pixels)throw std::runtime_error("waves changed pixels outside the water surface");
+          if(rendered_frames==1) {
+            if(changed*10<water_pixels*3)throw std::runtime_error("waves left the water surface unchanged");
+            if(!bright)throw std::runtime_error("waves produced no foam along the shore");
+            water_waves=pixels;
+          } else if(rendered_frames==2) {
+            if(changed*10<water_pixels*3)throw std::runtime_error("water did not animate between frames");
+          } else if(pixels!=water_reference)
+            throw std::runtime_error("flat water did not restore reference pixels");
+        }
+      }
       const auto terrain_snapshot=(options.smoke_test &&
           (options.asset_lifecycle_test || (imported && imported->uses_pbr)))?
           device.capture_rgba(scene_width,scene_height):std::vector<std::uint8_t>{};
@@ -1456,6 +2265,66 @@ int main(int argc, char** argv) {
       if(options.smoke_test && !terrain_snapshot.empty() &&
          device.capture_rgba(scene_width,scene_height)!=terrain_snapshot)
         throw std::runtime_error("load pass changed preserved terrain color");
+      // Vegetation: opaque instanced plants over the terrain, before imported objects.
+      VegetationDrawStats vegetation_stats;
+      bool draw_vegetation=vegetation && layer_visibility.terrain;
+      if(options.vegetation_test) {
+        // Frames: 0 off, 1 on, 2 other tree meshes, 3 same meshes 1.5 s later, 4 off.
+        draw_vegetation=vegetation && rendered_frames>=1 && rendered_frames<=3;
+        if(rendered_frames==2 && vegetation) {
+          tree_style=tree_style=="conifer"?"broadleaf":"conifer";
+          vegetation->set_tree_meshes(tree_meshes_for(tree_style));
+        }
+      }
+      if(draw_vegetation) {
+        const double vegetation_time=options.vegetation_test?(rendered_frames==3?1.5:0.0):(options.smoke_test?0.0:engine_time);
+        const auto packed=pack_vegetation_style(vegetation_style,camera_frame.eye,vegetation_time,vegetation_fire);
+        device.update_buffer(*vegetation_style_buffer,0,std::as_bytes(std::span(packed)));
+        vegetation_stats=vegetation->draw(*vegetation_pipeline,camera,*vegetation_style_buffer,vegetation_fire_buffer,terrain_frustum,
+                                          camera_frame.eye,vegetation_style,!options.no_culling);
+        frame_draws+=static_cast<std::uint32_t>(vegetation_stats.draws);
+        if(options.smoke_test || (options.profile && profile_frames%120==0))
+          std::cout<<"VEGETATION_DRAW_JSON={\"chunks_visible\":"<<vegetation_stats.chunks_visible<<",\"chunks\":"<<vegetation_stats.chunks_total
+                   <<",\"trees\":"<<vegetation_stats.tree_instances<<",\"grass\":"<<vegetation_stats.grass_instances
+                   <<",\"draws\":"<<vegetation_stats.draws<<",\"triangles\":"<<vegetation_stats.triangles<<"}\n";
+      }
+      if(options.vegetation_test) {
+        const auto pixels=device.capture_rgba(scene_width,scene_height);
+        const auto clear=RenderPassDesc{}.clear_color;
+        std::array<std::uint8_t,3> sky{};
+        for(std::size_t c=0;c<3;++c)sky[c]=static_cast<std::uint8_t>(std::lround(clear[c]*255.0));
+        const auto differs=[&](const std::vector<std::uint8_t>& a,const std::vector<std::uint8_t>& b,std::size_t i) {
+          return a[i]!=b[i] || a[i+1]!=b[i+1] || a[i+2]!=b[i+2];
+        };
+        if(rendered_frames==0) {
+          if(vegetation_stats.draws)throw std::runtime_error("vegetation drew in its off frame");
+          vegetation_reference=pixels;
+        } else if(rendered_frames==1 || rendered_frames==2 || rendered_frames==3) {
+          std::size_t changed=0,above_horizon=0;
+          std::set<std::uint32_t> colors;
+          for(std::size_t i=0;i<pixels.size();i+=4) {
+            if(!differs(pixels,vegetation_reference,i))continue;
+            ++changed;
+            if(vegetation_reference[i]==sky[0] && vegetation_reference[i+1]==sky[1] && vegetation_reference[i+2]==sky[2])++above_horizon;
+            colors.insert((pixels[i]/16u)<<8 | (pixels[i+1]/16u)<<4 | (pixels[i+2]/16u));
+          }
+          std::cout<<"VEGETATION_TEST_JSON={\"frame\":"<<rendered_frames<<",\"changed\":"<<changed<<",\"above_horizon\":"<<above_horizon
+                   <<",\"color_buckets\":"<<colors.size()<<",\"trees_drawn\":"<<vegetation_stats.tree_instances
+                   <<",\"grass_drawn\":"<<vegetation_stats.grass_instances<<"}\n";
+          if(!vegetation_stats.tree_instances || !vegetation_stats.grass_instances || !vegetation_stats.draws)
+            throw std::runtime_error("vegetation test drew no trees or no grass");
+          if(changed*50<pixels.size()/4)throw std::runtime_error("vegetation changed too few pixels");
+          if(!above_horizon)throw std::runtime_error("trees have no height: nothing rises above the terrain silhouette");
+          if(colors.size()<24)throw std::runtime_error("vegetation shows too little color variation");
+          if(rendered_frames==1)vegetation_frame=pixels;
+          else {
+            std::size_t moved=0;
+            for(std::size_t i=0;i<pixels.size();i+=4)if(differs(pixels,vegetation_frame,i))++moved;
+            if(moved*10<changed)throw std::runtime_error(rendered_frames==2?"switching tree meshes changed nothing":"wind sway changed nothing");
+            vegetation_frame=pixels;
+          }
+        } else if(pixels!=vegetation_reference)throw std::runtime_error("disabling vegetation did not restore the reference");
+      }
       OpaqueRenderQueue draw_queue;
       TransparentRenderQueue transparent_queue;
       std::size_t visible_instances=0,culled_instances=0;
@@ -1585,6 +2454,58 @@ int main(int argc, char** argv) {
       // within one mesh, but is correct for distinct primitive/instance layers.
       const auto transparent_draws=transparent_queue.submit(device);
       frame_draws+=static_cast<std::uint32_t>(transparent_draws);
+      // Flames and smoke last: transparent, depth-tested against everything above.
+      FireDrawStats fire_stats;
+      bool draw_fire_effects=fire_effects && layer_visibility.fire;
+      if(options.fire_test)draw_fire_effects=fire_effects && rendered_frames>=1 && rendered_frames<=2;
+      if(draw_fire_effects) {
+        if(fire_emitters_dirty)rebuild_fire_emitters();
+        const double fire_time=options.fire_test?(rendered_frames==2?0.6:0.0):(options.smoke_test?0.0:engine_time);
+        const auto packed=pack_fire_style(fire_style,camera_frame.eye,fire_time);
+        device.update_buffer(*fire_style_buffer,0,std::as_bytes(std::span(packed)));
+        fire_stats=fire_effects->draw(*fire_pipeline,camera,*fire_style_buffer,terrain_frustum,camera_frame.eye,
+                                      fire_style.draw_distance_meters,!options.no_culling);
+        frame_draws+=static_cast<std::uint32_t>(fire_stats.draws);
+        if(options.smoke_test || (options.profile && profile_frames%120==0))
+          std::cout<<"FIRE_DRAW_JSON={\"flames\":"<<fire_stats.flames<<",\"smoke\":"<<fire_stats.smoke<<",\"draws\":"<<fire_stats.draws<<"}\n";
+      }
+      if(options.fire_test) {
+        const auto pixels=device.capture_rgba(scene_width,scene_height);
+        const auto is_fire=[&](const std::vector<std::uint8_t>& p,std::size_t i) {
+          const int r=p[i],g=p[i+1],b=p[i+2];return r>=175 && r>g*1.7 && r>b*2.0;
+        };
+        if(rendered_frames==0) {
+          fire_reference=pixels;
+          // Per column: the highest row (GL rows grow upward) showing ground fire.
+          fire_top_row.assign(static_cast<std::size_t>(scene_width),-1);
+          for(int y=0;y<scene_height;++y)for(int x=0;x<scene_width;++x)
+            if(is_fire(pixels,(static_cast<std::size_t>(y)*scene_width+x)*4))fire_top_row[static_cast<std::size_t>(x)]=y;
+          if(std::all_of(fire_top_row.begin(),fire_top_row.end(),[](int v){return v<0;}))
+            throw std::runtime_error("fire test has no visible ground fire to build on");
+        } else if(rendered_frames<=2) {
+          std::size_t changed=0,risen=0,fire_pixels=0;
+          for(int y=0;y<scene_height;++y)for(int x=0;x<scene_width;++x) {
+            const std::size_t i=(static_cast<std::size_t>(y)*scene_width+x)*4;
+            if(is_fire(pixels,i))++fire_pixels;
+            if(pixels[i]==fire_reference[i] && pixels[i+1]==fire_reference[i+1] && pixels[i+2]==fire_reference[i+2])continue;
+            ++changed;
+            const int top=fire_top_row[static_cast<std::size_t>(x)];
+            if(top>=0 && y>top+3)++risen;
+          }
+          std::cout<<"FIRE_TEST_JSON={\"frame\":"<<rendered_frames<<",\"changed\":"<<changed<<",\"risen\":"<<risen
+                   <<",\"fire_pixels\":"<<fire_pixels<<",\"flames_drawn\":"<<fire_stats.flames<<",\"smoke_drawn\":"<<fire_stats.smoke<<"}\n";
+          if(!fire_stats.flames || !fire_stats.smoke)throw std::runtime_error("fire test drew no flames or no smoke");
+          if(changed<200)throw std::runtime_error("fire effects changed too few pixels");
+          if(risen<40)throw std::runtime_error("flames do not rise above the ground footprint");
+          if(rendered_frames==1)fire_frame=pixels;
+          else {
+            std::size_t moved=0;
+            for(std::size_t i=0;i<pixels.size();i+=4)
+              if(pixels[i]!=fire_frame[i] || pixels[i+1]!=fire_frame[i+1] || pixels[i+2]!=fire_frame[i+2])++moved;
+            if(moved*5<changed)throw std::runtime_error("fire effects did not animate between frames");
+          }
+        } else if(pixels!=fire_reference)throw std::runtime_error("hiding fire effects did not restore the reference");
+      }
       if(options.smoke_test || (options.profile && profile_frames%120==0)) {
         std::cout << "Visibility: " << visible_instances << " visible, "
                   << culled_instances << " culled, "
@@ -1674,11 +2595,37 @@ int main(int argc, char** argv) {
                   << gpu.mean_ms << " ms (" << gpu.samples
                   << " samples, " << gpu.skipped << " skipped)\n";
       }
+      if(!options.screenshot_file.empty()) {
+        // The window back buffer is undefined after presentation; read it first.
+        screenshot_pixels=device.capture_rgba(width,height);
+        screenshot_width=width;screenshot_height=height;
+      }
       glfwSwapBuffers(window.get());
       ++rendered_frames;
       if(options.replay_controls_test) {
         if(rendered_frames==7) {
           std::cout<<"Replay controls passed: speed, pause, forward, back, resume, reset; frame pixels and engine clock preserved\n";
+          break;
+        }
+      }else if(options.fire_test) {
+        if(rendered_frames==4) {
+          // Charred plants: trees in burned cells must render darker than living ones.
+          std::cout<<"Fire effects passed: fuel-gated flames and smoke rise from burning cells, animate, char the vegetation and hide cleanly\n";
+          break;
+        }
+      }else if(options.vegetation_test) {
+        if(rendered_frames==5) {
+          std::cout<<"Vegetation passed: trees and grass with height and varied color appear, meshes swap at run time, wind sways them, disabling restores the reference\n";
+          break;
+        }
+      }else if(options.water_test) {
+        if(rendered_frames==4) {
+          std::cout<<"Water passed: flat surface matches the CPU reference; waves and foam animate without touching land; restoration exact\n";
+          break;
+        }
+      }else if(options.terrain_shading_test) {
+        if(rendered_frames==4) {
+          std::cout<<"Terrain shading passed: materials, height ramp, slope hillshade and rock match the CPU reference; contours toggle cleanly; detail textures the surface\n";
           break;
         }
       }else if(options.layers_test) {
@@ -1940,6 +2887,11 @@ int main(int argc, char** argv) {
       std::cout << "GPU profile: "<<gpu.mean_ms<<" ms mean, "
                 <<gpu.min_ms<<" ms min, "<<gpu.max_ms<<" ms max ("
                 <<gpu.samples<<" samples, "<<gpu.skipped<<" skipped)\n";
+    }
+    if(!options.screenshot_file.empty()) {
+      if(screenshot_pixels.empty())throw std::runtime_error("no frame was rendered for --screenshot");
+      write_ppm(options.screenshot_file,screenshot_width,screenshot_height,screenshot_pixels);
+      std::cout<<"Screenshot written: "<<options.screenshot_file<<" ("<<screenshot_width<<"x"<<screenshot_height<<")\n";
     }
     if(!options.save_state.empty()) {
       capture_state();

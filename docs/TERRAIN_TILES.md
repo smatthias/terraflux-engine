@@ -23,7 +23,8 @@ Bounds describe actual triangle vertices, not a filled rectangular terrain patch
 Holes remain holes even when enclosed by a tile's conservative bounding box.
 
 Positions, normals and grid-cell coordinates are copied verbatim from the source.
-The origin and cell-size metadata also remain the same. Boundary vertices are
+The origin, cell-size and whole-surface elevation-range metadata also remain the
+same, so height shading spans the same range in every tile. Boundary vertices are
 copied into adjacent tiles, with their globally computed normals unchanged;
 recomputing normals separately at tile edges would create lighting seams. Tiles
 therefore share the source's local coordinate system rather than being recentered.
@@ -55,9 +56,10 @@ have one entry per copied vertex. Callers can lower or raise aggregate limits.
 Zero aggregate limits accept an empty draw payload and reject nonempty output.
 Exceeding a count budget throws `std::length_error`; no partial result is published.
 
-The function validates positive finite cell size, uint32-addressable source
-vertices, triangle-aligned/in-range indices, finite positions/normals, grid
-coordinates at or above the declared origin, and one-quad triangle footprints.
+The function validates positive finite cell size, a finite ordered elevation
+range, uint32-addressable source vertices, triangle-aligned/in-range indices,
+finite positions/normals, grid coordinates at or above the declared origin, and
+one-quad triangle footprints.
 Invalid geometry/options throw `std::invalid_argument`. It expects the regular
 surface topology produced by build_terrain_mesh; it is not a general arbitrary
 triangle-mesh splitter. Relative tile coordinates use unsigned 32-bit values and
@@ -88,6 +90,9 @@ and transition work. Physical GPU performance remains unmeasured.
 
 `--terrain-tiles` enables TerrainTileRenderer, using 32 quads per side by default.
 `--terrain-tile-quads N` also enables tiled mode and selects 1..256 quads per side.
+Both count simulation cells; with render refinement (`--render-cell`, default
+5 m) the viewer multiplies them by the refinement factor (capped at 256) so
+tiles keep a similar physical size on the finer render lattice.
 The CPU partition's default aggregate caps still apply: a very small tile size
 can exceed the 4096-tile cap and reject startup. Source geometry and simulation
 rules are unchanged. The default tiled mode uploads all tiles eagerly. The
@@ -96,8 +101,9 @@ selection remains unimplemented.
 
 TerrainTileRenderer owns one vertex/index buffer pair per nonempty tile through
 RenderResourceOwner. Partial construction releases every buffer already created.
-Successful draws share the existing terrain/wildfire pipeline, Camera uniform
-and optional FireState SSBO. The wildfire lookup uses the same coordinates and
+Successful draws share the existing terrain/wildfire pipeline, Camera uniform,
+TerrainStyle uniform (passed as the final optional `draw` argument) and optional
+FireState SSBO. The wildfire lookup uses the same coordinates and
 original dense fire-field mapping. Tile GPU buffers are independent of imported
 asset lifetimes and included in the viewer's unload baseline and shared byte cap.
 Temporary double-precision tile meshes are released after construction. Packed

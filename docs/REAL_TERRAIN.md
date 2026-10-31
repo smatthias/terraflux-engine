@@ -14,6 +14,22 @@ python3 examples/dem_to_terrain.py /actual/path/to/elevation.tif --output terrai
 ./build-gl/terraflux-terrain-viewer --request terrain-request.json --response terrain-response.json --hide-fire
 ```
 
+The viewer colors the surface by relative height across the DEM's own range,
+blends steep ground toward rock, marks exposed ridges, adds snow and ice above
+72 % of the range when the relief reaches 300 m (`--snow-line` overrides),
+applies a hillshade with procedural detail and draws automatic contour lines
+(`--terrain-contours 50` sets the spacing, `0` disables). Because the converter
+writes zero fuel, the ground renders bare; requests that carry `fuel_load` and
+`fuel_moisture` show dry/semi-dry/wet grass and forest instead. Add
+`--screenshot frame.ppm` to save the last frame. `--water-level 80` floods the
+valley floor with an animated lake whose waves are configured by `--wave-height`,
+`--wave-length`, `--wave-speed` and `--wave-direction`; the level is in the
+DEM's own vertical units and datum.
+The `TERRAIN_MESH_JSON` line printed by `--smoke-test`/`--profile` runs reports
+the meshed elevation range and maximum slope, which should agree with the
+converter's metadata sidecar. See the
+[README shading section](../README.md#terrain-height-and-slope-shading).
+
 Replace `/actual/path/to/elevation.tif` with a real file on your computer.
 The converter creates `terrain-request.json` and `terrain-request.metadata.json`.
 The runner creates `terrain-response.json`; neither JSON input is shipped or

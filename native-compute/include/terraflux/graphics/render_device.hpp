@@ -72,7 +72,7 @@ struct PipelineHandle {
 
 enum class ShaderProgramId : std::uint8_t {
   Unspecified, ContractOnly, Terrain, Wildfire, Object, TexturedObject,
-  InstancedTexturedObject, PbrObject, PbrInstanced, Composite
+  InstancedTexturedObject, PbrObject, PbrInstanced, Composite, Water, Vegetation, Fire
 };
 struct PipelineDesc {
   ShaderProgramId program=ShaderProgramId::Unspecified;
