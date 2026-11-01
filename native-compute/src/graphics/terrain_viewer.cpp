@@ -4113,6 +4113,16 @@ int main(int argc, char** argv) {
           }
           return hi-lo<reach*0.5;
         };
+        // Dry ground all along a run (wading slows the walker, which is not what these probes measure).
+        const auto dry_run=[&](double x0,double z0,double x1,double z1) {
+          if(!water_style)return true;
+          for(int i=0;i<=20;++i) {
+            const double f=i/20.0;
+            const auto h=standing_height(x0+(x1-x0)*f,z0+(z1-z0)*f);
+            if(!h || *h<water_style->level_meters+0.3)return false;
+          }
+          return true;
+        };
         if(rendered_frames==0 || rendered_frames==3) {
           // The tree nearest the terrain centre standing on gentle, open ground.
           if(!vegetation || tree_field.empty())throw std::runtime_error("collision test needs placed trees");
@@ -4126,6 +4136,7 @@ int main(int argc, char** argv) {
             if(d>=best)continue;
             const double reach=tree_field.obstacles()[i].radius+6.0; // start six metres short of the footprint
             if(!gentle_around(t.position[0],t.position[2],reach))continue;
+            if(!dry_run(t.position[0]-reach,t.position[2],t.position[0]+reach*3.0,t.position[2]))continue; // the run through (with --no-collision) stays dry
             const auto neighbour=tree_field.clearance(t.position[0]-reach,t.position[2],5.0);
             if(neighbour && *neighbour<1.5)continue; // another trunk within the approach
             pick=i;best=d;approach=reach;
@@ -4171,6 +4182,7 @@ int main(int argc, char** argv) {
             const auto& g=grass[i];
             const double d=std::hypot(g.position[0]-scene_camera.target.x,g.position[2]-scene_camera.target.z);
             if(d>=best || !gentle_around(g.position[0],g.position[2],6.0) || tree_field.clearance(g.position[0],g.position[2],12.0))continue;
+            if(!dry_run(g.position[0]-2.5,g.position[2],g.position[0]+8.0,g.position[2]))continue;
             pick=i;best=d;
           }
           if(!pick)throw std::runtime_error("collision test found no grass tuft in the open");

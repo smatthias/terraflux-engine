@@ -230,7 +230,8 @@ void test_tree_obstacles(const char* obj_path) {
   const auto obstacles = tree_obstacles(placement, meshes);
   require(obstacles.size() == 2, "one obstacle per tree, none per grass tuft");
   require(near(obstacles[0].x, 10) && near(obstacles[0].z, 20) && near(obstacles[0].radius, conifer_foot * 16, 1e-6) &&
-          near(obstacles[0].bottom, 50) && near(obstacles[0].top, 66), "trunk scaled by the tree height, standing on its ground point");
+          near(obstacles[0].bottom, 50 - std::max(0.5, conifer_foot * 16), 1e-6) && near(obstacles[0].top, 66),
+          "trunk scaled by the tree height, rooted a footprint below its ground point");
   require(near(obstacles[1].radius, broadleaf_foot * 8, 1e-6), "the second kind uses the second mesh");
   const VegetationMesh single[] = {conifer_mesh};
   require(near(tree_obstacles(placement, single)[1].radius, conifer_foot * 8, 1e-6), "with one mesh every kind uses it");

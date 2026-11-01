@@ -81,7 +81,10 @@ std::vector<Obstacle> tree_obstacles(const VegetationPlacement& placement, std::
     Obstacle o;
     o.x = t.position[0]; o.z = t.position[2];
     o.radius = footprints[slot] * static_cast<double>(t.scale);
-    o.bottom = t.position[1]; o.top = t.position[1] + static_cast<double>(t.scale);
+    // Rooted: the footprint reaches down a footprint-radius below the base (a
+    // 45-degree hillside), so a wide footprint is solid all round on a slope
+    // instead of hanging above the downhill ground.
+    o.bottom = t.position[1] - std::max(0.5, o.radius); o.top = t.position[1] + static_cast<double>(t.scale);
     out.push_back(o);
   }
   return out;

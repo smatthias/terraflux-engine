@@ -85,7 +85,9 @@ class ObstacleField {
 double mesh_footprint_radius(const VegetationMesh& mesh, double up_to_height = 0.15, double minimum = 0.02);
 // One obstacle per placed tree: footprint of its mesh slot (kind k uses
 // min(k, n-1), as the renderer does) scaled by the instance height, standing
-// from its ground point to its top. Grass is walkable and contributes nothing.
+// from a footprint-radius (at least half a metre) below its ground point — so
+// a wide footprint on a hillside is solid on the downhill side too — to its
+// top. Grass is walkable and contributes nothing.
 std::vector<Obstacle> tree_obstacles(const VegetationPlacement& placement, std::span<const VegetationMesh> tree_meshes);
 // An imported asset as the cylinder around its world bounding sphere.
 Obstacle asset_obstacle(const BoundingSphere& bounds);
