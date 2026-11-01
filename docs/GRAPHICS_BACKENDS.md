@@ -78,7 +78,9 @@ cmake --build build-gl --parallel 2
 ./build-gl/terraflux-terrain-viewer
 ```
 
-Arrow keys orbit the camera, + and - zoom, Escape exits. Run
+Arrow keys orbit the camera, + and - zoom, Tab switches to a first-person
+camera standing on the terrain (W/A/S/D walk, Shift runs, arrows and the mouse
+look; see [Camera rig](#camera-rig-world-view-and-first-person)), Escape exits. Run
 `xvfb-run -a ./build-gl/terraflux-terrain-viewer --smoke-test` to compile,
 link, reflect, upload and render one frame headlessly on a suitable Mesa image.
 
@@ -165,8 +167,9 @@ auto pipeline = device.create_pipeline({
 | PbrInstanced | Opaque instanced PBR material/resources |
 | Composite | Fullscreen POSITION/TEXCOORD geometry and SourceColor sampler; depth/blend disabled |
 | Water | POSITION/BED/BED_GRADIENT surface, camera, WaterStyle and Atmosphere uniforms, OrographicField sampler; alpha blend, depth test, no depth write |
-| Vegetation | POSITION/NORMAL/COLOR/FLEX/TINT_WEIGHT plant meshes, camera, VegetationStyle and Atmosphere uniforms, OrographicField sampler, 48-byte InstanceData records and PlantFireState storage |
+| Vegetation | POSITION/NORMAL/COLOR/FLEX/TINT_WEIGHT plant meshes, camera, VegetationStyle and Atmosphere uniforms, OrographicField sampler, 80-byte InstanceData records and PlantFireState storage |
 | Fire | POSITION/TEXCOORD billboard quad, camera, FireStyle and Atmosphere uniforms, OrographicField sampler, 48-byte InstanceData records; alpha blend, depth test, no depth write |
+| Hud | POSITION (NDC float2)/COLOR (float4) 24-byte vertices, no uniforms; alpha blend, no depth test or write |
 | Sky | Fullscreen POSITION triangle, Atmosphere uniform and OrographicField sampler; depth test at the far depth, no depth write, no blend |
 | Precipitation | CORNER/PARTICLE streak quads, camera and Atmosphere uniforms (both stages), OrographicField sampler; alpha blend, depth test, no depth write |
 | Lightning | POSITION/GLOW channel strips, camera and Atmosphere (fragment) uniforms; alpha blend, depth test, no depth write |
@@ -772,9 +775,17 @@ requests without publishing.
 The `Vegetation` program uses a 44-byte vertex stream, the Camera block, the
 64-byte `VegetationStyle` block at slot 13 in both stages (wind direction and
 speed, time, light and ambient, sway amplitude, grass fade start/end, tree fade
-end, eye) and 48-byte std430 `InstanceData` records (position and height,
-rotation, phase, bend, kind, tint) at slot 4; the validator sizes instance
-capacity by that record for this program (144 bytes for objects). The vertex
+end, eye, the fire grid and its origin with the instance-fire flag) and 80-byte
+std430 `InstanceData` records (position and height, rotation, phase, bend,
+kind, tint; then the tree fire model's fall direction, fall angle and consumed
+amount, and its char and glow) at slot 4; the validator sizes instance
+capacity by that record for this program (144 bytes for objects). With the
+instance-fire flag set the vertex stage tilts a tree about its base by the fall
+angle toward the fall direction (Rodrigues rotation of positions and normals),
+draws the foliage in toward the trunk and shortens it as the tree is consumed
+(charred stubs remain), stops the sway of a fallen tree, chars the colors by
+the char amount and lights them by the glow; grass, and trees without the
+model, keep following the cell front. The vertex
 stage rotates and scales the plant, shrinks it to nothing across its fade band
 (no blending), sways it by `flex^2` with a gust that travels along the wind and
 leans it on steep ground; the fragment stage uses two-sided wrapped lighting and
@@ -1221,6 +1232,613 @@ keep their fixed light and are not fogged; asset fog and cloud shadows,
 thunder, hail, wet specular ground, lee-wave (lenticular) clouds, temporal
 filtering of the cloud march and a physically based sky remain future work.
 
+
+## Camera rig: world view and first person
+
+`camera_rig.hpp` is a backend-neutral, resource-free description of the two
+viewer cameras. Both share one convention with the rest of the viewer: yaw 0
+looks north (-Z), positive yaw turns clockwise seen from above
+(`horizontal_forward(yaw) = (-sin yaw, 0, -cos yaw)`,
+`horizontal_right(yaw) = (cos yaw, 0, -sin yaw)`), pitch is radians above the
+horizon, and `look_direction(yaw, pitch)` is the unit vector of both.
+
+- `OrbitCamera` (the world view): a target, yaw, pitch (0.1..1.48) and distance;
+  `eye()` is `target + distance (sin yaw cos pitch, sin pitch, cos yaw cos pitch)`.
+  The viewer keeps the target `kOrbitTargetHeight` (1.5 m) above the standing
+  height when W/A/S/D pan it.
+- `FirstPersonCamera`: a standing point (`feet`), yaw, pitch (clamped to
+  `kFirstPersonMaxPitch`, 85 degrees, by `look`), an eye height (1.7 m), a
+  walking speed (`kMinWalkSpeed`..`kMaxWalkSpeed`, 1..60 m/s, default 2.5,
+  scaled in octaves by `adjust_walk_speed`) and a run multiplier (3). `eye()` is the
+  feet plus the eye height; `target()` one look direction ahead.
+- `StandingHeightFn` is the caller's `(x, z) -> optional<double>`: the height
+  a viewer stands at, or nullopt over holes and outside the terrain. The viewer
+  supplies the measured ground (`TerrainSampler`), lifted to the water surface
+  over submerged ground (so a rising flood lifts the viewer) and by the rock
+  weight of the material times the rendered rock relief (so the eye never sinks
+  into a displaced crag). It is pure and deterministic; both cameras use it.
+- `walk(camera, WalkInput{forward, strafe, run}, dt, standing, lower, upper)`
+  moves along the horizontal look direction (diagonals normalized, so they are
+  not faster), clamps the plan position to the terrain bounds, and rejects a
+  step whose destination has no standing height — the camera stays. It returns
+  the distance actually walked. Non-finite input and negative time steps throw.
+- `place_on_ground` puts the camera at a plan position or, over a hole, at the
+  nearest point of the first ring (of the given step, up to the given radius)
+  that has ground; it reports failure rather than inventing ground.
+- `enter_first_person(person, orbit, ...)` stands the person under the orbit
+  target (searching outward over holes) looking level along the orbit's yaw,
+  and leaves the person untouched when it fails. `enter_world_view(orbit,
+  person)` sets the orbit target to the feet plus `kOrbitTargetHeight`, keeps
+  the person's yaw and leaves pitch and distance alone. Yaw is wrapped into
+  (-pi, pi] only when outside it, so a switch and return without movement
+  restores the orbit camera bit for bit.
+
+The viewer builds a `CameraPose` (eye, target, near and far plane) from the
+active camera each frame: the orbit pose keeps the 1 m near plane and the far
+plane at max(12 km, 8 x distance); the first-person pose moves the near plane in
+to 0.3 m (grass and rock at the feet) and keeps the far plane at
+max(12 km, 8 x the framing distance) so the whole terrain stays visible. The
+Camera uniform block, frustum culling, the weather camera basis (forward from
+the pose), the PBR eye, transparent sorting, vegetation, water, fire and
+precipitation all take the eye from that pose; the weather's ground altitude is
+the standing height in first person and the orbit target otherwise. Tab
+(edge-triggered, inactive in smoke and benchmark runs) switches; first person
+captures the cursor (raw motion when supported) and the first cursor sample
+after a switch is a reference, not a turn. A/D strafe in first person and the
+scene-node attach/detach keys are suspended there. `--view world|first-person`
+selects the starting camera, `--walk-speed` the speed, and every switch prints
+`CAMERA_JSON` (view, eye, feet, yaw, pitch, walking speed).
+
+### Walking collision
+
+`collision.hpp` describes what a walker bumps into. An `Obstacle` is a
+vertical cylinder (axis x/z, radius, bottom, top); a `WalkerBody` has a radius
+(0.35 m), a height (the eye height), a step height (0.5 m) and a maximum
+ascent slope (45 degrees; 1..89, validated). `obstacle_blocks` is the one
+rule: an obstacle is in the way when its vertical extent overlaps
+[feet + step height, feet + body height] — so grass (never an obstacle),
+pebbles, tufts and low ledges are stepped over, a crown high above is passed
+under and a trunk is solid. `ObstacleField` is an immutable plan-space hash
+(16 m cells, obstacles inserted into every cell their footprint touches) with
+`for_each_near` (a cell superset) and `clearance`. `tree_obstacles` makes one
+cylinder per placed tree from `mesh_footprint_radius` of its mesh slot (the
+largest plan radius of the unit-height model's vertices below 15 % height:
+the trunk of a procedural tree, the base of a custom OBJ; kind k uses
+min(k, n-1) like the renderer) scaled by the instance height, standing from
+its ground point to its top; grass contributes nothing. `asset_obstacle`
+wraps an imported instance's world bounding sphere. `push_out_of_obstacles`
+moves a position out of every blocking obstacle (up to six passes so leaving
+one does not enter another; exact contact is allowed; on an axis it steps
+out east).
+
+The walker (`camera_rig.hpp`) takes a `WalkEnvironment`: the standing height,
+the bounds, the obstacle fields (null entries skipped) and the body. `walk`
+splits the motion into sub-steps no longer than half the body radius (so a
+24 m running step still meets a 0.05 m trunk), and for each sub-step pushes
+the point out of obstacles, clamps it to the bounds, rejects it over a hole,
+and rejects it as a wall when the standing height rises by more than
+run x tan(max slope); a rejected sub-step is retried along the contour of the
+ground (the component of the motion perpendicular to the standing-height
+gradient by central differences at 0.25 m), and the walk stops when a
+sub-step cannot move. The plain `walk(camera, input, dt, standing, lower,
+upper)` overload keeps the earlier behaviour (no obstacles, an 89-degree
+limit). `settle` pushes the feet out of obstacles where they stand and
+re-samples the standing height; the viewer calls it on entering first person
+and every frame so animated assets and a rising flood are honoured.
+
+The viewer keeps a tree field (rebuilt with every vegetation re-placement and
+mesh swap, reported as `COLLISION_JSON`) and an asset field rebuilt from the
+bounding spheres enqueued each frame; `--max-slope` sets the limit and
+`--no-collision` empties the fields and lifts it. The standing height's rock
+relief allowance mirrors the shader's `rockRelief()` amount without its noise
+term (rock weight, damped under snow and ice, none below and just above the
+water line), which makes craggy rock a wall from about 30 degrees while soil
+is walkable to the limit. `terraflux-collision-tests` covers the body and
+field validation, the blocking rule, the hash query, push-out, walking into,
+around and between trunks, stepping over a stone, anti-tunnelling, a ring of
+trunks, an 80-degree face (stopped, slid along, descended), 30/60-degree ramps
+with the limit raised, holes, settling and the tree/asset obstacle builders on
+procedural and OBJ meshes. `--collision-test` (demo or replay smoke mode,
+world-view start, vegetation and collision enabled, no assets or other
+scripted test) probes the real placement: a run at a trunk on gentle open
+ground must stop at body radius, a walk up the steepest facet must not climb
+(skipped with `COLLISION_TEST_NOTE` when nothing is steeper than the limit
+plus five degrees), a walk through a grass tuft must pass, and the same run
+with collision disabled must pass through and change the image.
+
+### Gravity and jumping
+
+`WalkerPhysics` (in `WalkEnvironment`) is the vertical model: gravity
+(9.81 m/s², 0.1..100), the standing-jump apex (`jump_height_meters`, 0
+disables, ≤ 10), `air_control` (0..1, the per-second blend of the airborne
+momentum toward the input), a terminal velocity (1..200 m/s) and the landing
+dip (per m/s of impact, a maximum, and an exponential recovery rate);
+`validate_walker_physics` rejects anything else. `jump_takeoff_speed` is
+√(2gh) and `jump_air_time` 2√(2h/g); the walker hits both to within one
+integration step. `FirstPersonCamera` carries the state: `grounded`,
+`vertical_velocity_mps`, the horizontal `velocity_mps` (momentum while
+airborne), `crouch_meters` (the landing dip, subtracted from the eye) and
+`air_time_seconds`.
+
+`walk` is time-stepped. Grounded: the input velocity moves the feet in
+sub-steps of at most half the body radius; a sub-step whose support lies more
+than the step height below the feet is a ledge — the feet leave the ground at
+their height with the current velocity as momentum. `WalkInput::jump` (an
+edge the caller derives from the Space press) while grounded sets the vertical
+velocity to the take-off speed. Airborne: momentum is blended toward the
+input by `air_control` per second, the horizontal move is pushed out of
+obstacles at the current feet height (so a rock below the feet is cleared)
+and dies against a hole or ground more than the step height above the feet;
+gravity integrates semi-implicitly in steps of at most 1/120 s, capped at the
+terminal velocity; when the vertical velocity is downward and the feet reach
+the support the walker lands: the feet snap to the support, momentum is
+cleared, the dip grows by impact speed × `landing_dip_per_mps` up to the
+maximum. The dip decays by exp(−recovery × dt) and snaps to zero below
+0.1 mm so a jump in place restores the standing eye exactly.
+
+`support_height(environment, x, z, feet_y)` is what the feet rest on: the
+standing height, or the top of an obstacle whose footprint plus half the
+body radius covers the point when that top is within the step height above
+the feet — a wide rock or ledge can be landed on and walked off. An obstacle
+top within the step height is a step up however abrupt; only ground is
+subject to the slope limit. `settle` re-samples the support only when
+grounded, so it never pulls a jumper down.
+
+`terraflux-camera-tests` covers the physics validation, the analytic
+take-off speed and air time, a standing jump (apex within 4 cm, air time
+within a tick, landing where it started with a dip that recovers to exactly
+zero), no double jump, standing still being exactly still, a running jump
+carrying 85..105 % of speed × air time, limited air control, walking off a
+2 m ledge and landing after √(2h/g), a 0.4 m drop being a step, jumping over
+a 1.2 m rock that blocks walking, landing on a wide rock and running off it,
+the support rule, lunar gravity, a zero jump height and settling in the air.
+`--jump-test` (demo or replay smoke mode, world-view start, positive jump
+height, no assets or other scripted test) renders the standing reference, the
+apex (feet at the jump height ± 5 cm, image different), the landing (after
+the analytic air time ± one tick, eye dipped), the recovery two seconds later
+(image restored exactly) and a running jump along the most level heading
+clear of trunks (carry within 80..110 % of speed × air time). In the viewer
+Space jumps in first person and keeps pausing the replay in the world view;
+`--jump-height` and `--gravity` set the constants and `CAMERA_JSON` reports
+them.
+
+### Gait
+
+`GaitStyle` (in `WalkEnvironment`, validated by `validate_gait_style`) makes
+walking a sequence of steps. `gait_step_length(gait, v)` is
+`max(base + per_mps x v, v / max_cadence)` (0.45 m + 0.22 s x v, at most
+4.5 steps/s). The camera carries `gait_speed_mps` (the mean ground speed),
+`gait_direction`, `gait_phase` (0 at a footfall, 1 at the next),
+`stance_foot`, `footfalls`, the head offsets (`bob_meters`, `sway_meters`,
+`roll_radians`, `footfall_dip_meters`) and, during a stop, `braking_mps2`
+with the frozen `braking_step_length_meters`.
+
+Grounded with the gait enabled, each sub-step (at most 1/120 s and half the
+body radius) first controls the speed: with input, accelerate toward the
+wanted speed at `acceleration_mps2` (or brake to it at
+`stop_deceleration_mps2` when slowing from a run); without input, on the
+first sub-step of the release compute a uniform braking
+v² / 2d where d is the distance to the footfall ending the current step
+(extended by whole steps until the braking is within the limit) and freeze
+the step length, then brake linearly. The instantaneous speed is
+`gait_speed x (1 - speed_pulse x cos(2 pi phase))`: slowest at the footfall,
+fastest mid-step. The resulting step vector goes through the same obstacle,
+bounds, hole and slope handling as before; the distance actually moved
+advances the phase by moved / step length; crossing 1 swaps the stance foot,
+counts a footfall, adds `footfall_dip x clamp(speed / 4, 0.25, 3)` to the
+jolt and, during a stop, sets the speed to zero with the phase exactly 0 (a
+stop never overshoots its footfall, and a speed reaching zero a hair early
+plants the foot too). The head pose is
+`bob = fade x bob(v) x (1 - cos 2 pi phase) / 2`,
+`sway = fade x sway(v) x side x sin(pi phase)` and the roll likewise, with
+`side` −1 for the left stance foot and +1 for the right and `fade = min(1, v)`,
+so everything is exactly zero at rest; `FirstPersonCamera::eye()` adds the
+bob, subtracts the landing and footfall dips and shifts along the right
+vector by the sway, and `up()` tilts the camera up vector by the roll (the
+viewer passes it to the look-at). Jumping carries `gait_direction x
+gait_speed` as momentum and rests the gait; landing and stepping off a ledge
+rest it too, so walking resumes from rest. With the gait disabled the walker
+moves at the wanted speed from the first tick (the behaviour of the plain
+`walk` overload, which the kinematic tests use).
+
+`terraflux-camera-tests` covers the validation and step length, acceleration
+from rest and the walking speed reached within a second, the per-second
+distance at the walking speed, the per-step speed pulse, the footfall count
+against the step length, the bob, the alternating sway and roll, the eye and
+up vector carrying them, a release that finishes the step and stops on a
+footfall within two step lengths with the head exactly at rest, the jolt
+recovering, standing still being exactly still, a harder jolt at a run within
+the cadence limit, a jump carrying the walking speed with the head still in
+the air, the walk resuming from rest after landing, and the glide when
+disabled. `--gait-test` (demo or replay smoke mode, world-view start, gait
+enabled, no assets or other scripted test) renders the standing reference, a
+mid-step frame after walking the most level heading clear of trunks (walking
+speed reached, pulse, footfalls, bob and sway measured, image different), the
+stop a second after release (on a footfall, within two step lengths, head
+exactly at rest) and the return to the start (image restored exactly).
+`--no-gait` disables the gait in the viewer and `CAMERA_JSON` reports it.
+
+`terraflux-camera-tests` covers the direction conventions, the orbit eye, look
+clamping and wrapping, speed limits, walking over a synthetic field with a
+river hole and a lake surface (ground following, hole rejection, edge clamping,
+diagonal and running speeds), ring placement and both transitions including
+exact restoration and refusal without ground. `--first-person-test` (demo or
+replay smoke mode, world-view start, visible terrain, no assets or other
+scripted test) renders five frames: the world view with its target snapped to
+the ground, first person under it (eye at eye height on the standing height,
+same heading, level, ground filling the lowest twentieth of the image, image
+different from the world view), a quarter turn, a second of running (the feet
+move by the walked distance along the ground, within the running speed) and
+the return, which must restore the orbit camera and the reference image exactly.
+Smoke runs do not require visible fire in first-person frames. None of this
+affects propagation, replay timing or the simulation contracts.
+
+## Tree-level fire
+
+`tree_fire.hpp` follows every placed tree through a fire, in replay seconds,
+deterministically, on top of the grid simulation: the cells still decide where
+the front is (a cell is active for one frame, then burned), the model decides
+what each tree does from there. Nothing feeds back into the simulation, its
+contracts or fixtures; the ground fire overlay is untouched.
+
+- **Bodies** (`tree_body`): from the instance height, the mesh footprint as
+  trunk radius and the seed — a tapered trunk volume times a wood density
+  (conifer-like 450, broadleaf-like 650 kg/m³) plus 30 % crown, each tree's
+  density and modulus of rupture (60 / 90 MPa) varied by ±`variation` (0.3),
+  a breaking moment `MOR x pi r³ / 4`, a standing lean (0..5°) in a seeded
+  direction, moisture from the ground it stands on, and the fuel as a
+  consume time `consume_seconds x (h / reference)^exponent x (1 + slowdown x
+  moisture)` (8 s for a dry 16 m tree). No two trees weigh or hold the same.
+- **Burning**: ignition (from an active cell, or from a tree) flames up after
+  `ignition_delay` (0.6 s); the consumed fraction grows at `1 / consume_time x
+  (1 + wind_burn_factor x wind)`; intensity ramps in over a second and fades
+  as the last fuel goes; at 1.0 the tree is burned out. Burning crowns drop
+  burning branches (`branch_drop_rate` x intensity per second while 8..92 %
+  consumed) that fall under the walker's gravity from a point along the
+  (possibly tilted) trunk, land on the standing height, burn there for
+  `branch_burn_seconds` and ignite trunks within `ember_ignition_radius`.
+- **Falling**: the charred strength is `breaking moment x (1 - consumed)³`;
+  the load is `standing_load`: gravity `m g (h / 2) sin(lean_eff)` along the
+  effective lean (the standing lean plus `burn_shift x consumed` toward the
+  wind — the flames wrap round the lee — or the lean when calm) plus the wind
+  moment `½ ρ Cd A v² x 0.65 h` on the half-porous crown (less as it burns).
+  Load past strength topples the tree as a rigid rod about its base, `α =
+  1.5 g sin θ / h` plus the wind term, toward the load direction. A standing
+  neighbour the trunk sweeps into is caught at the angle where the trunk meets
+  its top: if its charred strength bears `½ m g h_prop sin θ` the faller leans
+  on it (`Leaning`) and, if burning, lights it by contact; otherwise the prop
+  breaks (`Collapsed`), falls the same way and is alight at once if the faller
+  was. A leaner drops the rest of the way when its prop burns through, breaks
+  or falls. On the ground (`Grounded`, 88°) the trunk keeps burning until no
+  fuel is left, lights trees it lies against by contact, and becomes a chain of
+  low obstacles (`obstacles`) the walker steps or jumps over (a thin log) or
+  has to walk round (a thick one); `obstacle_version` bumps on every fall.
+- **Spread** (`spread`, the viewer's `--tree-fire model`): contact along
+  leaning and fallen trunks after `contact_ignition_seconds`, radiant heat
+  with reach `radiant_reach x (h / reference) x intensity x (1 +
+  radiant_wind_factor x wind x downwind)` and probability `radiant_rate x
+  intensity x (1 - d / reach)` per second, and embers. With spread off (`grid`)
+  trees still burn, drop branches and fall, but ignite only from their cells.
+- **Time**: `advance` integrates in fixed 1/60 s sub-steps with the remainder
+  carried, so the story is independent of the frame rate; `reset` and
+  `ignite_from_field` (with `settle_burned`, trees in already-burned cells are
+  set burned out, about half of them down) restore a deterministic state for
+  seeks. Every ignition, flame-up, branch, topple, lean, collapse, grounding
+  and burn-out is an event; `stats` summarises stages, ignition sources,
+  branches, and the mass and strength range.
+- **Rendering**: `apply_to_placement` writes fall direction/angle, consumed,
+  char and glow into the instance records; `emit` adds flames along burning
+  trunks (one crown flame, a second lower one past 30 % consumed, three along
+  a lying trunk), a smoke plume per burning tree, smoulder for some burned-out
+  trunks, ground flames for landed branches and kind-3 ember billboards (a
+  glowing core with a flame tail in the Fire shader) for airborne ones.
+
+The viewer builds the model from the placement, the tree meshes, the standing
+height and the ground's fuel moisture whenever a replay and trees are present
+and `--tree-fire` is not `off`; rebuilds it with the vegetation; syncs it from
+the field on every replay frame (the first sync settles cells burned before
+it); advances it by the replay clock's own progress (scaled by the replay
+speed, held while paused), resetting and re-syncing from a rebuilt field when
+the replay is wound back; writes the instances and rebuilds the walking
+obstacles (at most twice a second) every frame; draws its flames and embers as
+the fire effects' dynamic emitters (the cell crown flames are then off); and
+reports `TREE_FIRE_JSON`. `terraflux-tree-fire-tests` covers bodies (size,
+species, moisture, variation, determinism, strength against load, wind),
+ignition from cells and the delay, consumption and burn-out, wind speeding the
+burn, seeks, branches under gravity with landing and burn-out, emitters,
+toppling with the wind onto a neighbour that holds and catches, the leaner
+dropping when the prop burns through, a sapling crushed and lit, logs as
+obstacles, a calm fall toward the lean, faster spread downwind, no spread when
+off and determinism. `--tree-fire-test` (replay smoke mode, both layers,
+vegetation and the model) stands twelve metres from the nearest tree the
+mid-replay front ignited and renders time zero (reference; trees vary in mass
+and strength), three seconds (flames, embers, image changed), eighteen seconds
+(trees down and burned out, neighbours lit by trees in model mode and none in
+grid mode, logs in the obstacle field, image changed) and a reset (reference
+restored exactly).
+
+### Storms: wind on the walker, windthrow, lightning
+
+`WindPush` (in `WalkEnvironment`, with `wind_velocity_mps` set by the viewer
+from `weather.wind()` every frame) gives a standing walker the drift
+`wind_drift`: zero up to `threshold_mps` (12), then `push_factor x (speed -
+threshold)²` downwind (0.02, capped at `max_drift_mps` 4). Grounded, the drift
+is added to every sub-step (through the same obstacle, slope and hole
+handling; a walker standing still in a gale is dragged without steps);
+airborne, drag `air_drag x |relative| x relative` (0.0056 per metre, ½ρCdA/m
+of a person) accelerates the momentum toward the wind. `lightning_effect(d)`
+classifies a strike at distance d: struck (≤ 15 m: knocked down 4 s, eye
+1.2 m down, shake 0.35 m), dangerous (≤ 50 m: 1.5 s, 0.8 m, 0.18 m), close
+(≤ 200 m: a shake fading with distance), none. `knock_down` stuns the walker
+(input ignored, the eye down at once, recovering with the landing dip) and
+`shake` sets a trembling amplitude that decays at 4/s and jitters the eye at
+37 rad/s. `TreeFireModel` gained root anchorage (`anchor_factor x m g h`,
+varied), a windthrow pass (the sound-tree load against the roots; uprooted
+trees fall downwind unburned, event `Windthrown`) and `strike(x, z, wind)`:
+the nearest standing tree within `strike_radius_meters` is split (lit as
+`Lightning`, flames at once, toppling away from the bolt or downwind, event
+`Struck`) and the unburned trees within `strike_flash_radius_meters` catch
+with `strike_flash_chance` x dryness. The model now exists without a replay
+too (advanced on the engine clock), so a storm alone can start a fire.
+
+The viewer detects a new strike by the weather's strike slot, applies it to
+the trees and, in first person, to the walker by its distance, prints
+`LIGHTNING_JSON` and shows the hazard in the title for six seconds.
+`terraflux-camera-tests` covers the push validation and drift law, dragging,
+walking with and against a gale, jumping in one, the hazard levels, the
+knock-down (no movement or jumping, eye down, recovery) and the shake.
+`terraflux-tree-fire-tests` covers anchorage, windthrow by wind strength (none
+in a breeze, some in a gale, more in a hurricane, downwind, unburned, as
+obstacles and events) and strikes (nearest tree split and alight and down,
+flash ignition, distant trees untouched, empty ground). `--storm-test` (demo
+or replay smoke mode, visible layers, vegetation, the model, default weather
+options, no assets or other scripted test) runs a cumulonimbus, places the
+walker ten metres from a bright strike beside a tree and checks the split
+tree, the struck walker and the warning, the recovery and the burning log six
+seconds later, and a 36 m/s gust front (trees uprooted, not the whole wood,
+the walker dragged).
+
+## Flash floods and the walker in water
+
+`flood.hpp`: `FloodModel(runoff_field, FloodStyle)` holds the flood wave
+`flash` (0..1), advanced by `advance(accelerated_seconds, rain_mm_h)` toward
+`rain / storm_rain_mm_h` (25) with `rise_seconds` (900) while rising and
+`fall_seconds` (3600) while draining. `channel_depth(x, z)` is
+`channel_depth_meters (1.5) x ((flow - threshold) / (1 - threshold))^exponent
+(2) x flash` from the bilinearly interpolated runoff texels (flow is the
+log-scaled catchment), zero below `flow_threshold` (0.25) or `min_depth`
+(0.03 m). `sample(x, z, ground_y, lake_level)` gives a `FloodSample`: depth,
+absolute surface, the current (the drainage direction at Manning's speed
+`depth^(2/3) sqrt(tan slope) / n`, capped at `max_current_mps`), whether it is
+channel water and whether it goes over a waterfall texel; the lake wins where
+it is deeper (still water). `build_mesh(terrain, lake_level)` is a
+`WaterMesh` with one vertex per terrain vertex at ground + depth (ground where
+dry), triangles where any corner is wet, vertices under the lake left out; the
+Water shader now takes the depth per vertex (`POSITION.y - BED` in the vertex
+stage, `surfacePosition.y - bedHeight` in the fragment stage), so the same
+pipeline draws a flat lake and a surface lying on the channels. The viewer
+keeps a muddy, nearly opaque `WaterStyle` for it, rebuilds it when the wave
+moves by 0.05, draws it after the lake in the terrain layer and reports
+`FLASH_FLOOD_JSON`; `--flash-flood` presets the wave.
+
+`WaterRules` (in `WalkEnvironment`, with `water` = the viewer's
+`flood.sample` over the walker's ground) puts the walker in the water:
+`support_at` reads the sample over the ground (or the obstacle top) and, from
+`swim_depth_meters` (1.3), floats the walker at surface − swim depth (never a
+wall). `walk` scales the wanted speed by `max(min_wade_factor, 1 -
+wade_slowdown x depth)` when wading and to `swim_speed` when afloat, adds the
+current to the drift scaled by a smoothstep from `grip_depth` over
+`grip_fade` (fully when swimming), forbids jumping afloat, rests the gait in
+deep water, and — wading in a current of at least `sweep_current_mps` (2) at
+least `sweep_depth_meters` (0.5) deep — knocks the walker down for
+`sweep_stun_seconds` (1.5) with a small shake and sets `swept` for that step.
+The camera carries `water_depth_meters`, `current_mps` and `swimming`. The
+walker's standing height is the ground with the crag allowance (the orbit
+target still hovers above the water); returning to the world view re-snaps
+the target above the water, so the view round trip stays exact.
+`terraflux-flood-tests` and `--flood-test` are described in the README.
+
+### Climbing
+
+`ClimbRules` (climb speed along the face 0.6 m/s, `stamina_seconds` 40,
+`recovery_seconds` 20, `min_stamina` 0.1, `resume_stamina` 0.5) and a
+`ClimbFn` `(x, z) -> ClimbSurface {climbable, max_slope_degrees, name}` in
+`WalkEnvironment`. When a grounded sub-step is refused as a wall (ground
+rising faster than the body's slope limit) and a climb function is present,
+`attempt_step` asks the surface at the target point: climbable and the step's
+slope within its limit, and the walker not exhausted, the step shrinks to
+`climb_speed x cos(slope) x step_seconds` of horizontal progress and is taken
+as a climb (reported in the camera as `climbing`, `climb_slope_degrees`,
+`climb_surface`); otherwise `climb_refusal` names the reason (the surface's
+name, "too steep" or "exhausted"). Climbing drains `stamina` by step time /
+stamina seconds; any grounded step that is not a climb restores it by dt /
+recovery seconds; at `min_stamina` the walker is `exhausted` and ascends
+again only once stamina has recovered to `resume_stamina` (descending is
+ordinary walking). Swimming walkers do not climb. The viewer's surface
+function reads the terrain material (rock ≥ 0.5 → rock 75°, or 62° wet; snow
+≥ 0.5 → 40°; ice ≥ 0.5 → none; otherwise soil 55°, wet 48°; wet = rain over
+0.5 mm/h or runoff over 0.2), refuses running channel water deeper than
+10 cm, and refuses a waterfall texel (runoff field `waterfall` over 0.3) while
+water runs (runoff over 0.05 or the flood wave up). The title shows the climb,
+the strength and the refusal. Tests: `terraflux-camera-tests` (climbing) and
+`--climb-test` (README).
+
+### The body: vitals, crouching, grip, heading
+
+`vitals.hpp`: `VitalsStyle` holds every rate (validated); `Exposure` is what
+the viewer gathers per frame (temperature, wind, rain, water depth, swimming,
+exhausted, fire heat and smoke from `TreeFireModel::exposure_at` and the
+ground's fire front, the lightning hazard of the step, the landing impact of
+the step, crouched); `advance_vitals` integrates wetness (rain soaks over
+`soak_seconds` at `soak_rain_mm_h`, water at once, drying over `dry_seconds`
+scaled by warmth), body heat (loss below comfort x (1 + chill x wind) x wet
+factor x water factor; gain above comfort when not soaked; warming by fire
+heat below the burn threshold) and health (lightning at once, fire by heat x
+rate, smoke, falls linearly from the safe to the lethal impact, debris wind,
+drowning when swimming exhausted, hypothermia below the heat threshold); the
+biggest single loss of a step names `last_cause`; health 0 collapses (stays
+so until `reset_vitals`). `hazard_for(distance, crouched)` maps a strike to
+the hazard with the crouched shelter. In the rig, `CrouchRules` (speed
+0.5, body height 0.6, ease 0.25 s) shape the held crouch (`crouched`,
+`crouch_blend` lowering the eye by `crouch_drop_meters`, the shortened body
+for obstacle passing, no running, jumping or climbing); `GripFn` and
+`GripRules` scale the gait's acceleration by grip and its braking by
+`min(1, 2.5 grip²)`, integrate a downhill `slide_mps` on low-grip slopes
+above `slide_slope_degrees` (gravity along the slope x (1 - grip), bled by a
+grip-dependent drag) and knock the walker down (`slipped`) at
+`slip_speed_mps` on ice; `HeadingPush` turns the yaw downwind by
+`turn_per_mps` x (crosswind - threshold) per second; landings set
+`last_impact_mps` with `landed` for one step; swimming spends stamina over
+`swim_stamina_seconds`. `hud.hpp` adds the `Hud` program (POSITION float2 in
+NDC + COLOR float4, 24-byte vertices, no uniforms; the validator requires no
+depth test or write and alpha blending) and `HudRenderer` drawing bars (a
+back plate and a fill) at the end of the object pass in first person (smoke
+runs only when scripted). The viewer gathers the exposure, advances the
+vitals every interactive frame, collapses the walker (knocked down, a message
+in the title), resets the body on entering first person, reads the grip from
+the terrain material and the weather, and shows the state in the title.
+Tests: `terraflux-vitals-tests`, the camera suite (crouch, ice, falls,
+heading, swim stamina) and `--vitals-test` (README).
+
+### The body in view, and swimming
+
+`body_view.hpp`: `BodyState` (activity, phase, stance foot, speed fraction,
+crouch, pitch) is reduced from the rig by `body_state_from` (down when
+stunned; dive/crawl/swim afloat; climb; crouch; idle/walk/run by the gait
+speed against the walking speed). `body_pose(state, style)` places six
+`BodySegment`s (left and right upper arm, forearm, hand: a transform in
+camera space — x right, y up, z forward, origin at the eye — a size and a
+color) from a per-activity hand target in body space (level with the body,
+rotated into the pitched camera), a two-segment IK (elbow toward a pole,
+reach clamped to the arm length) and the style's lengths; `hand_positions`
+reads the hands back. `make_unit_box` is a six-face box in the object vertex
+format with outward winding; `camera_to_world` maps camera space to the
+world along the camera basis. `BodyRenderer` draws the six boxes with the
+`Object` program (its own uniform buffers, depth-tested) after the scene; the
+viewer builds the basis from the frame's pose (forward to the target, the
+gait-rolled up) and skips it with `--no-arms`. Swimming in the rig:
+`WaterRules` gained the crawl factor, stroke time and pulse, breath and
+recovery times and the dive speed factor; afloat, strokes advance
+`swim_phase` (counting `strokes`) and surge the speed by the pulse, Shift
+sets `crawling` (speed and stamina cost x crawl factor), Ctrl sets `diving`
+(from half a breath; `breath` drains, surfaces at zero; `dive_blend` eases
+the eye down by `dive_drop_meters`), `underwater()` reports an eye under the
+surface, and the viewer draws a Hud veil under water and zeroes fire and
+smoke exposure. `--view-pitch` presets the first-person pitch (−85..85).
+
+### Hands, and things to pick up
+
+The pose grew hands: per arm the upper arm, forearm, palm, a two-segment
+thumb and four two-segment fingers (`kArmSegments` = 13), both arms and one
+segment for the held item (`kBodySegments` = 27, `kHeldSegment` = 26; an
+empty hand's item has size zero). `HandShape` (curl, spread, thumb curl) is
+chosen per activity and held kind by `hand_shapes` and blended in the pose;
+`fingertips(pose, side)` reads the tips back (thumb first). `BodyState`
+carries `held` (`HeldKind`: Nothing, Stone, Branch, Torch) and `held_size`;
+the held segment is placed in the right palm (a stone as its block, a branch
+or torch along its length). `BodyStyle` gained `palm_width`, `finger_radius`
+and `hand_length`; `BodyRenderer` draws `kBodySegments` boxes.
+
+`items.hpp`: `Stone` (position, radius, the block drawn, present) placed by
+`place_stones(terrain, terrain_style, sampler, StoneStyle, water_level)` on a
+jittered grid (spacing, radii, per-material chances for rock, ridge, bare and
+soil, seed, cap; validated), never under the water line or on snow/ice, and
+deterministic; `stone_obstacles` turns the present ones into low cylinders
+for the `ObstacleField` (small ones are stepped over by the body's step
+height). `DroppedBranch` lies on the ground; burning branches belong to the
+tree fire model, which gained `take_branch(x, z, radius)` (returns the burn
+time left and removes it) and `add_burning_branch(position, seconds)` (which
+ignites a trunk it lies beside, source `Ember`). `HeldItem` (kind, size,
+torch seconds, the stone's block and source index) is what the hand holds;
+`kTorchSeconds` = 90. `Projectile` flies by `advance_projectile` under the
+walker's gravity, sub-stepped, against the standing-height function (it keeps
+falling past the terrain's bounds) and is `landed` at rest on the ground;
+`throw_velocity(forward, speed, lift_degrees)` (speed ≤ 100). Reach queries:
+`stone_in_reach` / `branch_in_reach` (the nearest present thing within a
+distance of the eye and a cone of the look) and `trunk_in_reach` (any trunk
+within a radius of the feet). `PropRenderer` draws up to N boxes with the
+`Object` program from `props_near` (stones and branches within a radius,
+nearest first). The viewer: E interacts (pick up a stone / take a burning
+branch / pick up a branch / break one off the tree in reach of the feet;
+light a held branch where the tree fire's `exposure_at` heat ≥ 0.3; set an
+unburned tree alight with a torch — `ignite(i, Ember)`; otherwise drop at the
+feet), Q throws (12 m/s, +12°) and landed projectiles become stones, dropped
+branches or burning branches; a torch counts down, warms (exposure heat ≥
+0.18) and emits a flame at the hand (`held_world_position`, taken from the
+previous frame's pose). `--no-stones`, `--hold stone|branch|torch`,
+`STONES_JSON`, `--items-test` (`ITEMS_TEST_JSON` per frame).
+
+### Tools: rope, fire axe, chainsaw
+
+`tools.hpp`. `ToolKind` (None, Rope, Axe, Chainsaw; named, parsed by
+`tool_kind_from_name`) lives in `body_view.hpp` with the pose: `BodyState`
+gained `tool`, `swing` (an axe chop 0 .. 1), `sawing` and `saw_phase`;
+`kToolSegments` = 2 boxes follow the held item (`kToolSegment` = 27,
+`kBodySegments` = 29) — the axe's haft and head, the chainsaw's body and
+bar, the rope's coil — and `item_hand` says the held thing is in the left
+hand (0) while a tool is out; `tool_tip` reads the working end back. The
+hands are needed climbing, swimming and down: no tool is drawn then.
+`ToolBelt` (selected, chainsaw fuel, swing, sawing) with `select` toggling.
+`AxeRules` (chop depth 6 cm, swing 0.7 s, reach 1.6 m) and `ChainsawRules`
+(10 cm/s, 300 s of fuel, 0.5 s per branch, reach) are validated;
+`chops_to_fell(radius)` / `seconds_to_saw(radius)` count to
+`kFellCutFraction` (0.7) of the diameter; `branch_can_be_cut` halves down to
+`kMinBranchPiece` (0.25 m).
+
+The tree model: `TreeFireState` gained `cut` (fraction of the diameter),
+`cut_direction` and `felled`; `TreeFireModel::cut(tree, depth, toward)`
+deepens the cut on a standing tree (`standing(tree)`: not falling, not
+down, not leaning) and at `kFellCut` fells it — stage Falling toward
+`toward`, event `Felled`, source unchanged (a sound tree falls unlit). A cut
+trunk keeps `(1 - cut)^2` of its strength: burning, it breaks at the cut the
+cut's way (Felled) before its charred strength alone would give, and in
+wind it breaks at the cut when the load exceeds that share of the breaking
+moment. `split_branch(x, z, radius, min_piece)` halves the nearest landed
+burning branch (the halves burn on). `stats()` counts `felled` and `cut`;
+`ignition_source_name` names sources.
+
+The rope: `RopeRules` (length 20 m, throw 10 m/s lifted 12°, hang drop 2 m,
+face slope tangent 1, climb 0.8 m/s, stamina 60 s, slide 4 m/s, grab reach
+1.5 m, step-off 0.5 m; validated). `Rope` is Coiled, Flying (a `Projectile`
+coil), Laid (anchor = the thrower's feet, end = the landing) or Hung
+(anchor = the lip or the branch point, end = the foot or the ground below;
+`branch_tree` ≥ 0 for a branch; `thrower_feet` and `landing` for the tails
+lying on the ground; `span_meters`, `point_at(t)`). `throw_rope` starts the
+flight; `advance_rope` integrates it with `advance_projectile`, keeps the
+coil within the rope's length of the hand (taut: the outward velocity is
+removed), asks the `BranchCatchFn` for each step's segment (the viewer's
+answers with a standing tree's crown: within a quarter of its height of the
+trunk, 30–95 % up) and, landed, walks the ground from the feet to the
+landing in quarter-metre steps: the first step falling faster than the face
+slope is the lip, the steep run to where it eases is the face, and a face
+at least the hang drop tall hangs the rope (else Laid; lost down a hole,
+Coiled again). `rope_grab_point` (the anchor from the feet for a pegged
+rope, the nearest point of the line from the hands at shoulder height, the
+end from the feet) and `grab_rope` put the walker on it (`FirstPersonCamera`
+gained `on_rope`, `rope_t_meters`, `rope_phase`, `rope_ground_meters`;
+climbing = true, surface "rope"). `climb_rope` replaces `walk()` while on
+it: W up (stamina / stamina_seconds), S down (free), hanging a third,
+exhausted (below the climb rules' min stamina) slides at the slide speed;
+the feet follow the line but never sink below the ground it runs over;
+letting down onto ground within the step-off distance at the bottom, or
+walkable ground (no steeper than the body's max slope around it) for a
+metre of rope past the first 1.5 m, steps off (`stepped_off`, grounded);
+`at_top` at t = 0; `jump` releases (`let_go`, falling); a rope no longer
+hung releases too. `step_off_rope_top` moves the feet inward from a pegged
+rope's anchor to ground within the step-off distance (a branch rope has
+none: a perch). `coil_rope` resets. `rope_props` draws the line (thin boxes
+per 4 m), a flight's trail and coil, and a pegged rope's three runs.
+
+Vitals: `DamageCause::Crushed`, `Exposure::crushed` (a fraction of health at
+once), `crush_damage(mass_kg)` = mass / 1000 clamped. The viewer checks each
+tree `Grounded` event against the walker (along the trunk, within its
+radius plus the body's plus 0.6 m; not up a rope above it): knocked down
+3 s, shaken, crushed by the mass. Viewer: keys 1/2/3, E uses the tool first
+(`use_tool`: throw / take hold; start a swing whose chop lands at 0.5;
+the chainsaw runs while E is held, `saw_step`), 1 pulls a rope in,
+`--tool`, `--rope-length`, `--chainsaw-fuel`, `--tools-test`
+(`TOOLS_TEST_JSON` per frame), `TERRAFLUX_SCREENSHOT_EVERY_FRAME=1` with
+`--screenshot` writes every frame of a scripted run.
 
 ## Fixed-tick replay clock
 

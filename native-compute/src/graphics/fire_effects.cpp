@@ -300,6 +300,12 @@ void FireEffectsRenderer::set_emitters(FireEmitters emitters) {
   emitters_ = std::move(emitters);
 }
 
+void FireEffectsRenderer::set_dynamic(FireEmitters emitters) {
+  if (emitters.flames.size() > capacity_) emitters.flames.resize(capacity_);
+  if (emitters.smoke.size() > capacity_) emitters.smoke.resize(capacity_);
+  dynamic_ = std::move(emitters);
+}
+
 FireDrawStats FireEffectsRenderer::draw(PipelineHandle pipeline, BufferHandle camera, BufferHandle style,
                                         const AtmosphereBinding& atmosphere, const Frustum& frustum, math::Vec3 eye,
                                         double draw_distance_meters, bool cull) {
@@ -327,8 +333,11 @@ FireDrawStats FireEffectsRenderer::draw(PipelineHandle pipeline, BufferHandle ca
       offset += count;
     }
   };
+  std::size_t counted = 0;
   submit(emitters_.smoke, stats.smoke);   // plumes behind the flames
+  submit(dynamic_.smoke, counted); stats.smoke += counted;
   submit(emitters_.flames, stats.flames);
+  submit(dynamic_.flames, counted); stats.flames += counted;
   return stats;
 }
 

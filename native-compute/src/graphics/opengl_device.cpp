@@ -113,6 +113,19 @@ out vec4 fragColor;
 void main() {fragColor=texture(SourceColor,uv);}
 )GLSL";
 
+// HUD: screen-space colored quads (bars), blended over the finished frame.
+constexpr char kHudVertexShader[] = R"GLSL(#version 430 core
+layout(location=0) in vec2 POSITION;
+layout(location=1) in vec4 COLOR;
+out vec4 color;
+void main() {color=COLOR;gl_Position=vec4(POSITION,0.0,1.0);}
+)GLSL";
+constexpr char kHudFragmentShader[] = R"GLSL(#version 430 core
+in vec4 color;
+out vec4 fragColor;
+void main() {fragColor=color;}
+)GLSL";
+
 // Ground color shared by the terrain and wildfire fragment shaders. The CPU
 // reference terrain_material()/terrain_surface_color() in terrain_shading.cpp
 // mirrors terrainHeightTint()/terrainMaterial()/terrainBaseColor() exactly,
@@ -1060,7 +1073,7 @@ void main() {
   bedGradient = BED_GRADIENT;
   // A long swell (six wave lengths) lifts the coarse surface mesh itself; it
   // dies out toward the shore so the water never climbs onto the land.
-  float depth = max(surface.x - BED, 0.0);
+  float depth = max(POSITION.y - BED, 0.0);  // per vertex: a flood surface lies on its channel, the lake is flat
   float k = kTwoPi / (surface.z * 6.0);
   float swell = 0.5 * surface.y * sin(dot(POSITION.xz, travel.xy) * k - surface.w * k * travel.z);
   vec3 displaced = POSITION;
@@ -1121,7 +1134,7 @@ vec3 rainRings(vec2 p, float t, float rate, float dropMm) {
 }
 void main() {
   atmosphereJitter = atmosphereDither(gl_FragCoord.xy);
-  float depth = surface.x - bedHeight;
+  float depth = surfacePosition.y - bedHeight;
   if (depth <= 0.001) discard;            // land corners of shoreline triangles
   vec2 p = surfacePosition.xz;
   float time = travel.z, height = surface.y, chop = eye.w;
@@ -1239,7 +1252,8 @@ layout(std140, binding = 13) uniform VegetationStyle {
   vec4 fireGrid;   // cell size, width, height, present
   vec4 fireOrigin; // origin offset x, origin offset y
 };
-struct PlantInstance { vec4 positionScale; vec4 motion; vec4 tint; }; // motion: rotation, phase, bend, kind
+// motion: rotation, phase, bend, kind; fall: tilt direction (x, z), tilt angle, consumed; fire: char, glow
+struct PlantInstance { vec4 positionScale; vec4 motion; vec4 tint; vec4 fall; vec4 fire; };
 layout(std430, binding = 4) readonly buffer InstanceData { PlantInstance plants[]; };
 layout(std430, binding = 5) readonly buffer PlantFireState { uint plantFireStates[]; };
 out vec3 worldNormal;
@@ -1280,26 +1294,56 @@ void main() {
   bool isGrass = plant.positionScale.w < 3.5;
   float fadeStart = isGrass ? params.y : params.w * 0.8, fadeEnd = isGrass ? params.z : params.w;
   float presence = 1.0 - smoothstep(fadeStart, fadeEnd, distanceToEye);
-  plantBurn = fireStateAt(plant.positionScale.xz);
-  // Burned grass is reduced to stubble; burned trees keep most of their charred size.
-  if (plantBurn > 0.5 && plantBurn < 1.5) presence *= isGrass ? 0.25 : 0.9;
+  // Trees under the tree fire model carry their own fall, char and glow; everything
+  // else (grass, trees without the model) follows the cell front.
+  bool instanceFire = fireOrigin.z > 0.5 && !isGrass;
+  float charAmount = 0.0, glow = 0.0, consumed = 0.0, tilt = 0.0;
+  if (instanceFire) {
+    charAmount = plant.fire.x; glow = plant.fire.y; consumed = plant.fall.w; tilt = plant.fall.z;
+    plantBurn = glow > 0.05 ? 2.0 : (charAmount > 0.5 ? 1.0 : 0.0);
+  } else {
+    plantBurn = fireStateAt(plant.positionScale.xz);
+    // Burned grass is reduced to stubble; burned trees keep most of their charred size.
+    if (plantBurn > 0.5 && plantBurn < 1.5) presence *= isGrass ? 0.25 : 0.9;
+  }
   float scale = plant.positionScale.w * presence;
-  vec3 local = rotation * (POSITION * scale);
+  vec3 model = POSITION;
+  // The fire eats the crown: foliage draws in toward the trunk and shortens as the
+  // tree is consumed, leaving charred branch stubs on a snag.
+  model.xz *= mix(1.0, 0.22, smoothstep(0.15, 0.95, consumed) * TINT_WEIGHT);
+  model.y *= mix(1.0, 0.55, smoothstep(0.4, 1.0, consumed) * TINT_WEIGHT);
+  vec3 local = rotation * (model * scale);
+  vec3 localNormal = rotation * NORMAL;
+  if (tilt > 0.0) {
+    // Toppling: the whole tree rotates about its base toward the fall direction.
+    vec3 axis = normalize(vec3(plant.fall.y, 0.0, -plant.fall.x));
+    float ct = cos(tilt), st = sin(tilt);
+    local = local * ct + cross(axis, local) * st + axis * dot(axis, local) * (1.0 - ct);
+    localNormal = localNormal * ct + cross(axis, localNormal) * st + axis * dot(axis, localNormal) * (1.0 - ct);
+  }
   // Wind: the tip leads, the base stays anchored; gusts vary along the wind direction.
   float gust = sin(wind.w * (0.6 + 0.25 * wind.z) + plant.motion.y + dot(plant.positionScale.xz, wind.xy) * 0.05);
   // Sway grows faster than the wind (drag goes with its square) and a gale adds a fast flutter.
   float strength = 0.02 + 0.012 * wind.z + 0.0007 * wind.z * wind.z;
   float flutter = smoothstep(8.0, 20.0, wind.z) * 0.35 * sin(wind.w * 6.5 + plant.motion.y * 3.1 + FLEX * 4.0);
   float sway = params.x * strength * scale * FLEX * FLEX * (gust + 0.35 * sin(wind.w * 2.3 + plant.motion.y * 1.7) + flutter);
+  sway *= 1.0 - smoothstep(0.0, 0.6, tilt);  // a falling or fallen tree no longer sways
   vec3 offset = vec3(wind.x, 0.0, wind.y) * sway + vec3(-wind.y, 0.0, wind.x) * sway * 0.3;
   offset += vec3(wind.x, 0.0, wind.y) * plant.motion.z * 0.08 * scale * FLEX;  // permanent lean on steep ground
   // Storm bending: the whole crown leans downwind, up to a quarter of the height in a gale.
   offset += vec3(wind.x, 0.0, wind.y) * (0.012 * max(wind.z - 6.0, 0.0)) * scale * FLEX * FLEX;
   vec3 world = plant.positionScale.xyz + local + offset;
-  worldNormal = rotation * NORMAL;
+  worldNormal = localNormal;
   vec3 living = COLOR * mix(vec3(1.0), plant.tint.rgb, TINT_WEIGHT);
   vec3 charred = vec3(0.05, 0.045, 0.04) + 0.06 * COLOR;
-  if (plantBurn > 1.5) {
+  if (instanceFire) {
+    // Under the tree fire model: wood and foliage char by the consumed amount and
+    // the flames' glow lights the foliage and the wood beneath them.
+    float flicker = 0.75 + 0.25 * sin(wind.w * 9.0 + plant.motion.y * 5.0 + FLEX * 6.0);
+    vec3 ember = mix(vec3(0.6, 0.12, 0.02), vec3(1.0, 0.55, 0.12), FLEX) * flicker;
+    vec3 body = mix(living, charred, charAmount);
+    plantColor = mix(body, ember, glow * (0.35 + 0.45 * FLEX) * (0.4 + 0.6 * TINT_WEIGHT));
+  } else if (plantBurn > 1.5) {
     // Burning: foliage glows and flickers orange, wood darkens.
     float flicker = 0.75 + 0.25 * sin(wind.w * 9.0 + plant.motion.y * 5.0 + FLEX * 6.0);
     vec3 ember = mix(vec3(0.6, 0.12, 0.02), vec3(1.0, 0.55, 0.12), FLEX) * flicker;
@@ -1371,8 +1415,15 @@ void main() {
   float time = wind.w;
   vec3 toEye = eye.xyz - base;
   vec3 right = normalize(vec3(toEye.z, 0.0, -toEye.x) + vec3(1e-4, 0.0, 0.0));
-  float width = kind < 0.5 ? height * 0.55 : height * (0.35 + 0.55 * TEXCOORD.y);
+  float width = kind < 0.5 ? height * 0.55 : (kind > 2.5 ? height : height * (0.35 + 0.55 * TEXCOORD.y));
   vec3 offset = right * POSITION.x * width;
+  if (kind > 2.5) {
+    // A burning branch in the air: a small glowing body with a short flame tail above it.
+    vec3 world = base + offset + vec3(0.0, (POSITION.y - 0.3) * height, 0.0);
+    worldPosition = world;
+    gl_Position = viewProjection * vec4(world, 1.0);
+    return;
+  }
   if (kind < 0.5) {
     // Flames flicker: the tip sways and the height pulses; the fire weather (params.w)
     // lifts them in hot dry air and beats them down in rain.
@@ -1412,6 +1463,19 @@ float fbm(vec2 p) {
 void main() {
   atmosphereJitter = atmosphereDither(gl_FragCoord.xy);
   float time = wind.w;
+  if (kind > 2.5) {
+    // Ember: a round glowing core trailing a flickering tongue.
+    vec2 c = vec2(uv.x - 0.5, uv.y - 0.3);
+    float core = 1.0 - smoothstep(0.10, 0.22, length(c));
+    float n = fbm(vec2(uv.x * 4.0 + seed, uv.y * 3.0 - time * 3.0 - seed));
+    float tail = (1.0 - smoothstep(0.08, 0.2, abs(c.x) * (0.6 + 1.8 * max(c.y, 0.0)))) * smoothstep(0.0, 0.15, c.y) *
+                 (1.0 - smoothstep(0.35, 0.7, c.y)) * smoothstep(0.3, 0.6, n + 0.3);
+    float alpha = max(core, tail * 0.8) * (0.6 + 0.4 * intensity);
+    if (alpha < 0.02) discard;
+    vec3 color = mix(vec3(1.0, 0.45, 0.08), vec3(1.0, 0.92, 0.6), core);
+    fragColor = vec4(applyAtmosphere(color, worldPosition), alpha);
+    return;
+  }
   if (kind < 0.5) {
     // Flame: a tongue narrowing toward the tip, eroded by rising noise.
     float halfWidth = 0.5 * pow(1.0 - uv.y, 0.65) * (0.85 + 0.15 * sin(seed));
@@ -2594,6 +2658,7 @@ PipelineHandle OpenGLRenderDevice::create_pipeline(PipelineDesc desc) {
     case ShaderProgramId::Precipitation:vertex_source=kPrecipitationVertexShader.c_str();fragment_source=kPrecipitationFragmentShader.c_str();break;
     case ShaderProgramId::Lightning:vertex_source=kLightningVertexShader;fragment_source=kLightningFragmentShader.c_str();break;
     case ShaderProgramId::Spray:vertex_source=kSprayVertexShader.c_str();fragment_source=kSprayFragmentShader.c_str();break;
+    case ShaderProgramId::Hud:vertex_source=kHudVertexShader;fragment_source=kHudFragmentShader;break;
     case ShaderProgramId::Object:vertex_source=kObjectVertexShader;fragment_source=kObjectFragmentShader;break;
     case ShaderProgramId::TexturedObject:vertex_source=kTexturedVertexShader;fragment_source=kTexturedFragmentShader;break;
     case ShaderProgramId::InstancedTexturedObject:vertex_source=kInstancedTexturedVertexShader;fragment_source=kTexturedFragmentShader;break;

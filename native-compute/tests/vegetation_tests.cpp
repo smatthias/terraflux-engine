@@ -284,7 +284,7 @@ void test_renderer() {
     require(fewer.tree_instances < all.tree_instances && fewer.tree_instances == renderer.placement().trees.size(), "re-placement takes effect");
   }
   require(device.live_resource_bytes() == baseline && device.live_buffer_count() == buffers, "renderer releases everything");
-  // Validator: vegetation instance records are 48 bytes, not 144.
+  // Validator: vegetation instance records are 80 bytes (kVegetationInstanceBytes), not 144.
   RenderPassScope pass(device, {{64, 64}});
   const auto grass = make_grass_mesh(1);
   const auto vb = shared.create_buffer({BufferUsage::Vertex, std::as_bytes(std::span(grass.vertices)).size()}, std::as_bytes(std::span(grass.vertices)));
@@ -294,7 +294,7 @@ void test_renderer() {
   const std::vector<TextureBinding> field{{kOrographicFieldSlot, atmosphere.binding().field}};
   device.draw_indexed({pipeline, vb, ib, 0, 3, {{0, camera}, {kVegetationStyleSlot, style_buffer}}, {{4, instances}, {kVegetationFireSlot, fire_states}}, field, 10});
   rejects<std::out_of_range>([&] { device.draw_indexed({pipeline, vb, ib, 0, 3, {{0, camera}, {kVegetationStyleSlot, style_buffer}}, {{4, instances}, {kVegetationFireSlot, fire_states}}, field, 11}); },
-                             "instance count beyond the 48-byte records rejected");
+                             "instance count beyond the 80-byte records rejected");
   rejects([&] { device.draw_indexed({pipeline, vb, ib, 0, 3, {{0, camera}, {kVegetationStyleSlot, style_buffer}}, {{4, instances}}, field, 1}); },
           "the fire state buffer is required even without a fire");
   const std::array<float, 8> short_style{};

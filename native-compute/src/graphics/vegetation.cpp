@@ -265,6 +265,13 @@ VegetationStyleUniform pack_vegetation_style(const VegetationStyle& style, math:
   return u;
 }
 
+VegetationStyleUniform pack_vegetation_style(const VegetationStyle& style, math::Vec3 eye, double time_seconds,
+                                             const VegetationFireGrid& fire, bool instance_fire) {
+  auto u = pack_vegetation_style(style, eye, time_seconds, fire);
+  u[22] = instance_fire ? 1.0f : 0.0f;
+  return u;
+}
+
 std::uint32_t vegetation_fire_state(const VegetationFireGrid& fire, const std::vector<std::uint32_t>& states,
                                     double x, double z) {
   if (!fire.present || !std::isfinite(x) || !std::isfinite(z)) return 0;
