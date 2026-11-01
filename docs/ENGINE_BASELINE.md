@@ -30,7 +30,7 @@ Validation evidence here comes from the linked CI run, not a new local test run.
 
 | Area | Baseline |
 | --- | --- |
-| Simulation | Deterministic wildfire grid propagation, versioned v1/v2 contracts, terrain/wind rules and replay parity |
+| Simulation | Deterministic wildfire grid propagation, versioned v1/v2/v3 contracts, terrain/wind/weather rules and replay parity |
 | Desktop | OpenGL 4.3, terrain mesh, orbit camera and wildfire replay |
 | Assets | OBJ/MTL, static glTF/GLB, images/samplers and the documented direct-light PBR subset |
 | Scene composition | Versioned scenes, hierarchy, shared canonical models, authored glTF transforms and mixed-format references |
@@ -124,6 +124,7 @@ hardware measurements; do not infer performance from software-renderer timings.
 | P1 — 2/6 | Broader shader modules and attachment formats | Define one bounded extension with descriptor, lifetime and failure tests; retain existing built-ins |
 | P1 — 5 | Replay UI composition | Specify the next scoped display control; preserve exact timing, layer isolation and fire-grid identity |
 | P1 — 6/7 | Direct-light PBR subset | Scope IBL or shadows separately with reference fixtures; do not claim full glTF compatibility |
+| P1 — 6/7 | Assets outside the weather | Bind the `Atmosphere` block in the object/PBR programs so imported assets take the daylight, cloud shadow and haze of the terrain |
 | P1 — 7 | Static assets only | Specify animation/skin/morph/extension support before implementation |
 | P1 — 8/9 | Synchronous eager CPU loading | Define cancellation, ownership and thread handoff; keep GPU calls on the context thread |
 | P1 — 8/9 | Retained CPU recipes | Define eviction and reload behavior with payload budgets and lifetime tests |
@@ -223,6 +224,38 @@ sway and run-time switchable meshes/densities; an eighteenth suite
 is visualised as fuel-gated 3D flames and smoke with crown fires and charred
 plants (`fire_effects.hpp`, a nineteenth suite and the Mesa `--fire-test`). See
 [the water surface contract](GRAPHICS_BACKENDS.md#water-surface).
+
+The weather increment (`weather.hpp`) adds a wind that gusts between two
+thresholds and veers around its mean, a solar day/night cycle with civil,
+nautical and astronomical twilight, stars and moonlight, seven cloud forms
+with the conditions they announce (haze, drizzle, rain or snow, lightning), and
+an orographic model of a cloud forced uphill (windward thickening and rain, cap
+clouds and summit fog, foehn clearing and rain shadow in the lee, Froude-number
+blocking of weak winds). Cumuliform cells live and die with the updrafts that
+feed them and carry 3D-eroded, self-shadowed volume; thunderstorms bring
+squall bands, a gust front, a cooled downdraft and branching lightning
+channels; raindrops fall with their own size, terminal velocity and wind lag,
+ring the water, accumulate into puddles and a flood rise, and draw rainbows
+with the sun; the wind drives the sea state and its glitter and bends the
+trees; sunrise and sunset light the clouds from the side and below with a warm
+horizon toward the sun and a purple one opposite, and a phased moon with a
+shaded, cratered disc lights the night, the clouds and the water; rain runs
+off along the terrain's drainage into streams and, over cliffs, into cascades
+traced from lip to plunge pool — ropes of water split and deflected by the
+crags, with spray particles off every lip, ledge and pool that are lit drop
+by drop (shadowed by their neighbours and the cliff) and carry a fragmented
+bow — below the freezing level and falls, drifts and settles as snow above
+it. The 400-byte `Atmosphere` block, the RGBA16 `RunoffField` texture and the
+`OrographicField` texture are bound by every world shader (neutral by default
+in smoke runs), with `Sky`, `Precipitation`, `Lightning` and `Spray`
+identities, CPU lighting/haze/sky twins, a
+twentieth native suite (`terraflux-weather-tests`) and the Mesa
+`--weather-test`. The simulation contract grows to v3: air temperature,
+humidity and rainfall (constant or per step) enter the spread score as a
+bounded term mirrored in Python and C++ with fifteen new parity fixtures, and
+the viewer mirrors a replay's weather series while it plays. Imported assets
+keep their fixed light; thunder, hail, lee-wave clouds and temporal filtering
+of the cloud march remain open. See [the weather contract](GRAPHICS_BACKENDS.md#weather).
 
 ## Implementation references
 

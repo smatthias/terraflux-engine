@@ -150,4 +150,28 @@ inline double number(const Json& json) { if (!std::holds_alternative<double>(jso
 inline std::string string(const Json& json) { if (!std::holds_alternative<std::string>(json.value)) throw std::runtime_error("JSON string required"); return std::get<std::string>(json.value); }
 inline double optional_number(const Json::Object& value, const std::string& key, double fallback) { const auto found = value.find(key); return found == value.end() || std::holds_alternative<std::nullptr_t>(found->second.value) ? fallback : number(found->second); }
 
+// v3 "weather": absent/null -> empty, an object -> one sample, an array -> the per-step series.
+// Unknown keys are ignored and missing keys take the neutral defaults, like the Pydantic model.
+inline terraflux::compute::WeatherSample weather_sample(const Json& json) {
+  const auto& entry = object(json);
+  terraflux::compute::WeatherSample sample;
+  sample.temperature_celsius = optional_number(entry, "temperature_celsius", sample.temperature_celsius);
+  sample.relative_humidity = optional_number(entry, "relative_humidity", sample.relative_humidity);
+  sample.precipitation_mm_h = optional_number(entry, "precipitation_mm_h", sample.precipitation_mm_h);
+  if (!terraflux::compute::valid_weather_sample(sample)) throw std::runtime_error("invalid weather sample");
+  return sample;
+}
+inline std::vector<terraflux::compute::WeatherSample> weather_series(const Json::Object& request) {
+  std::vector<terraflux::compute::WeatherSample> series;
+  const auto found = request.find("weather");
+  if (found == request.end() || std::holds_alternative<std::nullptr_t>(found->second.value)) return series;
+  if (std::holds_alternative<Json::Array>(found->second.value)) {
+    for (const auto& entry : std::get<Json::Array>(found->second.value)) series.push_back(weather_sample(entry));
+    if (series.size() > terraflux::compute::kMaxWeatherSteps) throw std::runtime_error("weather series must not exceed 720 steps");
+  } else {
+    series.push_back(weather_sample(found->second));
+  }
+  return series;
+}
+
 }  // namespace terraflux::json

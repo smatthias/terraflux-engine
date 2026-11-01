@@ -39,6 +39,7 @@ add_library(terraflux_graphics STATIC
   src/graphics/water_shading.cpp
   src/graphics/vegetation.cpp
   src/graphics/fire_effects.cpp
+  src/graphics/weather.cpp
   src/graphics/terrain_tiles.cpp
   src/graphics/mesh_upload.cpp
   src/graphics/visibility.cpp
@@ -113,6 +114,10 @@ if(BUILD_TESTING)
   add_executable(terraflux-fire-effects-tests tests/fire_effects_tests.cpp)
   target_link_libraries(terraflux-fire-effects-tests PRIVATE terraflux_graphics)
   add_test(NAME terraflux-fire-effects-tests COMMAND terraflux-fire-effects-tests)
+
+  add_executable(terraflux-weather-tests tests/weather_tests.cpp)
+  target_link_libraries(terraflux-weather-tests PRIVATE terraflux_graphics)
+  add_test(NAME terraflux-weather-tests COMMAND terraflux-weather-tests)
 
   add_executable(terraflux-water-tests tests/water_tests.cpp)
   target_link_libraries(terraflux-water-tests PRIVATE terraflux_graphics)

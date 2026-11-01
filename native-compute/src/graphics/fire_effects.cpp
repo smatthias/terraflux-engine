@@ -29,6 +29,7 @@ void validate(const FireStyle& s) {
   if (!within(s.draw_distance_meters, 100, 50000)) throw std::invalid_argument("fire draw distance must be 100..50000 meters");
   if (!within(s.wind_direction_degrees, 0, 360)) throw std::invalid_argument("wind direction must be 0..360 degrees");
   if (!within(s.wind_speed_mps, 0, 30)) throw std::invalid_argument("wind speed must be 0..30 m/s");
+  if (!within(s.vigour, 0.1, 3)) throw std::invalid_argument("fire vigour must be 0.1..3");
   if (!finite(s.light_direction) || !(s.light_direction.length() > 0)) throw std::invalid_argument("fire light must be nonzero");
 }
 std::uint32_t hash_u32(std::uint32_t x) {
@@ -55,7 +56,7 @@ FireStyleUniform pack_fire_style(const FireStyle& style, math::Vec3 eye, double 
   FireStyleUniform u{};
   u[0] = f(std::sin(radians)); u[1] = f(-std::cos(radians)); u[2] = f(style.wind_speed_mps); u[3] = f(time_seconds);
   u[4] = f(eye.x); u[5] = f(eye.y); u[6] = f(eye.z); u[7] = f(style.flame_scale);
-  u[8] = f(style.smoke_scale); u[9] = f(style.smoke_height_meters); u[10] = f(style.draw_distance_meters); u[11] = 0.0f;
+  u[8] = f(style.smoke_scale); u[9] = f(style.smoke_height_meters); u[10] = f(style.draw_distance_meters); u[11] = f(style.vigour);
   u[12] = f(light.x); u[13] = f(light.y); u[14] = f(light.z); u[15] = 0.0f;
   return u;
 }
@@ -74,7 +75,8 @@ ShaderLayout fire_shader_layout() {
            {"TEXCOORD", 1, VertexFormat::Float2, static_cast<std::uint32_t>(offsetof(FireVertex, uv))}},
           {{"Camera", ShaderResourceKind::UniformBuffer, 0, kVertexStage},
            {"FireStyle", ShaderResourceKind::UniformBuffer, kFireStyleSlot, kVertexStage | kFragmentStage},
-           {"InstanceData", ShaderResourceKind::StorageBuffer, 4, kVertexStage}}};
+           {"InstanceData", ShaderResourceKind::StorageBuffer, 4, kVertexStage},
+           atmosphere_binding(kFragmentStage), orographic_field_binding()}};
 }
 
 double fire_fuel_factor(double fuel_load, const TerrainMaterial& m, double threshold) {
@@ -299,7 +301,8 @@ void FireEffectsRenderer::set_emitters(FireEmitters emitters) {
 }
 
 FireDrawStats FireEffectsRenderer::draw(PipelineHandle pipeline, BufferHandle camera, BufferHandle style,
-                                        const Frustum& frustum, math::Vec3 eye, double draw_distance_meters, bool cull) {
+                                        const AtmosphereBinding& atmosphere, const Frustum& frustum, math::Vec3 eye,
+                                        double draw_distance_meters, bool cull) {
   if (!device_.active_render_pass_id()) throw std::logic_error("fire effects require an active pass");
   FireDrawStats stats;
   const auto submit = [&](const std::vector<FireInstance>& list, std::size_t& counted) {
@@ -317,8 +320,8 @@ FireDrawStats FireEffectsRenderer::draw(PipelineHandle pipeline, BufferHandle ca
     while (offset < scratch_.size()) {
       const auto count = std::min<std::size_t>(scratch_.size() - offset, 65535);
       device_.update_buffer(instances_, 0, std::as_bytes(std::span(scratch_).subspan(offset, count)));
-      DrawIndexed command{pipeline, vb_, ib_, 0, 6, {{0, camera}, {kFireStyleSlot, style}}, {{4, instances_}}, {},
-                          static_cast<std::uint32_t>(count)};
+      DrawIndexed command{pipeline, vb_, ib_, 0, 6, {{0, camera}, {kFireStyleSlot, style}, {kAtmosphereSlot, atmosphere.block}},
+                          {{4, instances_}}, {{kOrographicFieldSlot, atmosphere.field}}, static_cast<std::uint32_t>(count)};
       device_.draw_indexed(command);
       ++stats.draws;
       offset += count;

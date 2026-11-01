@@ -57,6 +57,12 @@ class RenderResourceOwner {
     device_.destroy_buffer(handle);
     buffers_.erase(it);
   }
+  void release_texture(TextureHandle handle) {
+    const auto it=std::find(textures_.begin(),textures_.end(),handle);
+    if(it==textures_.end())throw std::invalid_argument("texture is not owned by this scope");
+    device_.destroy_texture(handle);
+    textures_.erase(it);
+  }
   // Best-effort cleanup. Backend-specific destroy failures must not escape
   // a destructor during unwinding. The device owns the underlying backend.
   void reset() noexcept {

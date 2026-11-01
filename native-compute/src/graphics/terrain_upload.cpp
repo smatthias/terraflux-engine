@@ -1,5 +1,6 @@
 #include <terraflux/graphics/terrain_upload.hpp>
 #include <terraflux/graphics/terrain_shading.hpp>
+#include <terraflux/graphics/weather.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -48,6 +49,10 @@ ShaderBinding terrain_style_binding() {
 ShaderLayout terrain_shader_layout() {
   ShaderLayout layout = terrain_vertex_layout();
   layout.bindings.push_back(terrain_style_binding());
+  // Daylight, fog, clouds and their terrain interaction; neutral when weather is off.
+  layout.bindings.push_back(atmosphere_binding(kFragmentStage));
+  layout.bindings.push_back(orographic_field_binding());
+  layout.bindings.push_back(runoff_field_binding());
   return layout;
 }
 
@@ -60,6 +65,9 @@ ShaderLayout wildfire_shader_layout() {
   layout.bindings.push_back({"FireState", ShaderResourceKind::StorageBuffer, 1, kFragmentStage});
   layout.bindings.push_back({"LayerVisibility",ShaderResourceKind::UniformBuffer,10,kFragmentStage});
   layout.bindings.push_back(terrain_style_binding());
+  layout.bindings.push_back(atmosphere_binding(kFragmentStage));
+  layout.bindings.push_back(orographic_field_binding());
+  layout.bindings.push_back(runoff_field_binding());
   return layout;
 }
 

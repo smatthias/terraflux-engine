@@ -60,9 +60,14 @@ struct TextureHandle {
   constexpr explicit operator bool() const {return id!=0;}
   constexpr bool operator==(const TextureHandle&) const = default;
 };
+// Four channels, 8 bits each unless Rgba16 (16 bits each, little-endian, for fields whose
+// interpolated values steer shading frames and would visibly step at 8 bits).
+enum class TextureFormat : std::uint8_t { Rgba8, Rgba16 };
+constexpr std::uint32_t texture_bytes_per_texel(TextureFormat format) { return format==TextureFormat::Rgba16?8U:4U; }
 struct TextureDesc {
-  std::uint32_t width=0,height=0; // 4 channels, RGBA8
+  std::uint32_t width=0,height=0; // 4 channels
   TextureSampling sampling{};
+  TextureFormat format=TextureFormat::Rgba8;
 };
 struct PipelineHandle {
   std::uint32_t id = 0;
@@ -72,7 +77,7 @@ struct PipelineHandle {
 
 enum class ShaderProgramId : std::uint8_t {
   Unspecified, ContractOnly, Terrain, Wildfire, Object, TexturedObject,
-  InstancedTexturedObject, PbrObject, PbrInstanced, Composite, Water, Vegetation, Fire
+  InstancedTexturedObject, PbrObject, PbrInstanced, Composite, Water, Vegetation, Fire, Sky, Precipitation, Lightning, Spray
 };
 struct PipelineDesc {
   ShaderProgramId program=ShaderProgramId::Unspecified;

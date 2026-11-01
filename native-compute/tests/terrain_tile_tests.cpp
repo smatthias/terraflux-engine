@@ -3,6 +3,7 @@
 #include <terraflux/graphics/terrain_tiles.hpp>
 #include <terraflux/graphics/terrain_shading.hpp>
 #include <terraflux/graphics/render_pass.hpp>
+#include <terraflux/graphics/weather.hpp>
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -171,6 +172,7 @@ void gpu_uploads_and_culling() {
   using namespace graphics;
   ValidatingRenderDevice device;
   RenderResourceOwner shared(device);
+  AtmosphereGpu atmosphere(device); // Neutral daylight/cloud block every terrain draw binds.
   const std::array<float,16> identity{1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
   const auto camera=shared.create_buffer({BufferUsage::Uniform,sizeof(identity)},std::as_bytes(std::span(identity)));
   const auto pipeline=shared.create_pipeline({ShaderProgramId::Terrain,terrain_shader_layout()});
@@ -191,29 +193,29 @@ void gpu_uploads_and_culling() {
   {
     TerrainTileRenderer tiles(device,source,{1});
     require(tiles.tile_count()==16 && tiles.geometry_bytes()==16*kTileBytes,"bounded tile uploads accounted exactly");
-    rejects<std::logic_error>([&]{tiles.draw(pipeline,camera,{},frustum);});
+    rejects<std::logic_error>([&]{tiles.draw(pipeline,camera,atmosphere.binding(),{},frustum);});
     RenderPassScope pass(device,{{64,64}});
-    const auto culled=tiles.draw(pipeline,camera,{},frustum);
+    const auto culled=tiles.draw(pipeline,camera,atmosphere.binding(),{},frustum);
     require(culled.total==16 && culled.visible==4 && culled.culled==12 && culled.draws==4 && culled.triangles==8,
             "frustum skips outside terrain tile draw submissions");
-    const auto all=tiles.draw(pipeline,camera,{},frustum,false);
+    const auto all=tiles.draw(pipeline,camera,atmosphere.binding(),{},frustum,false);
     require(all.visible==16 && !all.culled && all.draws==16 && all.triangles==32,"disabled culling submits complete surface");
     RenderResourceOwner styles(device); // Released with the tiles, before the baseline check.
     const auto style_packed=pack_terrain_style(terrain_style_for(source));
     const auto style=styles.create_buffer({BufferUsage::Uniform,sizeof(style_packed)},std::as_bytes(std::span(style_packed)));
-    const auto styled=tiles.draw(pipeline,camera,{},frustum,true,{},style);
+    const auto styled=tiles.draw(pipeline,camera,atmosphere.binding(),{},frustum,true,{},style);
     require(styled.draws==4,"tile draws bind the terrain style block");
     const std::array<float,4> short_style{};
     const auto truncated=styles.create_buffer({BufferUsage::Uniform,sizeof(short_style)},std::as_bytes(std::span(short_style)));
-    rejects([&]{tiles.draw(pipeline,camera,{},frustum,true,{},truncated);});
+    rejects([&]{tiles.draw(pipeline,camera,atmosphere.binding(),{},frustum,true,{},truncated);});
     const auto absent=Frustum::from_view_projection(math::Mat4::translation({100,100,100}));
-    const auto none=tiles.draw(pipeline,camera,{},absent);
+    const auto none=tiles.draw(pipeline,camera,atmosphere.binding(),{},absent);
     require(none.culled==16 && !none.draws && !none.triangles,"fully hidden terrain emits no draws");
     // Padding for shader displacement keeps tiles just outside the frustum drawable.
     const auto shifted=Frustum::from_view_projection(math::Mat4::translation({-1.5,0,0}));
-    const auto tight=tiles.draw(pipeline,camera,{},shifted);
+    const auto tight=tiles.draw(pipeline,camera,atmosphere.binding(),{},shifted);
     tiles.set_bounds_padding(2.0);
-    const auto padded=tiles.draw(pipeline,camera,{},shifted);
+    const auto padded=tiles.draw(pipeline,camera,atmosphere.binding(),{},shifted);
     require(padded.visible>tight.visible && tiles.bounds_padding()==2.0,"bounds padding expands the visible set");
     rejects([&]{tiles.set_bounds_padding(-1);});rejects([&]{tiles.set_bounds_padding(500);});
     tiles.set_bounds_padding(0);
@@ -229,6 +231,7 @@ void gpu_uploads_and_culling() {
 void selective_gpu_residency() {
   using namespace graphics;
   ValidatingRenderDevice device;RenderResourceOwner shared(device);
+  AtmosphereGpu atmosphere(device);
   const std::array<float,16> identity{1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
   const auto camera=shared.create_buffer({BufferUsage::Uniform,sizeof(identity)},std::as_bytes(std::span(identity)));
   const auto pipeline=shared.create_pipeline({ShaderProgramId::Terrain,terrain_shader_layout()});
@@ -275,13 +278,13 @@ void selective_gpu_residency() {
     require(!change.admitted && !change.evicted && tiles.resident_vertex_buffer(0)==current,"unchanged residency reuses handles");
     {
       RenderPassScope pass(device,{{64,64}});const auto draws=device.draw_count();
-      rejects<std::logic_error>([&]{tiles.draw(pipeline,camera,{},frustum);});
+      rejects<std::logic_error>([&]{tiles.draw(pipeline,camera,atmosphere.binding(),{},frustum);});
       require(device.draw_count()==draws,"missing visible geometry rejects before any partial draw");
       rejects<std::logic_error>([&]{tiles.set_resident_tiles({});});
     }
     change=tiles.synchronize_visible(frustum);
     require(tiles.resident_tile_count()==4 && change.admitted==3,"visible set cold-loads only required tiles");
-    {RenderPassScope pass(device,{{64,64}});require(tiles.draw(pipeline,camera,{},frustum).draws==4,"rehydrated visible set draws");}
+    {RenderPassScope pass(device,{{64,64}});require(tiles.draw(pipeline,camera,atmosphere.binding(),{},frustum).draws==4,"rehydrated visible set draws");}
     const auto absent=Frustum::from_view_projection(math::Mat4::translation({100,100,100}));
     tiles.synchronize_visible(absent);
     require(!tiles.resident_tile_count() && device.live_resource_bytes()==baseline,"fully hidden view releases all tile GPU storage");

@@ -1,5 +1,5 @@
 {
-  "contractVersion": "terraflux.compute/v2",
+  "contractVersion": "terraflux.compute/v3",
   "cases": [
     {
       "name": "isolated-ignition",
@@ -6207,6 +6207,881 @@
         "spread_threshold": 0.5
       },
       "expected_burned_cells": 1
+    },
+    {
+      "name": "weather-absent-under-v3-matches-v2",
+      "request": {
+        "contract_version": "terraflux.compute/v3",
+        "grid_key": "fixture-weather-absent",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 8,
+        "wind_speed_kmh": 0,
+        "wind_direction_degrees": 0,
+        "spread_threshold": 0.5
+      },
+      "expected_burned_cells": 4
+    },
+    {
+      "name": "weather-neutral-sample-matches-v2",
+      "request": {
+        "contract_version": "terraflux.compute/v3",
+        "grid_key": "fixture-weather-neutral",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 8,
+        "wind_speed_kmh": 0,
+        "wind_direction_degrees": 0,
+        "spread_threshold": 0.5,
+        "weather": {
+          "temperature_celsius": 20,
+          "relative_humidity": 0.5,
+          "precipitation_mm_h": 0
+        }
+      },
+      "expected_burned_cells": 4
+    },
+    {
+      "name": "weather-hot-dry-afternoon-carries-marginal-fuel",
+      "request": {
+        "contract_version": "terraflux.compute/v3",
+        "grid_key": "fixture-weather-hot-dry",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 8,
+        "wind_speed_kmh": 0,
+        "wind_direction_degrees": 0,
+        "spread_threshold": 0.5,
+        "weather": {
+          "temperature_celsius": 40,
+          "relative_humidity": 0.1,
+          "precipitation_mm_h": 0
+        }
+      },
+      "expected_burned_cells": 4
+    },
+    {
+      "name": "weather-humid-heat-dries-less",
+      "request": {
+        "contract_version": "terraflux.compute/v3",
+        "grid_key": "fixture-weather-humid-heat",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 8,
+        "wind_speed_kmh": 0,
+        "wind_direction_degrees": 0,
+        "spread_threshold": 0.5,
+        "weather": {
+          "temperature_celsius": 40,
+          "relative_humidity": 1.0,
+          "precipitation_mm_h": 0
+        }
+      },
+      "expected_burned_cells": 1
+    },
+    {
+      "name": "weather-cold-air-holds-decent-fuel",
+      "request": {
+        "contract_version": "terraflux.compute/v3",
+        "grid_key": "fixture-weather-cold",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.6,
+            "fuel_moisture": 0.4,
+            "burn_susceptibility": 0.6
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 8,
+        "wind_speed_kmh": 0,
+        "wind_direction_degrees": 0,
+        "spread_threshold": 0.5,
+        "weather": {
+          "temperature_celsius": 0,
+          "relative_humidity": 0.5,
+          "precipitation_mm_h": 0
+        }
+      },
+      "expected_burned_cells": 1
+    },
+    {
+      "name": "weather-drizzle-slows-but-good-fuel-burns",
+      "request": {
+        "contract_version": "terraflux.compute/v3",
+        "grid_key": "fixture-weather-drizzle",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.2,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.2,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.2,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.2,
+            "burn_susceptibility": 0.8
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 8,
+        "wind_speed_kmh": 0,
+        "wind_direction_degrees": 0,
+        "spread_threshold": 0.5,
+        "weather": {
+          "temperature_celsius": 20,
+          "relative_humidity": 0.5,
+          "precipitation_mm_h": 1
+        }
+      },
+      "expected_burned_cells": 4
+    },
+    {
+      "name": "weather-downpour-stops-good-fuel",
+      "request": {
+        "contract_version": "terraflux.compute/v3",
+        "grid_key": "fixture-weather-downpour",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.2,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.2,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.2,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.2,
+            "burn_susceptibility": 0.8
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 8,
+        "wind_speed_kmh": 0,
+        "wind_direction_degrees": 0,
+        "spread_threshold": 0.5,
+        "weather": {
+          "temperature_celsius": 20,
+          "relative_humidity": 0.5,
+          "precipitation_mm_h": 10
+        }
+      },
+      "expected_burned_cells": 1
+    },
+    {
+      "name": "weather-downpour-saturates-at-10mm",
+      "request": {
+        "contract_version": "terraflux.compute/v3",
+        "grid_key": "fixture-weather-deluge",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.2,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.2,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.2,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.2,
+            "burn_susceptibility": 0.8
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 8,
+        "wind_speed_kmh": 0,
+        "wind_direction_degrees": 0,
+        "spread_threshold": 0.5,
+        "weather": {
+          "temperature_celsius": 20,
+          "relative_humidity": 0.5,
+          "precipitation_mm_h": 80
+        }
+      },
+      "expected_burned_cells": 1
+    },
+    {
+      "name": "weather-gale-keeps-creeping-through-downpour",
+      "request": {
+        "contract_version": "terraflux.compute/v3",
+        "grid_key": "fixture-weather-gale-rain",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.2,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.2,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.2,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.2,
+            "burn_susceptibility": 0.8
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 8,
+        "wind_speed_kmh": 80,
+        "wind_direction_degrees": 270,
+        "spread_threshold": 0.5,
+        "weather": {
+          "temperature_celsius": 20,
+          "relative_humidity": 0.5,
+          "precipitation_mm_h": 10
+        }
+      },
+      "expected_burned_cells": 4
+    },
+    {
+      "name": "weather-series-rain-arrives-at-step-3",
+      "request": {
+        "contract_version": "terraflux.compute/v3",
+        "grid_key": "fixture-weather-series",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.2,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.2,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.2,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.2,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 4,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.2,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.2,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 6,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.2,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 7,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.2,
+            "burn_susceptibility": 0.8
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 8,
+        "wind_speed_kmh": 0,
+        "wind_direction_degrees": 0,
+        "spread_threshold": 0.5,
+        "weather": [
+          {
+            "temperature_celsius": 25,
+            "relative_humidity": 0.4,
+            "precipitation_mm_h": 0
+          },
+          {
+            "temperature_celsius": 25,
+            "relative_humidity": 0.4,
+            "precipitation_mm_h": 0
+          },
+          {
+            "temperature_celsius": 25,
+            "relative_humidity": 0.4,
+            "precipitation_mm_h": 0
+          },
+          {
+            "temperature_celsius": 18,
+            "relative_humidity": 0.9,
+            "precipitation_mm_h": 12
+          }
+        ]
+      },
+      "expected_burned_cells": 4
+    },
+    {
+      "name": "weather-series-last-sample-persists",
+      "request": {
+        "contract_version": "terraflux.compute/v3",
+        "grid_key": "fixture-weather-persist",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.2,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.2,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.2,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.2,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 4,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.2,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 5,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.2,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 6,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.2,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 7,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.2,
+            "burn_susceptibility": 0.8
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 8,
+        "wind_speed_kmh": 0,
+        "wind_direction_degrees": 0,
+        "spread_threshold": 0.5,
+        "weather": [
+          {
+            "temperature_celsius": 20,
+            "relative_humidity": 0.5,
+            "precipitation_mm_h": 10
+          }
+        ]
+      },
+      "expected_burned_cells": 1
+    },
+    {
+      "name": "weather-shower-at-ignition-kills-fire",
+      "request": {
+        "contract_version": "terraflux.compute/v3",
+        "grid_key": "fixture-weather-shower",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 4,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 5,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 6,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          },
+          {
+            "x": 7,
+            "y": 0,
+            "fuel_load": 0.5,
+            "fuel_moisture": 0.5,
+            "burn_susceptibility": 0.5
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 8,
+        "wind_speed_kmh": 0,
+        "wind_direction_degrees": 0,
+        "spread_threshold": 0.5,
+        "weather": [
+          {
+            "temperature_celsius": 20,
+            "relative_humidity": 0.5,
+            "precipitation_mm_h": 10
+          },
+          {
+            "temperature_celsius": 40,
+            "relative_humidity": 0.1,
+            "precipitation_mm_h": 0
+          }
+        ]
+      },
+      "expected_burned_cells": 1
+    },
+    {
+      "name": "weather-ignored-under-v2",
+      "request": {
+        "contract_version": "terraflux.compute/v2",
+        "grid_key": "fixture-weather-v2",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.2,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.2,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.2,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.2,
+            "burn_susceptibility": 0.8
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 8,
+        "wind_speed_kmh": 0,
+        "wind_direction_degrees": 0,
+        "spread_threshold": 0.5,
+        "weather": {
+          "temperature_celsius": 20,
+          "relative_humidity": 0.5,
+          "precipitation_mm_h": 10
+        }
+      },
+      "expected_burned_cells": 4
+    },
+    {
+      "name": "weather-ignored-under-v1",
+      "request": {
+        "contract_version": "terraflux.compute/v1",
+        "grid_key": "fixture-weather-v1",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.2,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.2,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.2,
+            "burn_susceptibility": 0.8
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.8,
+            "fuel_moisture": 0.2,
+            "burn_susceptibility": 0.8
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 8,
+        "wind_speed_kmh": 0,
+        "wind_direction_degrees": 0,
+        "spread_threshold": 0.5,
+        "weather": {
+          "temperature_celsius": 20,
+          "relative_humidity": 0.5,
+          "precipitation_mm_h": 10
+        }
+      },
+      "expected_burned_cells": 4
+    },
+    {
+      "name": "weather-hot-dry-uphill-and-tailwind-stack",
+      "request": {
+        "contract_version": "terraflux.compute/v3",
+        "grid_key": "fixture-weather-stack",
+        "cells": [
+          {
+            "x": 0,
+            "y": 0,
+            "fuel_load": 0.3,
+            "fuel_moisture": 0.7,
+            "burn_susceptibility": 0.3,
+            "elevation_meters": 0.0
+          },
+          {
+            "x": 1,
+            "y": 0,
+            "fuel_load": 0.3,
+            "fuel_moisture": 0.7,
+            "burn_susceptibility": 0.3,
+            "elevation_meters": 17.32
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "fuel_load": 0.3,
+            "fuel_moisture": 0.7,
+            "burn_susceptibility": 0.3,
+            "elevation_meters": 34.64
+          },
+          {
+            "x": 3,
+            "y": 0,
+            "fuel_load": 0.3,
+            "fuel_moisture": 0.7,
+            "burn_susceptibility": 0.3,
+            "elevation_meters": 51.96
+          }
+        ],
+        "ignition": {
+          "x": 0,
+          "y": 0
+        },
+        "steps": 8,
+        "wind_speed_kmh": 80,
+        "wind_direction_degrees": 270,
+        "spread_threshold": 0.5,
+        "cell_size_meters": 30,
+        "weather": {
+          "temperature_celsius": 40,
+          "relative_humidity": 0.05,
+          "precipitation_mm_h": 0
+        }
+      },
+      "expected_burned_cells": 4
     }
   ]
 }

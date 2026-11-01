@@ -2,6 +2,7 @@
 #include <terraflux/graphics/water_shading.hpp>
 #include <terraflux/graphics/render_pass.hpp>
 #include <terraflux/graphics/resource_owner.hpp>
+#include <terraflux/graphics/weather.hpp>
 
 #include <algorithm>
 #include <array>
@@ -113,7 +114,7 @@ void test_upload_layout_and_pipeline() {
           "packed vertex carries level and bed height");
   const auto layout = water_shader_layout();
   validate_shader_layout(layout);
-  require(layout.vertex_stride_bytes == 24 && layout.attributes.size() == 3 && layout.bindings.size() == 2 &&
+  require(layout.vertex_stride_bytes == 24 && layout.attributes.size() == 3 && layout.bindings.size() == 4 &&
           layout.bindings[1].name == "WaterStyle" && layout.bindings[1].slot == kWaterStyleSlot &&
           layout.bindings[1].stages == (kVertexStage | kFragmentStage), "water layout contract");
   require(shader_program_layout(ShaderProgramId::Water).vertex_stride_bytes == 24, "registry knows the water identity");
@@ -133,9 +134,13 @@ void test_upload_layout_and_pipeline() {
   const auto styled = owner.create_buffer({BufferUsage::Uniform, sizeof(packed)}, std::as_bytes(std::span(packed)));
   const std::array<float, 16> half{};
   const auto truncated = owner.create_buffer({BufferUsage::Uniform, sizeof(half)}, std::as_bytes(std::span(half)));
+  AtmosphereGpu atmosphere(device);
+  const auto sky = atmosphere.binding();
   RenderPassScope pass(device, {{64, 64}});
-  device.draw_indexed({pipeline, vb, ib, 0, static_cast<std::uint32_t>(upload.indices.size()), {{0, camera}, {kWaterStyleSlot, styled}}, {}});
-  rejects([&] { device.draw_indexed({pipeline, vb, ib, 0, 3, {{0, camera}, {kWaterStyleSlot, truncated}}, {}}); },
+  device.draw_indexed({pipeline, vb, ib, 0, static_cast<std::uint32_t>(upload.indices.size()),
+                       {{0, camera}, {kWaterStyleSlot, styled}, {kAtmosphereSlot, sky.block}}, {}, {{kOrographicFieldSlot, sky.field}}});
+  rejects([&] { device.draw_indexed({pipeline, vb, ib, 0, 3, {{0, camera}, {kWaterStyleSlot, truncated}, {kAtmosphereSlot, sky.block}}, {},
+                                     {{kOrographicFieldSlot, sky.field}}}); },
           "short water style buffer rejected");
   require(device.draw_count() == 1, "water draw recorded");
   auto wall = bowl();

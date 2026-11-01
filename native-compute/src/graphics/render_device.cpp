@@ -4,6 +4,7 @@
 #include <terraflux/graphics/water_shading.hpp>
 #include <terraflux/graphics/vegetation.hpp>
 #include <terraflux/graphics/fire_effects.hpp>
+#include <terraflux/graphics/weather.hpp>
 #include <terraflux/graphics/mesh_upload.hpp>
 
 #include <algorithm>
@@ -139,7 +140,7 @@ std::uint64_t rgba8_storage_bytes(TextureDesc desc) {
   std::uint64_t bytes=0;
   auto width=desc.width,height=desc.height;
   while(true) {
-    bytes+=static_cast<std::uint64_t>(width)*height*4;
+    bytes+=static_cast<std::uint64_t>(width)*height*texture_bytes_per_texel(desc.format);
     if(!desc.sampling.uses_mipmaps() || (width==1 && height==1))break;
     width=std::max(1U,width/2);height=std::max(1U,height/2);
   }
@@ -269,8 +270,9 @@ TextureHandle ValidatingRenderDevice::create_texture2d(
       !desc.width || !desc.height ||
       desc.width>4096 || desc.height>4096 ||
       static_cast<std::uint64_t>(desc.width)*desc.height>4'000'000 ||
-      rgba8.size()!=static_cast<std::size_t>(desc.width)*desc.height*4)
-    throw std::invalid_argument("invalid RGBA8 texture dimensions or pixels");
+      static_cast<unsigned>(desc.format)>1 ||
+      rgba8.size()!=static_cast<std::size_t>(desc.width)*desc.height*texture_bytes_per_texel(desc.format))
+    throw std::invalid_argument("invalid RGBA texture dimensions, format or pixels");
   admit_bytes(rgba8_storage_bytes(desc));
   const auto id=allocate_id();
   textures_.emplace(id,desc);
@@ -299,6 +301,10 @@ ShaderLayout shader_program_layout(ShaderProgramId program) {
     case ShaderProgramId::Water:return water_shader_layout();
     case ShaderProgramId::Vegetation:return vegetation_shader_layout();
     case ShaderProgramId::Fire:return fire_shader_layout();
+    case ShaderProgramId::Sky:return sky_shader_layout();
+    case ShaderProgramId::Precipitation:return precipitation_shader_layout();
+    case ShaderProgramId::Lightning:return lightning_shader_layout();
+    case ShaderProgramId::Spray:return spray_shader_layout();
     default:throw std::invalid_argument("shader program has no built-in layout");
   }
 }
@@ -308,11 +314,14 @@ void validate_pipeline_desc(const PipelineDesc& desc,bool allow_contract_only) {
      (desc.depth_test || desc.depth_write || desc.alpha_blend))
     throw std::invalid_argument("composite pipeline requires disabled depth and blend state");
   if(desc.alpha_blend && (!desc.depth_test || desc.depth_write ||
-     (desc.program!=ShaderProgramId::PbrObject && desc.program!=ShaderProgramId::Water && desc.program!=ShaderProgramId::Fire)))
-    throw std::invalid_argument("transparent pipeline requires noninstanced PBR, water or fire, depth testing and no depth writes");
-  if((desc.program==ShaderProgramId::Water || desc.program==ShaderProgramId::Fire) &&
-     (!desc.alpha_blend || !desc.depth_test || desc.depth_write))
-    throw std::invalid_argument("water and fire pipelines require alpha blending, depth testing and no depth writes");
+     (desc.program!=ShaderProgramId::PbrObject && desc.program!=ShaderProgramId::Water && desc.program!=ShaderProgramId::Fire &&
+      desc.program!=ShaderProgramId::Precipitation && desc.program!=ShaderProgramId::Lightning && desc.program!=ShaderProgramId::Spray)))
+    throw std::invalid_argument("transparent pipeline requires noninstanced PBR, water, fire, precipitation, lightning or spray, depth testing and no depth writes");
+  if((desc.program==ShaderProgramId::Water || desc.program==ShaderProgramId::Fire || desc.program==ShaderProgramId::Precipitation ||
+      desc.program==ShaderProgramId::Lightning || desc.program==ShaderProgramId::Spray) && (!desc.alpha_blend || !desc.depth_test || desc.depth_write))
+    throw std::invalid_argument("water, fire, precipitation, lightning and spray pipelines require alpha blending, depth testing and no depth writes");
+  if(desc.program==ShaderProgramId::Sky && (!desc.depth_test || desc.depth_write || desc.alpha_blend))
+    throw std::invalid_argument("sky pipeline requires depth testing without depth writes or blending");
   if(desc.program==ShaderProgramId::ContractOnly) {
     if(!allow_contract_only)throw std::invalid_argument("contract-only shader program cannot render on a GPU");
     return;
@@ -390,12 +399,14 @@ void ValidatingRenderDevice::draw_indexed(const DrawIndexed& command) {
   // GPU backends require every declared block; here a bound style block must
   // at least hold its std140 vec4s so a short buffer never reaches a driver.
   for(const auto& required:layout.bindings)if(required.kind==ShaderResourceKind::UniformBuffer &&
-      (required.name=="TerrainStyle" || required.name=="WaterStyle" || required.name=="VegetationStyle" || required.name=="FireStyle")) {
+      (required.name=="TerrainStyle" || required.name=="WaterStyle" || required.name=="VegetationStyle" || required.name=="FireStyle" ||
+       required.name=="Atmosphere")) {
     const auto bound=std::find_if(command.uniform_buffers.begin(),command.uniform_buffers.end(),
         [&](const auto& value){return value.slot==required.slot;});
     const auto minimum=required.name=="TerrainStyle"?kTerrainStyleBytes:
                        required.name=="WaterStyle"?kWaterStyleBytes:
-                       required.name=="VegetationStyle"?kVegetationStyleBytes:kFireStyleBytes;
+                       required.name=="VegetationStyle"?kVegetationStyleBytes:
+                       required.name=="Atmosphere"?kAtmosphereBytes:kFireStyleBytes;
     if(bound!=command.uniform_buffers.end() && buffers_.at(bound->buffer.id).desc.size_bytes<minimum)
       throw std::invalid_argument(required.name+" requires a "+std::to_string(minimum)+"-byte uniform buffer");
   }
