@@ -137,6 +137,39 @@ void test_reject_offgrid() {
   bad.replace(where,5,"[9,9]");
   rejects([&]{(void)terraflux::replay::load(request,bad);},"off-grid active cell rejected");
 }
+const std::string cells_json = R"JSON("cells":[
+    {"x":0,"y":0,"fuel_load":1,"fuel_moisture":0,"burn_susceptibility":1,"elevation_meters":10},
+    {"x":1,"y":0,"fuel_load":1,"fuel_moisture":0,"burn_susceptibility":1,"elevation_meters":20},
+    {"x":0,"y":1,"fuel_load":1,"fuel_moisture":0,"burn_susceptibility":1,"elevation_meters":10},
+    {"x":1,"y":1,"fuel_load":1,"fuel_moisture":0,"burn_susceptibility":1,"elevation_meters":20}
+  ])JSON";
+std::string v3_request(const std::string& weather) {
+  return std::string(R"JSON({"contract_version":"terraflux.compute/v3","grid_key":"test-replay","cell_size_meters":30,)JSON")+
+         R"JSON("wind_speed_kmh":30,"wind_direction_degrees":270,"weather":)JSON"+weather+","+cells_json+"}";
+}
+void test_weather_series() {
+  using terraflux::replay::load;
+  auto v3_response=response;
+  v3_response.replace(v3_response.find("terraflux.compute/v2"),20,"terraflux.compute/v3");
+  const std::string hot=R"JSON({"temperature_celsius":32,"relative_humidity":0.2})JSON";
+  const std::string wet=R"JSON({"temperature_celsius":18,"relative_humidity":0.9,"precipitation_mm_h":12})JSON";
+  const auto playback=load(v3_request("["+hot+","+wet+"]"),v3_response);
+  check(playback.contract_version=="terraflux.compute/v3" && playback.wind_speed_kmh==30 && playback.wind_direction_degrees==270,
+        "request drivers are exposed to the viewer");
+  check(playback.weather.size()==2 && playback.weather[0].temperature_celsius==32 && playback.weather[0].precipitation_mm_h==0 &&
+        playback.weather[1].precipitation_mm_h==12,"weather series parsed with neutral defaults for missing keys");
+  check(playback.weather_for_frame(0)->temperature_celsius==32 && playback.weather_for_frame(1)->precipitation_mm_h==12 &&
+        playback.weather_for_frame(7)->precipitation_mm_h==12,"the last sample persists past the end of the series");
+  const auto one=load(v3_request(hot),v3_response);
+  check(one.weather.size()==1 && one.weather_for_frame(5)->temperature_celsius==32,"a single weather object applies to every frame");
+  check(load(v3_request("null"),v3_response).weather.empty() && load(v3_request("[]"),v3_response).weather.empty(),"null and empty series mean no weather");
+  auto v2_with_weather=v3_request(wet);
+  v2_with_weather.replace(v2_with_weather.find("terraflux.compute/v3"),20,"terraflux.compute/v2");
+  check(load(v2_with_weather,response).weather.empty() && !load(request,response).weather_for_frame(0),"v2 ignores a weather block");
+  rejects([&]{load(v3_request(R"JSON({"relative_humidity":1.2})JSON"),v3_response);},"out-of-range humidity rejected");
+  rejects([&]{load(v3_request(R"JSON({"precipitation_mm_h":-1})JSON"),v3_response);},"negative rain rejected");
+  rejects([&]{load(v3_request("7"),v3_response);},"a bare number is not a weather block");
+}
 void test_reject_invalid_counts() {
   auto bad=response;
   const auto where=bad.find("\"active_count\":1");
@@ -147,7 +180,7 @@ void test_reject_invalid_counts() {
 int main(){
   try{
     test_playback(); test_grid_boundaries(); test_missing_cell_mask(); test_reject_mismatch(); test_reject_nonmonotonic();
-    test_reject_offgrid(); test_reject_invalid_counts();test_clock_rates();test_clock_controls();
+    test_reject_offgrid(); test_reject_invalid_counts();test_weather_series();test_clock_rates();test_clock_controls();
     std::cout<<"TerraFlux replay tests: 9 passed\n";
   }catch(const std::exception& e){std::cerr<<e.what()<<'\n'; return 1;}
 }

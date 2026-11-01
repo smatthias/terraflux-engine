@@ -149,7 +149,7 @@ void test_style_and_layout() {
   rejects([&] { (void)pack_vegetation_style(style, {0, 0, 0}, -1); }, "negative time");
   const auto layout = vegetation_shader_layout();
   validate_shader_layout(layout);
-  require(layout.vertex_stride_bytes == sizeof(VegetationVertex) && layout.attributes.size() == 5 && layout.bindings.size() == 4 &&
+  require(layout.vertex_stride_bytes == sizeof(VegetationVertex) && layout.attributes.size() == 5 && layout.bindings.size() == 6 &&
           layout.bindings[2].name == "InstanceData" && layout.bindings[2].slot == 4 && layout.bindings[3].name == "PlantFireState" &&
           shader_program_layout(ShaderProgramId::Vegetation).vertex_stride_bytes == 44, "vegetation layout contract");
 }
@@ -247,6 +247,7 @@ void test_renderer() {
   const auto pipeline = shared.create_pipeline({ShaderProgramId::Vegetation, vegetation_shader_layout(), true});
   const std::uint32_t no_fire = 0;
   const auto fire_states = shared.create_buffer({BufferUsage::Storage, sizeof(no_fire)}, std::as_bytes(std::span(&no_fire, 1)));
+  AtmosphereGpu atmosphere(device);  // neutral daylight block bound by every plant draw
   const auto baseline = device.live_resource_bytes();
   const auto buffers = device.live_buffer_count();
   {
@@ -254,19 +255,19 @@ void test_renderer() {
                                 {make_tree_mesh({TreeShape::Conifer}), make_tree_mesh({TreeShape::Broadleaf})}, make_grass_mesh(3),
                                 style.grass_distance_meters, style.grass_spacing_meters);
     require(renderer.geometry_bytes() > 0 && renderer.grass_capacity() > 0, "renderer allocated instance storage");
-    rejects<std::logic_error>([&] { renderer.draw(pipeline, camera, style_buffer, fire_states, Frustum::from_view_projection(math::Mat4::identity()), {0, 50, 0}, style); },
+    rejects<std::logic_error>([&] { renderer.draw(pipeline, camera, style_buffer, fire_states, atmosphere.binding(), Frustum::from_view_projection(math::Mat4::identity()), {0, 50, 0}, style); },
                               "drawing needs an active pass");
     const auto everything = Frustum::from_view_projection(math::Mat4::identity());
     RenderPassScope pass(device, {{64, 64}});
-    const auto all = renderer.draw(pipeline, camera, style_buffer, fire_states, everything, {0, 50, 0}, style, false);
+    const auto all = renderer.draw(pipeline, camera, style_buffer, fire_states, atmosphere.binding(), everything, {0, 50, 0}, style, false);
     require(all.tree_instances == renderer.placement().trees.size() && all.draws >= 2 && all.triangles > 0 &&
             all.chunks_visible == all.chunks_total, "unculled draw submits every tree");
     VegetationStyle far = style; far.grass_distance_meters = 0;
-    const auto no_grass = renderer.draw(pipeline, camera, style_buffer, fire_states, everything, {0, 50, 0}, far, false);
+    const auto no_grass = renderer.draw(pipeline, camera, style_buffer, fire_states, atmosphere.binding(), everything, {0, 50, 0}, far, false);
     require(no_grass.grass_instances == 0 && no_grass.tree_instances == all.tree_instances, "grass obeys its draw distance");
-    const auto far_away = renderer.draw(pipeline, camera, style_buffer, fire_states, everything, {1e5, 50, 0}, style, false);
+    const auto far_away = renderer.draw(pipeline, camera, style_buffer, fire_states, atmosphere.binding(), everything, {1e5, 50, 0}, style, false);
     require(far_away.tree_instances == 0 && far_away.draws == 0, "trees beyond their distance are skipped");
-    const auto none = renderer.draw(pipeline, camera, style_buffer, fire_states, Frustum::from_view_projection(math::Mat4::translation({100, 100, 100})), {0, 50, 0}, style);
+    const auto none = renderer.draw(pipeline, camera, style_buffer, fire_states, atmosphere.binding(), Frustum::from_view_projection(math::Mat4::translation({100, 100, 100})), {0, 50, 0}, style);
     require(none.chunks_visible == 0 && none.draws == 0, "frustum culling removes every chunk");
     // Meshes and placement swap at run time; a failed swap keeps the old meshes.
     const auto before = device.live_buffer_count();
@@ -279,7 +280,7 @@ void test_renderer() {
     require(renderer.tree_meshes().size() == 1 && renderer.tree_meshes()[0].name == "shrub", "failed swaps keep the current meshes");
     VegetationStyle sparse = style; sparse.tree_spacing_meters = 20;
     renderer.set_placement(place_vegetation(mesh, terrain, sparse), sparse.grass_distance_meters, sparse.grass_spacing_meters);
-    const auto fewer = renderer.draw(pipeline, camera, style_buffer, fire_states, everything, {0, 50, 0}, sparse, false);
+    const auto fewer = renderer.draw(pipeline, camera, style_buffer, fire_states, atmosphere.binding(), everything, {0, 50, 0}, sparse, false);
     require(fewer.tree_instances < all.tree_instances && fewer.tree_instances == renderer.placement().trees.size(), "re-placement takes effect");
   }
   require(device.live_resource_bytes() == baseline && device.live_buffer_count() == buffers, "renderer releases everything");
@@ -290,14 +291,15 @@ void test_renderer() {
   const auto ib = shared.create_buffer({BufferUsage::Index, std::as_bytes(std::span(grass.indices)).size()}, std::as_bytes(std::span(grass.indices)));
   std::vector<VegetationInstance> ten(10);
   const auto instances = shared.create_buffer({BufferUsage::Storage, ten.size() * sizeof(VegetationInstance)}, std::as_bytes(std::span(ten)));
-  device.draw_indexed({pipeline, vb, ib, 0, 3, {{0, camera}, {kVegetationStyleSlot, style_buffer}}, {{4, instances}, {kVegetationFireSlot, fire_states}}, {}, 10});
-  rejects<std::out_of_range>([&] { device.draw_indexed({pipeline, vb, ib, 0, 3, {{0, camera}, {kVegetationStyleSlot, style_buffer}}, {{4, instances}, {kVegetationFireSlot, fire_states}}, {}, 11}); },
+  const std::vector<TextureBinding> field{{kOrographicFieldSlot, atmosphere.binding().field}};
+  device.draw_indexed({pipeline, vb, ib, 0, 3, {{0, camera}, {kVegetationStyleSlot, style_buffer}}, {{4, instances}, {kVegetationFireSlot, fire_states}}, field, 10});
+  rejects<std::out_of_range>([&] { device.draw_indexed({pipeline, vb, ib, 0, 3, {{0, camera}, {kVegetationStyleSlot, style_buffer}}, {{4, instances}, {kVegetationFireSlot, fire_states}}, field, 11}); },
                              "instance count beyond the 48-byte records rejected");
-  rejects([&] { device.draw_indexed({pipeline, vb, ib, 0, 3, {{0, camera}, {kVegetationStyleSlot, style_buffer}}, {{4, instances}}, {}, 1}); },
+  rejects([&] { device.draw_indexed({pipeline, vb, ib, 0, 3, {{0, camera}, {kVegetationStyleSlot, style_buffer}}, {{4, instances}}, field, 1}); },
           "the fire state buffer is required even without a fire");
   const std::array<float, 8> short_style{};
   const auto truncated = shared.create_buffer({BufferUsage::Uniform, sizeof(short_style)}, std::as_bytes(std::span(short_style)));
-  rejects([&] { device.draw_indexed({pipeline, vb, ib, 0, 3, {{0, camera}, {kVegetationStyleSlot, truncated}}, {{4, instances}, {kVegetationFireSlot, fire_states}}, {}, 1}); },
+  rejects([&] { device.draw_indexed({pipeline, vb, ib, 0, 3, {{0, camera}, {kVegetationStyleSlot, truncated}}, {{4, instances}, {kVegetationFireSlot, fire_states}}, field, 1}); },
           "short vegetation style buffer rejected");
 }
 

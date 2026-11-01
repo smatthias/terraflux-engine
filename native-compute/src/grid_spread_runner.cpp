@@ -62,6 +62,9 @@ int main() {
     const std::string contract_version = string(field(root, "contract_version"));
     if (!terraflux::compute::is_supported_contract_version(contract_version)) throw std::runtime_error("unsupported contract_version");
     const bool use_terrain = terraflux::compute::terrain_enabled(contract_version);
+    // v3: the weather block is parsed (and validated) whenever present; earlier versions ignore it.
+    const auto weather = terraflux::json::weather_series(root);
+    const bool use_weather = terraflux::compute::weather_enabled(contract_version) && !weather.empty();
 
     std::size_t cells_with_elevation = 0;
     for (const auto& cell : parsed) if (cell.elevation_meters) ++cells_with_elevation;
@@ -96,6 +99,8 @@ int main() {
     for (int step = 0; step < steps; ++step) {
       std::vector<std::int32_t> next;
       std::set<std::pair<int, int>> active_sorted;
+      // Mirrors weather_for_step(): the series keeps its last sample; absent weather is exactly 0.0.
+      const double weather_drive = use_weather ? terraflux::compute::weather_term(weather[std::min<std::size_t>(static_cast<std::size_t>(step), weather.size() - 1)]) : 0.0;
       for (const auto source_index : burning) {
         const auto& source = grid.cells[source_index];
         const int x = source.x, y = source.y;
@@ -138,7 +143,7 @@ int main() {
             const double alignment = (cos_toward + 1.0) / 2.0;
             wind = wind_norm * alignment * terraflux::compute::kWindWeightV1;
           }
-          const double score = clamp(cell.fuel_load * .35 + (1.0 - cell.fuel_moisture) * .25 + cell.burn_susceptibility * .25 + wind + terrain, 0, 1);
+          const double score = clamp(cell.fuel_load * .35 + (1.0 - cell.fuel_moisture) * .25 + cell.burn_susceptibility * .25 + wind + terrain + weather_drive, 0, 1);
           if (score >= threshold) { next.push_back(target); is_burned[target] = 1; active_sorted.emplace(cell.x, cell.y); burned_sorted.emplace(cell.x, cell.y); }
         }
       }

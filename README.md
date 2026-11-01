@@ -32,6 +32,37 @@ or physical-GPU certification.
 - Animated water at a configurable level: depth-dependent color and transparency, Fresnel sky/sun
   reflection, waves with configurable height, length, speed and direction that shoal, refract toward
   the shore and break into foam on beaches and rocky shores
+- Weather: a gusting wind that wanders between two speed thresholds and veers around its mean, a
+  solar day/night cycle with civil, nautical and astronomical twilight, stars and moonlight, seven
+  cloud forms (clear, cirrus, cumulus, stratocumulus, stratus, nimbostratus, cumulonimbus) that
+  announce their weather (haze, drizzle, rain or snow), thunderstorms with torrential squall bands,
+  gust fronts, branching lightning channels and a cooled downdraft, and an orographic model of what
+  the terrain does to a cloud forced uphill: windward thickening and rain, cap clouds and summit
+  fog, foehn clearing and a rain shadow in the lee, blocking of weak winds by high barriers
+- Sunrise and sunset from the side: the true sun keeps lighting the cloud layer from the side and
+  from below in deepening reds after it has set for the ground, the horizon is warm toward the sun
+  and purple opposite it (the Belt of Venus), and the low light draws a glitter path over the water;
+  a simplified lunar ephemeris with phases (elongation and lit fraction follow the phase), a shaded
+  moon disc with terminator, maria and craters, moonlight that scales with the phase, silver-lined
+  moonlit clouds and a moon streak on the water
+- Rain on the mountains: below the freezing level the water runs downhill along the terrain's
+  drainage — seeping over gentle ground, streaming down steep rock, shooting over cliffs as
+  waterfalls: ropes of white water that the crags split and deflect, accelerating and whitening
+  as they fall and bursting where they strike a ledge, with a boiling plunge pool below; the
+  lip sheds a drizzle, every ledge the fall strikes splashes and the pool throws up a plume —
+  drops lit one by one by the sun or moon (forward-scattered sparkle, shadowed by the drops
+  around them and by the cliff) among which those at the bow angle show a fragmented rainbow
+  that follows the cascade down, in a haze of mist that hangs off the rock; above the freezing
+  level the precipitation falls as snow that drifts, sways, is lofted and carried off by a strong
+  wind, melts back to faster rain below the 0 C level and settles as a fresh snow cover on the heights
+- Volumetric, living clouds: 3D-eroded cumuliform cells that stay crisp while an updraft feeds
+  them and fray, thin and vanish when it dies (night, cold ground, the lee), self-shadowed from
+  any angle; branching lightning channels with a white-hot core and halo; raindrops with their
+  own size, terminal velocity and wind lag per cloud form; impact rings on water, sun glitter
+  that widens into a glare on rough or rain-dimpled water, rainbows, puddles and flooding
+- Weather coupling: the wind raises the sea state and bends the trees, rain dimples the water and
+  wets the ground, and a v3 simulation contract lets air temperature, humidity and rainfall drive
+  the fire itself (heat dries the fuel, rain cools it) while the viewer mirrors the replay's weather
 - OBJ/MTL and static glTF/GLB assets, textures and a direct-light PBR subset
 - Scene hierarchies, shared OBJ/glTF/GLB asset references and deterministic Spin/Motion
 - Scene pause/resume, single stepping and transactional asset unload/reload
@@ -365,6 +396,277 @@ resident and offscreen paths are allowed. Smoke runs freeze the water clock so
 frame comparisons stay deterministic. See
 [the backend contract](docs/GRAPHICS_BACKENDS.md#water-surface).
 
+### Weather: wind, daylight, clouds and what the terrain does to them
+
+`terraflux/graphics/weather.hpp` adds a backend-neutral weather model to the
+viewer. Rendering never feeds back into fire propagation or replay timing:
+the fire reacts to weather only through the simulation's own v3 contract
+(temperature, humidity and rain in the request), which the viewer mirrors.
+
+- **Wind** is never constant. `--wind-min`/`--wind-max` (m/s, default 2..6) are
+  the two thresholds between which the speed wanders, `--wind-swing` (default
+  20 degrees) the half-width of the veer around `--wind-direction` (compass
+  degrees the wind blows *toward*; defaults to the wave direction) and
+  `--wind-period` (default 12 s) the time scale of the gusts. Smooth seeded
+  noise drives both, so the wind actually reaches both thresholds, never leaves
+  them and is reproducible (`--vegetation-seed` seeds it). The gusting wind
+  steers the tree and grass sway, the flames and the smoke; clouds drift with
+  its integral. `WindSample` reports the instantaneous speed, direction and
+  gustiness (0 at the lull .. 1 at the gust).
+- **Daylight** follows the solar position: `--latitude` (default 47),
+  `--day-of-year` (default 172, the June solstice), `--hour` (local solar time
+  at start, default 10) and `--time-scale` (engine seconds per simulated hour,
+  default 10, so a day passes in four minutes; 0 freezes the clock, 3600 is real
+  time). Day and night are not binary: the direct light reddens and fades
+  through sunset, civil twilight (0 to -6 degrees), nautical twilight (-6 to
+  -12) and astronomical twilight (-12 to -18) into night, the sky gradient and
+  ambient light change continuously, stars come out and a full moon opposite
+  the sun lights the night faintly and bluish. `DaylightPhase` names the
+  current band.
+- **Clouds** have forms, and each form stands for the weather an observer
+  expects: `--weather clear|cirrus|cumulus|stratocumulus|stratus|nimbostratus|cumulonimbus`
+  (default cumulus; `off` restores the neutral sky). `cloud_profile()` carries
+  the typical base height, depth, sky cover, optical density, edge detail,
+  precipitation rate, storm likelihood, surface visibility and a one-line
+  forecast: fair-weather cumulus is dry and puffy, cirrus runs ahead of a
+  front, stratocumulus is dull but mostly dry, stratus brings drizzle and fog on
+  the hills, nimbostratus hours of steady rain or snow, cumulonimbus thunder
+  showers with lightning (see below). `--cloud-cover` overrides the sky cover, `--cloud-base`
+  the base altitude; otherwise the base is the lifting condensation level
+  (125 m per degree of dew-point spread) above the valley floor from
+  `--temperature` (default 18 C) and `--dew-point` (default: the form's typical
+  base), so humid air lowers the clouds. Precipitation falls as snow where the
+  air at the camera's ground is at or below 1 C (6.5 C per km lapse rate); rain
+  darkens the ground; visibility shrinks to the form's haze; storms flash.
+- **Terrain interaction.** A height field sampled from the render mesh and the
+  current wind give an orographic field (`compute_orographic_field`) that the
+  shaders read per location. Air forced uphill cools and condenses: the cloud
+  thickens, its top lifts and it rains more on the windward slope ("stau").
+  Where the ground rises into the layer the ground is inside the cloud — a cap
+  cloud or summit fog — because terrain, sky, water and vegetation all
+  evaluate the same cloud density. Air that crossed a crest descends and
+  warms: in the lee the cloud evaporates for a few kilometres (foehn gap), the
+  base rises and a rain shadow forms. Whether the air crosses at all depends
+  on the Froude number `U / (N H)` (`--stability` sets N, default 0.01 per
+  second): a weak wind against a high barrier is blocked, the cloud dams up in
+  front of the slope and never reaches the lee. Clouds far above the crests
+  (cirrus over hills) are decoupled. The field is recomputed whenever the wind
+  veers by more than 3 degrees or changes by more than 0.75 m/s.
+- **Sunrise, sunset and the moon.** The ground's light fades out at -3 degrees,
+  but the cloud layer keeps the *true* sun a while longer: `cloud_light_*`
+  ramps from the ordinary sun through orange at the horizon to deep red at
+  -5 degrees and out at -8, and the clouds are lit along that direction — from
+  the side, and from below the base once the sun is under the horizon — so
+  their lit faces and undersides glow while their shaded faces keep the cool
+  ambient of the sky opposite. The sky's horizon is warm toward the sun and
+  cool and purplish opposite it (`horizon_away_color`, strongest around
+  sunrise and sunset), and the Beckmann glitter draws a long path over the
+  water toward a low sun. The moon follows a simplified ephemeris: its phase
+  comes from the day of the year (29.53-day month from a new moon on day 1.5;
+  `--moon-phase 0..1` overrides, 0.5 is full), its elongation from the sun
+  equals the phase (a full moon rises at sunset and stands due south at
+  midnight; a new moon travels with the sun) and its declination swings
+  against the sun's. Moonlight is up to 0.11 of the daylight scale at full
+  moon and falls steeply with the lit fraction (a half moon gives a tenth),
+  bluish, only once the sun has left civil twilight and the moon is up; it
+  lights the ground, the clouds (lifted, since the eye adapts, with
+  silver-lined edges from the forward-scattering lobe) and draws its own
+  streak on the water through the same glitter lobe. The sky draws the moon
+  as a sphere shaded by the sun — so the terminator and phase follow the
+  ephemeris — with procedural maria and craters (bowls with sun-facing rims)
+  on the face that always turns toward us, earthshine on its night side and a
+  halo; `--moon-size DEGREES` sets the apparent diameter (0.5 is true, the
+  default 2 shows the craters).
+- **Living, volumetric clouds.** Cumuliform cells are fed by updrafts:
+  `convection` (0..1) rises with daylight and a warm ground (and with
+  orographic lift on windward slopes) and a seeded lifecycle field drifting on
+  the accelerated weather clock (`clock_acceleration`, the solar time scale
+  capped at 60x, so a half-hour cell life passes in 30 s at the default
+  `--time-scale 10`) decides which cells are fed. Fed cells keep crisp
+  cauliflower edges carved by two octaves of 3D noise; when the updraft dies
+  dry air mixes in: the edge transition widens, the cell thins and finally
+  drops below the coverage threshold and vanishes — so cumulus fray and
+  dissolve in the evening and over cold ground and re-form on a warm
+  afternoon. Lighting samples the optical depth toward the sun along a cone
+  (three samples), applies Beer extinction with a "powder" term that darkens
+  thin edges and a darker base, so towers read as volumes from below, from
+  the side and from above.
+- **Thunderstorms.** A cumulonimbus is not just a cloud form: its showers arrive
+  in squall bands (a third to the full 25 mm/h every minute or so), its gust
+  front widens the wind thresholds by up to 12 m/s and the veer by 25 degrees
+  and halves the gust period, the rain and the cold downdraft cool the surface
+  air by up to eight degrees, and strikes land across the terrain — each a
+  seeded, branching channel from the cloud base to the ground (`build_lightning_bolt`,
+  the `Lightning` program): a white-hot core a few metres wide inside a
+  gaussian blue-white halo that never drops below the camera's pixel size,
+  re-lit by two return strokes, lighting the sky around it and the clouds from
+  inside, throwing a point light onto the ground and a sheet flash over the
+  whole scene while it decays. `--weather-time SECONDS` reproduces a moment
+  (a gust, a band, a strike) including the rain that fell until then.
+- **Rain physics.** Every drop obeys three forces: gravity against drag sets
+  its terminal velocity from its diameter (Atlas et al.: `9.65 - 10.3 exp(-0.6 D)`
+  m/s), diameters scatter exponentially around the form's mean (drizzle
+  0.4 mm falling at 2 m/s, nimbostratus 1.4 mm at 6 m/s, thunderstorm drops of
+  3 mm at 8 m/s), and the wind carries small drops fully while big drops lag
+  the gusts. Streak length is the fall during a 1/30 s exposure, width and
+  brightness follow the diameter; snow rides the wind and sways. Nimbostratus
+  gives long, moderate rain (6 mm/h), a thunderstorm torrential bands of big
+  drops (25 mm/h). Rain accumulates on the ground on the accelerated clock and
+  drains with a six-hour time constant: after ~10 mm puddles collect in the
+  hollows of gentle ground (wet, sky-reflecting by Fresnel, growing and
+  merging as the ponding rises) and standing water rises 2 cm per millimetre
+  (capped at 3 m): the lake surface is rebuilt at the raised level with its new
+  shoreline and the floor follows (`FLOOD_JSON`), then falls again as the ground
+  drains.
+- **Runoff, waterfalls and the snow line.** A D8 drainage of the height field
+  (`compute_runoff_field`, once per terrain) routes every texel to its
+  steepest lower neighbour and accumulates the catchment, so channels form
+  where the water gathers; the slope decides the regime. While it rains (or
+  the ground still drains) below the freezing level — the 0 C altitude from
+  the surface temperature and the lapse rate, `freezing_level_m` in
+  `WEATHER_JSON` — the terrain shader wets and glosses the ground toward the
+  light, scrolls streaks downhill at a speed set by the slope (a slow seep on
+  gentle ground, fast on steep rock), draws bright stream threads where the
+  drainage gathers on slopes, and where a stream meets a cliff steeper than
+  ~45 degrees it shoots over the edge. Each cascade is traced from its lip
+  down the drainage: every falling texel carries the height the water has
+  dropped since the lip (`drop_meters`), the first gentle texel below is its
+  plunge pool, and the field's direction channel (the smoothed downhill
+  gradient, 16 bits per channel so the shading frame it sets does not step)
+  gives the shader a stable along/across frame. In that frame the water runs
+  in ropes a few metres wide (`waterfallRope`, shared by the ground shader and
+  the spray) that the crags of the cliff — the same ridged field that
+  displaces the rock — deflect sideways and that divide as the fall grows
+  long; the ropes are opaque water with streaks scrolling at the fall's speed
+  (`sqrt(2 g h)`, stretched as it accelerates) that whiten with entrained
+  air lower down, burst white where a protruding crest of rock stands in the
+  way, and boil in the plunge pool. The spray is a particle system
+  (`SprayRenderer`, the `Spray` program): `waterfall_spray_emitters` turns
+  every lip, every ledge the fall strikes and every plunge pool into an
+  emitter (strongest first, up to 96) with the rock's frame, and the vertex
+  stage derives each drop from its emitter, index and the clock — launched
+  with the water over the lip, off the ledge along the face or up out of the
+  pool, then relaxing to its own terminal velocity (Atlas et al. from a
+  per-drop diameter: fine drizzle off the lip, coarser splash below) while the
+  air the falling sheet drags down and the wind carry it; drops that fall back
+  into the pool or against the rock vanish. Each drop is lit on its own: a
+  white forward-scattered sparkle toward the sun or moon, darkened by the
+  optical depth of the plume between it and the light (drops on the far side,
+  and whole clumps, go dark), by the cliff when the face turns away from the
+  light (the farther out and the higher the light, the more a drop escapes
+  that shadow) and by the cloud shadow; and a drop standing 40.6–42.4 degrees
+  from the anti-light point (50–53.5 for the secondary) shows a speck of the
+  spectrum — tiny drops a broad pale fog bow, bigger ones a saturated one,
+  each offset a little and only every other drop — so the bow is fragmented
+  and follows the cascade down from ledge to ledge. The first particles of
+  every emitter are mist puffs: soft camera-facing discs a few metres wide
+  that swell as they thin, hang off the rock and carry the pale bow.
+  `--rainfall 40` starts with that much rain already on the ground (runoff,
+  puddles, a flood rise) so a sunny afternoon shows the cascades running.
+  Above the freezing level nothing runs: the precipitation is snow — flakes
+  falling at about a metre a second, riding the wind fully, swaying, lofted
+  and carried off sideways by a wind above ~8 m/s — which melts back into
+  rain through a 300 m layer below the 0 C level (sleet in between, speeding
+  up to the drop's terminal velocity), and the fresh snow cover whitens the
+  ground above that line as it accumulates (`snow_cover`), so a cold front
+  draws a snow line across the mountains with rain and runoff below it.
+- **Rain, sun and water.** Impact rings (a jittered grid of impact points on
+  two scales, each repeating with its own period, spreading at 0.35 m/s with
+  capillary crests that decay within a second, bigger for bigger drops)
+  perturb the water normal; the sun's reflection is a Beckmann microfacet
+  lobe whose roughness grows with the waves, the chop and the rain, so a calm
+  lake shows a tight sun image broken by the waves and a rough or
+  rain-dimpled one a broad, softer glare; rain scatters the reflected sky and
+  clouds into a dull sheen. Sunshine behind the observer with rain in front
+  draws a rainbow: the primary bow 40.6..42.4 degrees from the anti-solar
+  point with red outside, the fainter reversed secondary at 50..53.5 and
+  Alexander's dark band between, only when the sun is up and not hidden by an
+  overcast.
+- **Coupling.** The wind of the moment drives the sea state
+  (`WeatherSimulation::water_for`: height grows about as U^1.6 from a third of
+  the authored waves in a calm to the 5 m cap in a gale, with longer, faster,
+  choppier waves that turn after the wind with a lag and more foam), bends the
+  trees (sway grows with the square of the speed, a gale adds flutter and
+  leans the crowns downwind) and steers the flames and smoke; rain dimples the
+  water, darkens the ground and turns the smoke to steam.
+- **Fire weather.** The surface temperature (diurnal swing, rain and downdraft
+  cooling, the lapse rate to the camera's ground), the humidity from the dew
+  point and the rainfall give the same `weather_term` the simulation uses under
+  the v3 contract (see below): hot dry air lifts the flames, rain beats them
+  down (`FireStyle::vigour`, 0.25 .. 1.6). When a replay carries a v3 weather
+  series the viewer mirrors it frame by frame — temperature, humidity, rain and
+  the implied cloud form (a downpour is a cumulonimbus, steady rain a
+  nimbostratus, drizzle a stratus, saturated air a stratocumulus) — and the
+  request's own wind seeds the viewer's wind, so the flames you see shrink in
+  the same storm that stopped the simulated front. `--weather auto` enables
+  this in smoke runs; an explicit form overrides the implied one; `--replay-frame N`
+  starts paused on a frame.
+- **Run-time keys**: **C** cycles the cloud form (printing its forecast),
+  **J**/**K** move the solar clock an hour back/forward, **X** cycles wind
+  presets (calm, breeze, fresh, gale), **O** toggles the weather; the title
+  shows the form, the time and twilight phase and the wind. `--view-yaw`,
+  `--view-pitch` and `--view-zoom` set the starting camera so a view can be
+  reproduced. The fair-weather cumulus base (2.6 km above the valley floor, a
+  dry continental afternoon) keeps the overview camera below the clouds over
+  small terrains; humid air (`--dew-point 12`) lowers it to 750 m and the
+  overview then looks down onto the cloud tops.
+
+```bash
+./build-gl/terraflux-terrain-viewer                                   # cumulus, 10:00, breeze 2..6 m/s
+./build-gl/terraflux-terrain-viewer --weather stratus --wind-direction 80 --view-zoom 0.12 --view-pitch 10 --view-yaw 250
+./build-gl/terraflux-terrain-viewer --weather nimbostratus --temperature 3 --hour 7 --time-scale 60
+./build-gl/terraflux-terrain-viewer --weather cumulonimbus --hour 15 --weather-time 132.6 --time-scale 0   # a strike over the lake
+./build-gl/terraflux-terrain-viewer --weather clear --hour 20.3 --time-scale 0 --latitude 60
+./build-gl/terraflux-terrain-viewer --weather cumulus --cloud-cover 0.5 --hour 20.05 --time-scale 0 \
+  --view-zoom 0.06 --view-pitch 9 --view-yaw 85 --view-x -45 --view-z -375                         # sunset over the lake
+./build-gl/terraflux-terrain-viewer --weather clear --hour 0 --time-scale 0 --moon-phase 0.3 --moon-size 6 \
+  --view-zoom 0.06 --view-pitch 7 --view-yaw 108 --view-x -45 --view-z -375                        # a gibbous moon with craters
+./build-gl/terraflux-terrain-viewer --weather nimbostratus --hour 14 --time-scale 0 --weather-time 30 \
+  --view-zoom 0.08 --view-pitch 10 --view-yaw 270 --view-x 90 --view-z -150                        # waterfalls on the escarpment
+./build-gl/terraflux-terrain-viewer --weather cumulus --cloud-cover 0.1 --rainfall 40 --hour 16 --time-scale 0 \
+  --view-zoom 0.03 --view-pitch 8 --view-yaw 270 --view-x 405 --view-z -234                        # cascades, spray and bow fragments after the rain
+./build-gl/terraflux-terrain-viewer --weather nimbostratus --temperature 1 --hour 8 --time-scale 10 --weather-time 300 \
+  --view-zoom 0.3 --view-pitch 20 --view-yaw 250                                                   # a snow line on the summit
+./build-gl/terraflux-terrain-viewer --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json \
+  --weather auto --replay-frame 34 --view-zoom 0.45 --view-pitch 35 --view-yaw 30                  # the storm that slows the fire
+LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a -s "-screen 0 1280x800x24" \
+  ./build-gl/terraflux-terrain-viewer --weather-test --smoke-test
+```
+
+Smoke runs keep the weather off unless `--weather` is given, so every existing
+reference comparison sees the neutral sky; `--smoke-test --weather cumulus`
+renders one weathered frame. Smoke, profile, benchmark and residency-report
+runs print `WEATHER_JSON` (form and forecast, layer, temperatures, solar time
+and phase, wind sample and thresholds, orographic field statistics, the
+cascade counts and `WEATHER_SPRAY_JSON` with the spray drawn and the pixels it
+lit and tinted). The
+state lives in the 400-byte `Atmosphere` uniform block (slot 15), the
+`OrographicField` texture (slot 1) bound by every world shader and the
+RGBA16 `RunoffField` texture (slot 2) bound by the ground shaders; in their
+neutral state the shaders reduce exactly to the weather-free formulas, and CPU
+twins (`atmosphere_shade`, `atmosphere_haze`, `atmosphere_sky_color`) mirror
+the cloud-free lighting. `--weather-test` renders ten frames — weather off,
+clear noon, a full-moon midnight, civil twilight, stratus at noon, cumulus at t = 0
+and 120 s later, a thunderstorm at the moment of a strike over the middle of
+the terrain, four weather hours of nimbostratus rain, four more in freezing
+air, weather off — and checks that the sky dome covers the clear
+color and is bright and blue, that the lit terrain matches the CPU twin by
+day, by moonlight and at twilight, that night is dark with stars and the full
+moon is its light, that the
+twilight horizon glows warm, that stratus greys the sky, shadows the ground,
+reaches the summit, thickens on the windward slope and draws drizzle, that the
+cumulus drifts with a gusting wind that stays inside its thresholds, that the
+storm widens those thresholds, draws a lightning channel, pours more than
+5 mm/h, cools the surface air, turns the fire weather negative and raises the
+waves, that the rain leaves puddles, runs off, raises the lake and draws
+visible spray from the cascades' lips and plunge pools, that freezing air
+turns it to snow with a cover on the ground, no runoff and no spray, and
+that disabling the weather restores the reference exactly.
+Imported OBJ/glTF assets keep their fixed studio light and are not fogged;
+cloud shadows on assets, thunder, hail, wet specular ground, lee-wave clouds
+and temporal filtering of the cloud march remain future work. See
+[the backend contract](docs/GRAPHICS_BACKENDS.md#weather).
+
 ### Viewer controls
 
 | Key | Action |
@@ -381,6 +683,7 @@ frame comparisons stay deterministic. See
 | Home | Reset wildfire replay to its first frame and pause |
 | Comma / period | Previous / next wildfire frame, pausing replay |
 | V / B / G | Cycle vegetation density / tree meshes / grass distance |
+| C / J / K / X / O | Cycle the cloud form / solar clock an hour back / forward / wind presets / toggle weather |
 | W / A / S / D | Pan the camera target over the ground (A/D only without a scene file) |
 | Escape | Exit |
 
@@ -438,7 +741,7 @@ initialization or draw-time stream allocation can fail if the cap is too small.
 
 Diagnostics add `buffer_bytes`, `texture_bytes`, `render_target_bytes`, `total_resource_bytes` and
 `resource_budget_bytes` (null when unlimited). Buffers count their capacity;
-RGBA8 textures count all generated mip levels. Shared textures count once per
+textures count all generated mip levels at four (RGBA8) or eight (RGBA16) bytes per texel. Shared textures count once per
 live allocation; orphaning keeps the same logical capacity. Destruction and
 full asset unload return counts to the terrain baseline.
 
@@ -779,19 +1082,58 @@ PYTHONPATH=intelligence \
 
 ## Simulation contract
 
-Current contract version: `terraflux.compute/v2`.
+Current contract version: `terraflux.compute/v3`.
 
 | Version | Status | Semantics |
 | --- | --- | --- |
 | `terraflux.compute/v1` | accepted (legacy) | fuel, moisture, susceptibility, wind. `elevation_meters` is accepted but **ignored**. |
-| `terraflux.compute/v2` | current | v1 plus `cell_size_meters`, a terrain (slope) term, a signed and stronger wind term, and **meteorological wind direction** (blows *from*); see below. |
+| `terraflux.compute/v2` | accepted | v1 plus `cell_size_meters`, a terrain (slope) term, a signed and stronger wind term, and **meteorological wind direction** (blows *from*); see below. |
+| `terraflux.compute/v3` | current | v2 plus `weather`: air temperature, relative humidity and rainfall, constant or per step, as a bounded additive term (heat dries the fuel, rain wets it); see below. |
 
 A request is evaluated under the semantics of the version it declares and the
 response echoes that version. Stored v1 requests therefore replay bit-for-bit
 on both engines even if they carry elevation data; terrain is opt-in by sending
-`v2`. Requests declaring any other version are rejected. The version was bumped
-because `elevation_meters` was already a legal v1 input and giving it an effect
-would otherwise have silently changed v1 results.
+`v2`, weather by sending `v3` (a v2 request carrying a `weather` block ignores
+it, and a v3 request without one reproduces v2 exactly). Requests declaring any
+other version are rejected. The versions were bumped because `elevation_meters`
+was already a legal v1 input and giving it an effect would otherwise have
+silently changed v1 results, and because unknown keys are ignored by both
+engines.
+
+### Weather drivers: temperature, humidity and rain (v3)
+
+```
+weather = {"temperature_celsius": 26, "relative_humidity": 0.35, "precipitation_mm_h": 0}   # one sample
+weather = [sample_step_0, sample_step_1, ...]                                              # per step; the last entry persists
+```
+
+```
+heat    = clamp((T - 20) / 20, -1, 1)             # -1 at 0 C, 0 at 20 C, +1 at 40 C
+dryness = 1 - relative_humidity
+rain    = clamp(precipitation_mm_h / 10, 0, 1)     # saturates at 10 mm/h
+
+weather = heat * (0.5 + 0.5 * dryness) * 0.10 - rain * 0.30
+score   = ... + wind + uphill + downhill + weather   # appended last; exactly 0.0 without weather
+```
+
+- **Heat** shifts the propensity of fine fuel the way air temperature shifts
+  its equilibrium moisture: a hot, dry afternoon adds up to +0.10 (comparable
+  to a moderate tail wind), so marginal fuel burns that would not at 20 C;
+  cold air subtracts up to 0.10. Humid heat dries less than dry heat.
+- **Rain** wets the fuel within the step: 10 mm/h subtracts 0.30, more than
+  any other single driver, so a downpour stops most running fires; only good
+  fuel under a gale on a climb keeps creeping. Drizzle (1 mm/h) costs 0.03.
+  The term is stateless per step; authors model persistence by keeping wet
+  steps in the series (the last sample persists past its end).
+- 20 C, 50 % humidity and no rain are neutral. Samples are validated to
+  -60..60 C, 0..1 and 0..200 mm/h, series to 720 steps.
+
+`examples/generate_wildfire_scenario.py` emits a v3 scenario by default: a
+warm, fairly dry afternoon (26 C, 35 %) in which the fire runs, a thunderstorm
+at step 30 (6 mm/h for ten steps, cooling the air by eight degrees) that slows
+the front to a crawl, and cool humid air afterwards; `--storm-mm-h 14` stops it
+outright, `--no-storm` keeps the weather constant, `--contract v2` drops the
+term. The viewer mirrors the series while replaying (see the weather section).
 
 ### Environmental drivers: wind and terrain (v2)
 

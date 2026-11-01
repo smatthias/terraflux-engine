@@ -1,4 +1,5 @@
 #include <terraflux/graphics/water_shading.hpp>
+#include <terraflux/graphics/weather.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -87,7 +88,8 @@ ShaderLayout water_shader_layout() {
        {"BED", 1, VertexFormat::Float1, static_cast<std::uint32_t>(offsetof(WaterGpuVertex, bed_height))},
        {"BED_GRADIENT", 2, VertexFormat::Float2, static_cast<std::uint32_t>(offsetof(WaterGpuVertex, bed_gradient))}},
       {{"Camera", ShaderResourceKind::UniformBuffer, 0, kVertexStage},
-       {"WaterStyle", ShaderResourceKind::UniformBuffer, kWaterStyleSlot, kVertexStage | kFragmentStage}}};
+       {"WaterStyle", ShaderResourceKind::UniformBuffer, kWaterStyleSlot, kVertexStage | kFragmentStage},
+       atmosphere_binding(kFragmentStage), orographic_field_binding()}};
 }
 
 WaterUpload prepare_water_upload(const terrain::WaterMesh& mesh) {

@@ -65,7 +65,10 @@ Playback load(const std::string& request_json, const std::string& response_json)
   if (!(size > 0.0 && size <= 10000.0))
     throw std::invalid_argument("invalid cell size");
 
-  Playback playback{compute::Grid(std::move(cells)), size, key, {}};
+  Playback playback{compute::Grid(std::move(cells)), size, key, {}, version, 0.0, 0.0, {}};
+  playback.wind_speed_kmh = optional_number(request, "wind_speed_kmh", 0.0);
+  playback.wind_direction_degrees = optional_number(request, "wind_direction_degrees", 0.0);
+  if (compute::weather_enabled(version)) playback.weather = weather_series(request);
   const Json parsed_response = Parser(response_json).parse_document();
   const auto& response = object(parsed_response);
   if (string(field(response, "grid_key")) != key ||
@@ -110,6 +113,11 @@ std::size_t index_at(const FireField& field, std::int32_t x, std::int32_t y) {
   return static_cast<std::size_t>(offset_y) * field.width +
       static_cast<std::size_t>(offset_x);
 }
+}
+
+std::optional<compute::WeatherSample> Playback::weather_for_frame(std::size_t frame) const {
+  if (weather.empty()) return std::nullopt;
+  return weather[std::min(frame, weather.size() - 1)];
 }
 
 FireField make_fire_field(const compute::Grid& grid) {

@@ -6,6 +6,7 @@
 #include <terraflux/graphics/resource_owner.hpp>
 #include <terraflux/graphics/terrain_shading.hpp>
 #include <terraflux/graphics/visibility.hpp>
+#include <terraflux/graphics/weather.hpp>
 #include <terraflux/math.hpp>
 #include <terraflux/terrain_mesh.hpp>
 
@@ -103,7 +104,8 @@ VegetationStyleUniform pack_vegetation_style(const VegetationStyle& style, math:
 std::uint32_t vegetation_fire_state(const VegetationFireGrid& fire, const std::vector<std::uint32_t>& states,
                                     double x, double z);
 // POSITION 0, NORMAL 1, COLOR 2, FLEX 3, TINT_WEIGHT 4 (44-byte stride); Camera at slot 0,
-// VegetationStyle at slot 13 (both stages), InstanceData storage at slot 4, PlantFireState storage at slot 5.
+// VegetationStyle at slot 13 (both stages), InstanceData storage at slot 4, PlantFireState storage at slot 5,
+// Atmosphere at slot 15 (both stages) and the OrographicField texture at slot 1.
 ShaderLayout vegetation_shader_layout();
 
 // One placed plant: std430 layout of three vec4s (48 bytes), consumed by the
@@ -188,8 +190,8 @@ class VegetationRenderer {
   const VegetationPlacement& placement() const { return placement_; }
   const std::vector<VegetationMesh>& tree_meshes() const { return tree_meshes_; }
   VegetationDrawStats draw(PipelineHandle pipeline, BufferHandle camera, BufferHandle style, BufferHandle fire_states,
-                           const Frustum& frustum, math::Vec3 eye, const VegetationStyle& ranges,
-                           bool cull = true);
+                           const AtmosphereBinding& atmosphere, const Frustum& frustum, math::Vec3 eye,
+                           const VegetationStyle& ranges, bool cull = true);
   std::uint64_t geometry_bytes() const;
  private:
   struct MeshGpu { BufferHandle vb, ib; std::uint32_t indices = 0; };

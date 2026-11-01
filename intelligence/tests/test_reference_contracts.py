@@ -11,6 +11,7 @@ class ReferenceFixtureTest(unittest.TestCase):
         path = Path(__file__).parent / "fixtures" / "grid_spread_cases.json"
         document = json.loads(path.read_text())
         self.assertEqual(document["contractVersion"], CONTRACT_VERSION)
+        self.assertTrue(any(case["request"]["contract_version"] == CONTRACT_VERSION for case in document["cases"]))
         for case in document["cases"]:
             with self.subTest(case=case["name"]):
                 self.assertIn(case["request"]["contract_version"], SUPPORTED_CONTRACT_VERSIONS)

@@ -127,8 +127,8 @@ TerrainResidencyChange TerrainTileRenderer::synchronize_visible(const Frustum& f
   return change;
 }
 TerrainTileDrawStats TerrainTileRenderer::draw(PipelineHandle pipeline,BufferHandle camera,
-    std::optional<BufferHandle> fire,const Frustum& frustum,bool cull,std::optional<BufferHandle> layers,
-    std::optional<BufferHandle> style) {
+    const AtmosphereBinding& atmosphere,std::optional<BufferHandle> fire,const Frustum& frustum,bool cull,
+    std::optional<BufferHandle> layers,std::optional<BufferHandle> style) {
   if(!device_.active_render_pass_id())throw std::logic_error("terrain tiles require an active pass");
   // Reject an incomplete visible set before submitting any part of the surface.
   for(const auto& tile:tiles_)
@@ -138,7 +138,8 @@ TerrainTileDrawStats TerrainTileRenderer::draw(PipelineHandle pipeline,BufferHan
   for(const auto& tile:tiles_) {
     if(cull && !visible(tile,frustum)){++stats.culled;continue;}
     DrawIndexed command{pipeline,tile.gpu->vertices,tile.gpu->indices,0,
-        static_cast<std::uint32_t>(tile.recipe.indices.size()),{{0,camera}}, {}};
+        static_cast<std::uint32_t>(tile.recipe.indices.size()),{{0,camera},{kAtmosphereSlot,atmosphere.block}},{},
+        {{kOrographicFieldSlot,atmosphere.field},{kRunoffFieldSlot,atmosphere.runoff}}};
     if(fire)command.storage_buffers.push_back({1,*fire});
     if(layers)command.uniform_buffers.push_back({10,*layers});
     if(style)command.uniform_buffers.push_back({kTerrainStyleSlot,*style});

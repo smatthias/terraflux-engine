@@ -3,6 +3,7 @@
 #include <terraflux/graphics/water_shading.hpp>
 #include <terraflux/graphics/vegetation.hpp>
 #include <terraflux/graphics/fire_effects.hpp>
+#include <terraflux/graphics/weather.hpp>
 
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
@@ -139,6 +140,462 @@ vec3 terrainNoise(vec2 p) { // x = value, yz = analytic gradient
 float terrainDetailFade(float pixelMeters, float frequency) {
   return 1.0 - smoothstep(0.25, 1.0, pixelMeters * frequency);
 }
+// Ridged noise: sharp crests at one, creases at zero, with analytic gradient.
+vec3 ridgedNoise(vec2 p) {
+  vec3 n = terrainNoise(p);
+  float s = 2.0 * n.x - 1.0;
+  float v = 1.0 - abs(s);
+  vec2 g = -sign(s) * 2.0 * n.yz;
+  return vec3(v * v, 2.0 * v * g);
+}
+vec3 ridgedFbm(vec2 p) { // three octaves; x value in 0..1, yz gradient per unit of p
+  vec3 a = ridgedNoise(p), b = ridgedNoise(p * 2.13 + vec2(5.2, 1.3)), c = ridgedNoise(p * 4.41 + vec2(9.1, 7.7));
+  return vec3(a.x * 0.55 + b.x * 0.30 + c.x * 0.15,
+              a.yz * 0.55 + b.yz * 2.13 * 0.30 + c.yz * 4.41 * 0.15);
+}
+const float kCragFrequency = 0.045; // crags about 22 m across, with two finer octaves
+// Where the ropes of a waterfall run across its face (0 between them, 1 in a rope): the
+// ground shader paints them and the spray leaves from them. across/along are metres in the
+// flow frame, height 0..1 grows with the fall (the ropes divide lower down), time in seconds.
+float waterfallRope(float across, float along, float elevation, float height, float time) {
+  float wander = 1.5 * sin(along * 0.11 + elevation * 0.05) + 0.6 * sin(elevation * 0.23 - time * 1.7);
+  float ropeAcross = across + wander;
+  return mix(terrainNoise(vec2(ropeAcross * 0.09, 3.7 + along * 0.04)).x,
+             terrainNoise(vec2(ropeAcross * 0.19, 5.1 + along * 0.06)).x, height);
+}
+)GLSL";
+
+// Daylight, fog, clouds and precipitation shared by every world shader. The
+// CPU twins in weather.cpp (atmosphere_shade, atmosphere_haze,
+// atmosphere_sky_color) mirror the cloud-free parts; the cloud ray march and
+// the orographic modulation are GPU-only. With atmoEye.w == 0 (neutral block)
+// every helper returns its input or the legacy formula unchanged.
+constexpr char kAtmosphereBlockGlsl[] = R"GLSL(
+layout(std140, binding = 15) uniform Atmosphere {
+  vec4 camForward;     // xyz basis, w tan half fov x
+  vec4 camRight;       // xyz basis, w tan half fov y
+  vec4 camUp;          // xyz basis, w moon altitude degrees
+  vec4 atmoEye;        // camera position, w enabled
+  vec4 atmoSun;        // unit direction toward the light (sun or moon), w direct intensity
+  vec4 atmoSunColor;   // rgb, w ambient intensity
+  vec4 atmoAmbient;    // rgb, w daylight
+  vec4 atmoZenith;     // rgb, w sun altitude degrees
+  vec4 atmoHorizon;    // rgb, w lightning flash
+  vec4 atmoFog;        // rgb, w visibility meters
+  vec4 atmoCloud;      // base, top, coverage, density
+  vec4 atmoCloudShape; // detail, drift x, drift z, type
+  vec4 atmoFieldOrigin;// x0, z0, 1/width, 1/height
+  vec4 atmoFieldScale; // base shift scale, thickening strength, top lift, pattern scale
+  vec4 atmoWind;       // direction x, z, speed, time
+  vec4 atmoWeather;    // precipitation, snow, wetness, stars
+  vec4 atmoSunDisc;    // true sun direction, w valley floor altitude
+  vec4 atmoStrike;     // lightning channel midpoint, w flash intensity
+  vec4 atmoRain;       // drop diameter mm, ponding, rainbow, convection
+  vec4 atmoLife;       // cloud lifecycle time, flood rise, moon diameter degrees, rock relief m
+  vec4 atmoMoon;       // unit direction toward the moon, w illuminated fraction
+  vec4 atmoCloudSun;   // cloud light color, w intensity
+  vec4 atmoCloudLight; // unit direction of the cloud light, w moonlight intensity
+  vec4 atmoHorizonAway;// horizon color opposite the sun
+  vec4 atmoSnow;       // freezing level m, melting layer m, runoff, snow cover
+};
+)GLSL";
+const std::string kAtmosphereGlsl = std::string(kAtmosphereBlockGlsl) + R"GLSL(
+layout(binding = 1) uniform sampler2D OrographicField;
+bool atmosphereEnabled() { return atmoEye.w > 0.5; }
+// Per-pixel start offset of the cloud march (fragment stages set it from the
+// fragment coordinate) turns slicing bands into fine grain.
+float atmosphereJitter = 0.5;
+float atmosphereDither(vec2 fragCoord) { return terrainHash(fragCoord * 0.731 + vec2(0.17, 0.29)); }
+
+// Orographic texel: thickening, dissipation, base shift (0.5 neutral), precipitation
+// (0.5 neutral). Neutral outside the terrain footprint.
+vec4 orographicAt(vec2 xz) {
+  vec2 uv = (xz - atmoFieldOrigin.xy) * atmoFieldOrigin.zw;
+  vec4 t = texture(OrographicField, clamp(uv, 0.0, 1.0));
+  vec2 outside = max(max(-uv, uv - 1.0), 0.0);
+  float inside = 1.0 - smoothstep(0.0, 0.08, max(outside.x, outside.y));
+  return mix(vec4(0.0, 0.0, 0.5, 0.5), t, inside);
+}
+// Four octaves, each rotated so no lattice direction survives, with a fine erosion octave
+// that frays the edges instead of leaving the blocky corners of plain value noise.
+vec2 cloudRotate(vec2 p, float c, float s) { return vec2(c * p.x - s * p.y, s * p.x + c * p.y); }
+float cloudNoise(vec2 p) {
+  float n = 0.50 * terrainNoise(p).x +
+            0.26 * terrainNoise(cloudRotate(p, 0.80, 0.60) * 2.03 + vec2(5.2, 1.3)).x +
+            0.15 * terrainNoise(cloudRotate(p, -0.28, 0.96) * 4.11 + vec2(9.1, 7.7)).x +
+            0.09 * terrainNoise(cloudRotate(p, 0.53, -0.85) * 8.7 + vec2(2.9, 4.4)).x;
+  return clamp((n - 0.5) * 1.9 + 0.5, 0.0, 1.0);
+}
+// 3D value noise for the volume: erosion of the cell edges and the lifecycle field.
+float cloudHash3(vec3 p) {
+  p = fract(p * 0.1031);
+  p += dot(p, p.zyx + 31.32);
+  return fract((p.x + p.y) * p.z);
+}
+float cloudNoise3(vec3 p) {
+  vec3 i = floor(p), f = fract(p);
+  vec3 u = f * f * (3.0 - 2.0 * f);
+  float c000 = cloudHash3(i), c100 = cloudHash3(i + vec3(1, 0, 0)), c010 = cloudHash3(i + vec3(0, 1, 0)), c110 = cloudHash3(i + vec3(1, 1, 0));
+  float c001 = cloudHash3(i + vec3(0, 0, 1)), c101 = cloudHash3(i + vec3(1, 0, 1)), c011 = cloudHash3(i + vec3(0, 1, 1)), c111 = cloudHash3(i + vec3(1, 1, 1));
+  return mix(mix(mix(c000, c100, u.x), mix(c010, c110, u.x), u.y), mix(mix(c001, c101, u.x), mix(c011, c111, u.x), u.y), u.z);
+}
+// Cell lifecycle (0 fed .. 1 decayed): convective cells are crisp and dense while an
+// updraft feeds them; once it dies (night, cold ground, the lee of a ridge) dry air mixes
+// in, the edges fray, the cloud thins and the cell vanishes. The field drifts with the
+// lifecycle clock so cells form and dissolve over about half an hour of weather time.
+float cloudDecayAt(vec2 q, vec4 oro) {
+  float feed = clamp(atmoRain.w + 0.6 * oro.x - 0.5 * oro.y, 0.0, 1.0);
+  float life = cloudNoise3(vec3(q * 2.1 + vec2(11.0, 3.0), atmoLife.x / 1800.0));
+  return smoothstep(feed, feed + 0.35, life) * atmoCloudShape.x;
+}
+// Cloud density 0..1 at a world point. The layer sits between the base and
+// top altitudes, shifted and deepened by the orographic texel: the base rises
+// in the lee, the top lifts and the coverage grows on windward slopes, and
+// the lee dissipation thins it. Cumuliform detail raises the threshold with
+// height so towers form; stratiform layers stay flat and soft.
+float cloudDensityAt(vec3 p, vec4 oro, bool detailed) {
+  float base = atmoCloud.x + (oro.z * 2.0 - 1.0) * atmoFieldScale.x;
+  float top = atmoCloud.y + oro.x * atmoFieldScale.z;
+  float depth = max(top - base, 1.0);
+  float h = (p.y - base) / depth;
+  if (h < 0.0 || h > 1.0) return 0.0;
+  float detail = atmoCloudShape.x;
+  float coverage = clamp(atmoCloud.z * (1.0 + atmoFieldScale.y * oro.x) * (1.0 - oro.y), 0.0, 1.0);
+  vec2 q = (p.xz - atmoCloudShape.yz) / atmoFieldScale.w;
+  if (atmoCloudShape.w > 0.5 && atmoCloudShape.w < 1.5) {
+    // Cirrus: ice streaks drawn out along the wind.
+    vec2 along = normalize(atmoWind.xy + vec2(1e-4, 0.0)), across = vec2(-along.y, along.x);
+    q = vec2(dot(q, along) * 0.22, dot(q, across) * 1.6);
+  }
+  q += vec2(0.37, -0.23) * h * detail;
+  float n = cloudNoise(q);
+  float decay = cloudDecayAt(q, oro);
+  // Towers: the threshold rises with height so only the strongest cells reach the top. Fed
+  // cells keep a crisp, cauliflower edge carved by 3D erosion; decaying cells get a wide,
+  // fuzzy transition, thin out and finally drop below the threshold.
+  float threshold = (1.0 - coverage) + detail * 0.55 * h + 0.18 * decay;
+  float edge = 0.16 + 0.25 * (1.0 - detail) + 0.5 * decay;
+  float body = smoothstep(threshold, threshold + edge, n);
+  body *= body * (3.0 - 2.0 * body);
+  float profile = smoothstep(0.0, 0.12, h) * (1.0 - smoothstep(0.75 + 0.2 * (1.0 - detail), 1.0, h));
+  float density = body * profile;
+  if (detailed && density > 0.001 && detail > 0.05) {
+    // Volume: two octaves of 3D noise erode the shell (strongly at the edges, little in the
+    // core) so towers bulge and hollow from every angle; fuzzy remnants erode softly.
+    vec3 e = (p - vec3(atmoCloudShape.y, 0.0, atmoCloudShape.z)) / 260.0;
+    float erosion = 0.65 * cloudNoise3(e) + 0.35 * cloudNoise3(e * 2.3 + vec3(4.1, 7.3, 1.9));
+    float carve = (0.55 - 0.25 * decay) * detail;
+    density = clamp((density - carve * erosion * (1.0 - 0.6 * density)) / max(1.0 - carve * 0.5, 0.3), 0.0, 1.0);
+  }
+  return density * (1.0 - 0.7 * decay) * atmoCloud.w;
+}
+// Premultiplied in-scattered light (rgb) and transmittance (a) of the cloud
+// layer along a ray segment. Geometry passes its own distance; the sky passes
+// a large one. Nothing beyond a few visibility lengths is marched.
+vec4 cloudAlong(vec3 origin, vec3 dir, float maxDist) {
+  if (!atmosphereEnabled() || atmoCloud.z <= 0.001 || atmoCloud.w <= 0.001) return vec4(0.0, 0.0, 0.0, 1.0);
+  float lo = atmoCloud.x - atmoFieldScale.x, hi = atmoCloud.y + atmoFieldScale.z;
+  float t0, t1;
+  if (abs(dir.y) < 1e-5) {
+    if (origin.y < lo || origin.y > hi) return vec4(0.0, 0.0, 0.0, 1.0);
+    t0 = 0.0; t1 = maxDist;
+  } else {
+    float ta = (lo - origin.y) / dir.y, tb = (hi - origin.y) / dir.y;
+    t0 = max(min(ta, tb), 0.0); t1 = min(max(ta, tb), maxDist);
+  }
+  // Beyond a few visibility lengths the haze hides the layer anyway.
+  t1 = min(t1, t0 + min(3.0 * atmoFog.w, 16000.0));
+  if (t1 <= t0) return vec4(0.0, 0.0, 0.0, 1.0);
+  // A fixed step of a twenty-fourth of the layer depth (so neighbouring pixels
+  // sample the same pattern and no seams appear), stretched only when a long
+  // path would exceed the budget of 96 samples.
+  float depthStep = max(atmoCloud.y - atmoCloud.x, 50.0) / 24.0;
+  float dt = max(depthStep, (t1 - t0) / 96.0);
+  int steps = max(int(ceil((t1 - t0) / dt)), 1);
+  const float kSigma = 0.0055; // extinction per meter at density one
+  // The cloud light is the true sun while it still reaches the layer (from the side and, at
+  // sunset, from below the base in deep reds), the moon afterwards; a Henyey-Greenstein
+  // forward lobe brightens the edges seen against the light (silver linings, moonlit rims).
+  vec3 lightDir = atmoCloudLight.xyz;
+  // Moonlit clouds read brighter than their photometry (the eye adapts): the moon's share
+  // of the cloud light is lifted, the rest is the sun as it is.
+  float moonShare = atmoCloudSun.w > 0.0 ? clamp(atmoCloudLight.w / atmoCloudSun.w, 0.0, 1.0) : 0.0;
+  vec3 light = atmoCloudSun.rgb * atmoCloudSun.w * (1.0 + 1.6 * moonShare), ambient = atmoAmbient.rgb * atmoSunColor.w;
+  float cosView = dot(dir, lightDir);
+  float hg = (1.0 - 0.36) / (4.0 * 3.14159265 * pow(1.0 + 0.36 - 1.2 * cosView, 1.5));
+  float forward = clamp(hg * 2.5, 0.0, 3.0);
+  float transmittance = 1.0;
+  vec3 scattered = vec3(0.0);
+  for (int i = 0; i < steps; ++i) {
+    float t = t0 + (float(i) + atmosphereJitter) * dt;
+    vec3 p = origin + dir * t;
+    vec4 oro = orographicAt(p.xz);
+    float d = cloudDensityAt(p, oro, true);
+    if (d <= 0.002) continue;
+    // Self-shadowing: optical depth toward the light along a widening cone (three cheap
+    // samples); Beer's extinction times a "powder" term that darkens thin edges so the
+    // bulges read as volume, and a darker base from the ambient gradient.
+    float toward = 0.5 * cloudDensityAt(p + lightDir * 60.0, oro, false) +
+                   0.35 * cloudDensityAt(p + lightDir * 170.0, oro, false) +
+                   0.15 * cloudDensityAt(p + lightDir * 360.0, oro, false);
+    float lit = exp(-toward * 2.6) * (0.55 + 0.45 * (1.0 - exp(-d * 4.0)));
+    float h = clamp((p.y - atmoCloud.x) / max(atmoCloud.y - atmoCloud.x, 1.0), 0.0, 1.0);
+    // Sunset: a low sun reddens the lit faces and the undersides it reaches; the shaded faces
+    // keep the cool ambient of the sky opposite.
+    vec3 color = ambient * (1.1 + 1.1 * h) * (1.0 - 0.3 * d) + light * (0.78 * lit + 0.55 * forward * exp(-d * 2.5)) +
+                 vec3(0.55, 0.62, 0.80) * atmoHorizon.w;
+    // A lightning channel lights the cloud from inside: a point light at its midpoint.
+    float strikeDistance = length(p - atmoStrike.xyz);
+    color += vec3(0.70, 0.78, 1.0) * (atmoStrike.w * 1.5 / (1.0 + strikeDistance * strikeDistance / 250000.0));
+    color = mix(color, atmoFog.rgb, 1.0 - exp(-t / (2.5 * atmoFog.w)));
+    float alpha = 1.0 - exp(-d * kSigma * dt);
+    scattered += transmittance * alpha * color;
+    transmittance *= 1.0 - alpha;
+    if (transmittance < 0.01) break;
+  }
+  return vec4(scattered, transmittance);
+}
+// Transmittance toward the light through the cloud layer above a ground point.
+float cloudShadow(vec3 p) {
+  if (!atmosphereEnabled() || atmoCloud.z <= 0.001 || atmoSun.y <= 0.05) return 1.0;
+  float t = (atmoCloud.x - p.y) / atmoSun.y;
+  if (t < 0.0) return 1.0;
+  vec3 q = p + atmoSun.xyz * t;
+  vec4 oro = orographicAt(q.xz);
+  float depth = max(atmoCloud.y - atmoCloud.x, 1.0);
+  float d = cloudDensityAt(vec3(q.x, atmoCloud.x + 0.2 * depth, q.z), oro, false) + cloudDensityAt(vec3(q.x, atmoCloud.x + 0.55 * depth, q.z), oro, false);
+  return mix(1.0, exp(-d * 1.6), 0.85);
+}
+// Surface lighting: ambient plus direct light with cloud shadow, wet darkening
+// and lightning when the atmosphere is active; the caller's legacy light and
+// ambient shade otherwise (CPU twin: atmosphere_shade / terrain_surface_color).
+vec3 atmosphereLit(vec3 albedo, vec3 n, float diffuse, vec3 legacyLight, float legacyAmbient, vec3 ambientTint, vec3 worldPos) {
+  if (!atmosphereEnabled()) return albedo * (legacyAmbient * ambientTint + (1.0 - legacyAmbient) * diffuse);
+  float shadow = cloudShadow(worldPos);
+  vec3 wet = mix(vec3(1.0), vec3(0.72, 0.74, 0.78), atmoWeather.z);
+  // Sheet lightning brightens everything; a channel adds a point light falling off over ~1 km.
+  float strikeDistance = length(worldPos - atmoStrike.xyz);
+  vec3 flash = vec3(0.55, 0.62, 0.80) * (0.35 * atmoHorizon.w + 0.9 * atmoStrike.w / (1.0 + strikeDistance * strikeDistance / 1000000.0));
+  return albedo * wet * (atmoAmbient.rgb * atmoSunColor.w * ambientTint + atmoSunColor.rgb * atmoSun.w * diffuse * shadow + flash);
+}
+vec3 atmosphereLightDirection(vec3 legacyLight) { return atmosphereEnabled() ? atmoSun.xyz : legacyLight; }
+// Clouds between the eye and the surface, then distance haze (CPU twin of the haze: atmosphere_haze).
+vec3 applyAtmosphere(vec3 color, vec3 worldPos) {
+  if (!atmosphereEnabled()) return color;
+  vec3 toFrag = worldPos - atmoEye.xyz;
+  float dist = length(toFrag);
+  vec3 dir = toFrag / max(dist, 1e-3);
+  vec4 clouds = cloudAlong(atmoEye.xyz, dir, dist);
+  color = color * clouds.a + clouds.rgb;
+  float haze = 1.0 - exp(-dist / atmoFog.w);
+  return mix(color, atmoFog.rgb, haze);
+}
+// Clear-sky color for a view direction (CPU twin: atmosphere_sky_color).
+vec3 atmosphereSkyColor(vec3 dir) {
+  float up = clamp(dir.y, -1.0, 1.0);
+  // Below the horizon: distant ground under haze (the terrain is an island).
+  vec3 ground = mix(vec3(0.14, 0.15, 0.13), atmoFog.rgb, 0.25) * (0.15 + 0.7 * atmoAmbient.w);
+  // The horizon is warm toward the sun and cool opposite it (strongest around sunrise and sunset).
+  vec2 sunH = atmoSunDisc.xz, dirH = dir.xz;
+  float toward = length(sunH) > 1e-6 && length(dirH) > 1e-6 ? 0.5 + 0.5 * dot(normalize(sunH), normalize(dirH)) : 0.5;
+  vec3 horizonColor = mix(atmoHorizonAway.rgb, atmoHorizon.rgb, pow(toward, 1.5));
+  vec3 sky = up >= 0.0 ? mix(horizonColor, atmoZenith.rgb, pow(up, 0.55))
+                       : mix(horizonColor, ground, clamp(-up * 6.0, 0.0, 1.0));
+  // Aerial perspective: the path through the hazy boundary layer (1.5 km
+  // above the eye, or down to the valley floor) whitens the horizon and greys
+  // an overcast sky toward the fog color.
+  float path = up >= 0.0 ? 1500.0 / max(up, 0.02) : max(atmoEye.y - atmoSunDisc.w, 50.0) / max(-up, 0.02);
+  sky = mix(sky, atmoFog.rgb, 1.0 - exp(-min(path, 200000.0) / atmoFog.w));
+  vec3 sunDir = atmoSunDisc.xyz;
+  float cosSun = clamp(dot(dir, sunDir), -1.0, 1.0);
+  float altitude = atmoZenith.w;
+  float visible = smoothstep(-1.5, 0.5, altitude);
+  float glow = (0.22 * pow(max(cosSun, 0.0), 24.0) + 0.5 * pow(max(cosSun, 0.0), 400.0)) * visible * smoothstep(-6.0, 2.0, altitude);
+  float disc = smoothstep(0.99955, 0.99975, cosSun) * visible;
+  vec3 sunLightColor = dot(atmoSun.xyz, sunDir) > 0.999 ? atmoSunColor.rgb : vec3(1.0, 0.62, 0.30);
+  sky += sunLightColor * glow + mix(sunLightColor, vec3(1.0), 0.5) * (disc * 3.0);
+  sky += vec3(0.55, 0.62, 0.80) * (0.45 * atmoHorizon.w);
+  return clamp(sky, 0.0, 1.0);
+}
+// Puddles: after rain, flat ground holds a film of water that reflects the sky (Fresnel)
+// and darkens the soil; it drains away as the ponding falls.
+vec3 applyPuddles(vec3 color, vec3 worldPos, vec3 unitNormal, float submerged) {
+  if (!atmosphereEnabled() || atmoRain.y <= 0.001) return color;
+  float flat_ = 1.0 - smoothstep(8.0, 16.0, degrees(acos(clamp(unitNormal.y, 0.0, 1.0)))); // gentle ground holds water in its hollows
+  // Puddles collect in the hollows of a two-scale noise; they grow and merge as the ponding rises.
+  float hollows = 0.6 * terrainNoise(worldPos.xz * 0.18).x + 0.4 * terrainNoise(worldPos.xz * 0.55 + vec2(7.0, 3.0)).x;
+  float mask = smoothstep(0.62 - 0.3 * atmoRain.y, 0.66 - 0.3 * atmoRain.y, hollows);
+  float puddle = flat_ * mask * (1.0 - submerged) * smoothstep(0.0, 0.3, atmoRain.y);
+  if (puddle <= 0.001) return color;
+  vec3 view = normalize(atmoEye.xyz - worldPos);
+  float fresnel = 0.06 + 0.94 * pow(1.0 - max(view.y, 0.0), 4.0);
+  vec3 reflection = atmosphereSkyColor(reflect(-view, vec3(0.0, 1.0, 0.0)));
+  vec3 wet = color * 0.45;
+  return mix(color, mix(wet, reflection, fresnel), puddle);
+}
+// Rainbow: the primary bow 40.6..42.4 degrees from the anti-solar point (red outside), the
+// fainter secondary 50.1..53.5 (reversed) and Alexander's dark band between; only with sunshine
+// behind the observer and rain in front (atmoRain.z).
+vec3 spectrum(float t) {
+  return clamp(vec3(1.2 * t * t + 0.15 * (1.0 - t), 1.0 - 2.6 * abs(t - 0.45), 1.3 * (1.0 - t) - 0.3), 0.0, 1.0);
+}
+// Spectral weight of the primary and secondary bows for a view direction and a light
+// direction (the bow is centred on the anti-light point); no gating.
+vec3 bowWeight(vec3 dir, vec3 lightDir) {
+  float a = degrees(acos(clamp(dot(dir, -lightDir), -1.0, 1.0)));
+  float t1 = (a - 40.6) / 1.8, t2 = (53.5 - a) / 3.4;
+  vec3 bow = vec3(0.0);
+  if (t1 > 0.0 && t1 < 1.0) bow += spectrum(t1) * smoothstep(0.0, 0.2, t1) * (1.0 - smoothstep(0.8, 1.0, t1)) * 0.45;
+  if (t2 > 0.0 && t2 < 1.0) bow += spectrum(t2) * smoothstep(0.0, 0.25, t2) * (1.0 - smoothstep(0.75, 1.0, t2)) * 0.14;
+  return bow;
+}
+vec3 rainbowAt(vec3 dir) {
+  if (!atmosphereEnabled() || atmoRain.z <= 0.001) return vec3(0.0);
+  return bowWeight(dir, atmoSunDisc.xyz) * atmoRain.z * smoothstep(-0.05, 0.08, dir.y);
+}
+float alexanderBand(vec3 dir) {
+  if (!atmosphereEnabled() || atmoRain.z <= 0.001) return 1.0;
+  float a = degrees(acos(clamp(dot(dir, -atmoSunDisc.xyz), -1.0, 1.0)));
+  return 1.0 - 0.08 * atmoRain.z * smoothstep(42.0, 43.5, a) * (1.0 - smoothstep(49.0, 50.5, a));
+}
+)GLSL";
+
+// Runoff and snow cover on the ground (terrain and wildfire programs): rain below the
+// freezing level wets and glosses the slopes, gathers into streams along the drainage and
+// pours over cliffs as white water that the crags split into ropes, that speeds up and
+// aerates as it falls, bursts white where it strikes a protruding rock and boils in the
+// plunge pool; above the freezing level the fresh snow whitens the ground.
+constexpr char kRunoffGlsl[] = R"GLSL(
+layout(binding = 2) uniform sampler2D RunoffField;
+const float kRunoffDropScale = 250.0;
+// x flow, yz drainage direction scaled by the steepness (length 1 at 60 degrees, zero in a
+// pit), w drop (0.85 sqrt(drop / 250 m)) or a plunge pool (0.9 .. 1). The lookup is warped
+// by a few metres of noise so the lattice's straight texel edges never show.
+vec4 runoffAt(vec2 xz) {
+  vec3 warp = terrainNoise(xz * 0.07 + vec2(3.1, 9.4));
+  vec2 uv = (xz + (warp.yz * 0.07 + vec2(warp.x - 0.5)) * 3.0 - atmoFieldOrigin.xy) * atmoFieldOrigin.zw;
+  // Texel i sits at x0 + i * spacing: map onto texel centres for the bilinear fetch.
+  vec2 size = vec2(textureSize(RunoffField, 0));
+  vec4 t = texture(RunoffField, (clamp(uv, 0.0, 1.0) * (size - 1.0) + 0.5) / size);
+  vec2 outside = max(max(-uv, uv - 1.0), 0.0);
+  float inside = 1.0 - smoothstep(0.0, 0.05, max(outside.x, outside.y));
+  return vec4(t.x * inside, (t.yz * 2.0 - 1.0) * inside, t.w * inside);
+}
+vec3 applySnowCover(vec3 color, vec3 worldPos, vec3 n, float elevation) {
+  if (!atmosphereEnabled() || atmoSnow.w <= 0.001) return color;
+  float cover = atmoSnow.w * smoothstep(atmoSnow.x - 120.0, atmoSnow.x + 80.0, elevation);
+  if (cover <= 0.001) return color;
+  float diffuse = max(dot(n, atmoSun.xyz), 0.0);
+  vec3 snow = vec3(0.93, 0.94, 0.96) * (atmoAmbient.rgb * atmoSunColor.w * vec3(0.74, 0.82, 0.98) + atmoSunColor.rgb * atmoSun.w * diffuse);
+  return mix(color, snow, cover * 0.9);
+}
+vec3 applyRunoff(vec3 color, vec3 worldPos, vec3 n, float elevation, float submerged) {
+  if (!atmosphereEnabled() || atmoSnow.z <= 0.001) return color;
+  // Snow, not water, falls above the freezing level.
+  float liquid = 1.0 - smoothstep(atmoSnow.x - 150.0, atmoSnow.x + 50.0, elevation);
+  float running = atmoSnow.z * liquid * (1.0 - submerged);
+  if (running <= 0.001) return color;
+  vec4 r = runoffAt(worldPos.xz);
+  float flow = r.x, drop = kRunoffDropScale * (r.w / 0.85) * (r.w / 0.85);
+  float slope = degrees(acos(clamp(n.y, 0.0, 1.0)));          // of the rendered surface
+  float latticeSlope = 60.0 * length(r.yz);                   // of the drainage lattice
+  // A cliff (by the lattice; the rendered crest above it, still level, stays dry) with a
+  // stream pouring over it.
+  // A cliff (by the lattice; the rendered crest above it, still level, stays dry) with a
+  // stream pouring over it.
+  float fall = smoothstep(40.0, 60.0, latticeSlope) * smoothstep(12.0, 32.0, slope) * smoothstep(0.3, 0.6, flow);
+  float time = atmoWind.w;
+  // The drainage direction of the lattice (smooth across the face, unlike the normal of
+  // the refined mesh) gives the along/across frame of the flow; the normal is a fallback.
+  vec2 down = length(r.yz) > 0.03 ? normalize(r.yz) : normalize(n.xz + vec2(1e-5, 0.0));
+  vec2 perp = vec2(-down.y, down.x);
+  float steep = smoothstep(8.0, 35.0, slope);
+  float along = dot(worldPos.xz, down), across = dot(worldPos.xz, perp);
+  // Sheet flow: water seeps slowly over gentle ground and streams down steep rock, in
+  // streaks that scroll downhill at a speed set by the slope; wet ground darkens and glosses.
+  float speed = 0.3 + 2.5 * steep;
+  float streak = terrainNoise(vec2(across * 0.8, along * 0.25 - time * speed)).x;
+  float film = running * (0.25 + 0.75 * flow);
+  color *= 1.0 - film * (0.2 + 0.25 * steep);
+  vec3 view = normalize(atmoEye.xyz - worldPos);
+  vec3 hv = normalize(view + atmoSun.xyz);
+  float gloss = pow(max(dot(n, hv), 0.0), 60.0) * film * atmoSun.w * (0.5 + 0.5 * streak) * (1.0 - 0.7 * smoothstep(35.0, 50.0, slope));
+  color += atmoSunColor.rgb * gloss * 0.6;
+  vec3 waterLight = atmoAmbient.rgb * atmoSunColor.w * 2.5 + atmoSunColor.rgb * atmoSun.w * 0.9;
+  vec3 white = vec3(0.92, 0.95, 1.0) * waterLight;
+  // Streams: bright threads of water where the drainage gathers on the slopes (the cliffs
+  // themselves carry the ropes of the waterfall below instead).
+  float steepRock = smoothstep(35.0, 50.0, latticeSlope);
+  float thread = smoothstep(0.45, 0.7, flow) * steep * (1.0 - steepRock) * running * smoothstep(0.5, 0.8, streak);
+  color = mix(color, vec3(0.75, 0.82, 0.9) * waterLight, thread * 0.7);
+  // Plunge pool: the cascade lands on the gentle ground below (a drop recorded on a texel
+  // that is not itself falling) and boils there: churning white foam spreading outward.
+  float pool = running * (1.0 - steepRock) * smoothstep(0.6, 0.9, r.w) * smoothstep(0.3, 0.6, flow);
+  if (pool > 0.001) {
+    float boil = terrainNoise(worldPos.xz * 0.7 + vec2(time * 1.1, -time * 0.8)).x * 0.6 +
+                 terrainNoise(worldPos.xz * 1.8 + vec2(-time * 1.7, time * 2.3)).x * 0.4;
+    float foamHere = smoothstep(0.3, 0.6, boil + 0.25 * smoothstep(0.85, 1.0, r.w));
+    color = mix(color, white, pool * foamHere * 0.85);
+  }
+  // Waterfalls: a stream meeting a cliff shoots over the edge. The water is not one sheet:
+  // the crags of the cliff (the same ridged field that displaces the rock) split it into
+  // ropes that run down the creases and swing round the crests, and the ropes keep dividing
+  // as the fall gets longer. The water accelerates as it falls (sqrt(2 g h), braked by the
+  // rock), so its texture stretches into long streaks and it turns whiter with entrained
+  // air; where a crest of rock protrudes into the fall the water strikes it and bursts.
+  float pour = smoothstep(0.1, 0.5, fall) * running;
+  if (pour > 0.001) {
+    float height = smoothstep(0.0, 120.0, drop);
+    float fallSpeed = clamp(sqrt(19.62 * drop), 2.5, 18.0);
+    vec3 crag = ridgedFbm(worldPos.xz * kCragFrequency);
+    vec3 fineCrag = ridgedFbm(worldPos.xz * 0.21 + vec2(2.0, 8.0));
+    float crest = crag.x * 0.7 + fineCrag.x * 0.3;       // 1 on a protruding rock, 0 in a crease
+    // The crests push the ropes sideways: the across coordinate is warped by the lateral
+    // crag gradient, and the ropes split finer lower down.
+    float deflect = (crag.x - 0.5) * 3.0 + (fineCrag.x - 0.5) * 1.2;
+    // (Blending two fixed frequencies rather than scaling one: a frequency that varied with
+    // the interpolated drop would sweep the noise phase into rings round every texel.)
+    // The ropes wander down the face (a slow meander plus the surge of the flow) and fray
+    // into strands at their edges.
+    float rope = waterfallRope(across + deflect, along, elevation, height, time);
+    float strands = terrainNoise(vec2((across + deflect) * 0.9, elevation * 0.08 + time * 2.0)).x;
+    float core = smoothstep(0.47, 0.58, rope + (strands - 0.5) * 0.26);   // a rope has a crisp, frayed edge: bare rock between
+    float inCrease = 0.55 + 0.45 * smoothstep(0.7, 0.3, crest);
+    float ribbon = max(core * inCrease, smoothstep(0.74, 0.9, rope)); // the strongest ropes cross the crests anyway
+    // The cliff's own edge softens the lattice: a texel's pour fades in over noise, not a line.
+    float ropes = pour * ribbon * smoothstep(0.03, 0.35, fall + (strands - 0.5) * 0.25);
+    // Texture: streaks scroll down the fall at its speed and stretch with it; lower down
+    // the water is whiter (aerated) and more fragmented.
+    float speedMix = smoothstep(2.5, 18.0, fallSpeed);
+    float slowStreak = terrainNoise(vec2((across + deflect) * 0.6, (elevation + time * 4.0) * 0.2)).x * 0.6 +
+                       terrainNoise(vec2((across + deflect) * 1.4, (elevation + time * 4.0) * 0.5 + 7.0)).x * 0.4;
+    float fastStreak = terrainNoise(vec2((across + deflect) * 0.6, (elevation + time * 16.0) * 0.035)).x * 0.6 +
+                       terrainNoise(vec2((across + deflect) * 1.4, (elevation + time * 16.0) * 0.09 + 7.0)).x * 0.4;
+    float foam = mix(slowStreak, fastStreak, speedMix);
+    float aerated = 0.35 - 0.2 * height;
+    float streaks = smoothstep(aerated, aerated + 0.4, foam);
+    // The rope covers the rock (its core is opaque water, not a tint over the facets); the
+    // streaks and strands shade the water itself: bright foam over darker glassy water.
+    float cover = ropes * (0.85 + 0.15 * streaks);
+    vec3 waterColor = white * (0.72 + 0.28 * streaks) * (0.85 + 0.15 * strands);
+    // Impact on a protruding crest: the rope bursts into a churning white splash.
+    float hit = smoothstep(0.62, 0.85, crest) * pour * smoothstep(0.25, 0.6, rope) * smoothstep(4.0, 20.0, drop);
+    float burst = terrainNoise(vec2(across * 2.5 + time * 3.0, elevation * 0.5 - time * 6.0)).x;
+    hit *= 0.55 + 0.45 * burst;
+    color = mix(color, waterColor, clamp(cover, 0.0, 1.0));
+    color = mix(color, white, clamp(hit * 0.9, 0.0, 1.0));
+    // Between the ropes the rock is wet and glossy, with a thin film of mist.
+    color *= 1.0 - pour * 0.12 * (1.0 - ribbon);
+    vec2 driftXZ = atmoWind.xy * (time * 0.3);
+    float mist = pour * (0.2 + 0.6 * height) * (0.35 + 0.65 * terrainNoise(worldPos.xz * 0.5 + driftXZ + vec2(0.0, time * 0.5)).x);
+    vec3 viewDir = -view;
+    float glint = pow(max(dot(viewDir, atmoSun.xyz), 0.0), 6.0) * atmoSun.w;
+    vec3 mistColor = vec3(0.85, 0.9, 1.0) * (atmoAmbient.rgb * atmoSunColor.w * 2.0 + atmoSunColor.rgb * atmoSun.w * (0.5 + 1.5 * glint));
+    mistColor += bowWeight(viewDir, atmoSun.xyz) * atmoSun.w * 0.6;
+    color = mix(color, mistColor, mist * 0.25);
+  }
+  return color;
+}
 )GLSL";
 
 constexpr char kTerrainStyleGlsl[] = R"GLSL(
@@ -248,27 +705,7 @@ vec3 floorBaseColor(vec4 w) {
   return kFloorSand * w.x + kFloorVegetation * w.y + kFloorMud * w.z + kFloorStones * w.w;
 }
 
-vec3 terrainBaseColor(vec3 unitNormal, float elevation, vec3 surface) {
-  TerrainMaterial m = terrainMaterial(unitNormal, elevation, surface);
-  vec3 albedo = terrainCompose(m, m.ground, m.canopy, m.stone, kSnow, kIce, m.trees, floorBaseColor(m.floor));
-  float diffuse = max(dot(unitNormal, sunLight.xyz), 0.0);
-  return albedo * (sunLight.w + (1.0 - sunLight.w) * diffuse);
-}
 
-// Ridged noise: sharp crests at one, creases at zero, with analytic gradient.
-vec3 ridgedNoise(vec2 p) {
-  vec3 n = terrainNoise(p);
-  float s = 2.0 * n.x - 1.0;
-  float v = 1.0 - abs(s);
-  vec2 g = -sign(s) * 2.0 * n.yz;
-  return vec3(v * v, 2.0 * v * g);
-}
-vec3 ridgedFbm(vec2 p) { // three octaves; x value in 0..1, yz gradient per unit of p
-  vec3 a = ridgedNoise(p), b = ridgedNoise(p * 2.13 + vec2(5.2, 1.3)), c = ridgedNoise(p * 4.41 + vec2(9.1, 7.7));
-  return vec3(a.x * 0.55 + b.x * 0.30 + c.x * 0.15,
-              a.yz * 0.55 + b.yz * 2.13 * 0.30 + c.yz * 4.41 * 0.15);
-}
-const float kCragFrequency = 0.045; // crags about 22 m across, with two finer octaves
 // Visualization-only vertical relief on rock: up to detail.y meters of ridged
 // crags. None at detail zero, damped under snow and ice, none below the water
 // line or within two relief heights above it (where it could open gaps under
@@ -284,6 +721,12 @@ float rockRelief(vec3 unitNormal, float elevation, vec3 surface, vec2 p) {
 
 // Fragment-only detail: needs screen-space derivatives.
 constexpr char kTerrainDetailGlsl[] = R"GLSL(
+vec3 terrainBaseColor(vec3 unitNormal, float elevation, vec3 surface, vec3 worldPosition) {
+  TerrainMaterial m = terrainMaterial(unitNormal, elevation, surface);
+  vec3 albedo = terrainCompose(m, m.ground, m.canopy, m.stone, kSnow, kIce, m.trees, floorBaseColor(m.floor));
+  float diffuse = max(dot(unitNormal, atmosphereLightDirection(sunLight.xyz)), 0.0);
+  return atmosphereLit(albedo, unitNormal, diffuse, sunLight.xyz, sunLight.w, vec3(1.0), worldPosition);
+}
 
 // Lake/sea floor detail: seeded patches break the zoned mix apart; sand shows
 // grain and ripple marks, plants grow in clumps over sand, mud is smooth with
@@ -323,7 +766,7 @@ vec3 floorDetailedColor(TerrainMaterial m, vec2 p, float pixelMeters, float stre
 
 vec3 terrainDetailedColor(vec3 unitNormal, vec3 worldPosition, float elevation, vec3 surface) {
   float strength = detail.x;
-  if (strength <= 0.0) return terrainBaseColor(unitNormal, elevation, surface);
+  if (strength <= 0.0) return terrainBaseColor(unitNormal, elevation, surface, worldPosition);
   TerrainMaterial m = terrainMaterial(unitNormal, elevation, surface);
   vec2 p = worldPosition.xz;
   float pixelMeters = max(length(fwidth(p)), 1e-4);
@@ -391,10 +834,10 @@ vec3 terrainDetailedColor(vec3 unitNormal, vec3 worldPosition, float elevation, 
   if (dot(faceNormal, unitNormal) < 0.0) faceNormal = -faceNormal;
   float facet = m.rock * (1.0 - snowy) * (1.0 - m.submerged) * strength * 0.85;
   vec3 n = normalize(mix(unitNormal, faceNormal, facet) + bump);
-  float diffuse = max(dot(n, sunLight.xyz), 0.0);
+  float diffuse = max(dot(n, atmosphereLightDirection(sunLight.xyz)), 0.0);
   // Snow and ice scatter sky light: their shadowed side turns slightly blue.
   vec3 ambientTint = mix(vec3(1.0), vec3(0.74, 0.82, 0.98), snowy * strength);
-  return albedo * (sunLight.w * ambientTint + (1.0 - sunLight.w) * diffuse);
+  return atmosphereLit(albedo, n, diffuse, sunLight.xyz, sunLight.w, ambientTint, worldPosition);
 }
 
 vec3 applyTerrainContours(vec3 color, float elevation) {
@@ -441,17 +884,23 @@ in float baseElevation;
 in vec3 surfaceAttributes;
 in float fireState;
 out vec4 fragColor;
-)GLSL") + kNoiseGlsl + kTerrainStyleGlsl + kTerrainDetailGlsl + R"GLSL(
+)GLSL") + kNoiseGlsl + kAtmosphereGlsl + kRunoffGlsl + kTerrainStyleGlsl + kTerrainDetailGlsl + R"GLSL(
 void main() {
+  atmosphereJitter = atmosphereDither(gl_FragCoord.xy);
   float elevation = baseElevation;
-  vec3 base = terrainDetailedColor(normalize(surfaceNormal), worldPosition, elevation, surfaceAttributes);
+  vec3 n = normalize(surfaceNormal);
+  vec3 base = terrainDetailedColor(n, worldPosition, elevation, surfaceAttributes);
   base = applyTerrainContours(base, elevation);
+  float submerged = terrainMaterial(n, elevation, surfaceAttributes).submerged;
+  base = applySnowCover(base, worldPosition, n, elevation);
+  base = applyRunoff(base, worldPosition, n, elevation, submerged);
+  base = applyPuddles(base, worldPosition, n, submerged);
   if (fireState > 0.75) {
     base = vec3(1.0, 0.18, 0.015);  // active fire
   } else if (fireState > 0.25) {
     base = vec3(0.13, 0.115, 0.12); // burned terrain
   }
-  fragColor = vec4(base, 1.0);
+  fragColor = vec4(applyAtmosphere(base, worldPosition), 1.0);
 }
 )GLSL";
 
@@ -495,15 +944,21 @@ layout(std140, binding = 0) uniform Camera {
 layout(std430, binding = 1) readonly buffer FireState { uint fireStates[]; };
 layout(std140,binding=10) uniform LayerVisibility {vec4 layerFlags;};
 out vec4 fragColor;
-)GLSL") + kNoiseGlsl + kTerrainStyleGlsl + kTerrainDetailGlsl + R"GLSL(
+)GLSL") + kNoiseGlsl + kAtmosphereGlsl + kRunoffGlsl + kTerrainStyleGlsl + kTerrainDetailGlsl + R"GLSL(
 void main() {
+  atmosphereJitter = atmosphereDither(gl_FragCoord.xy);
   float elevation = baseElevation;
-  vec3 ground = terrainDetailedColor(normalize(surfaceNormal), worldPosition, elevation, surfaceAttributes);
+  vec3 n = normalize(surfaceNormal);
+  vec3 ground = terrainDetailedColor(n, worldPosition, elevation, surfaceAttributes);
   ground = applyTerrainContours(ground, elevation);
+  float submerged = terrainMaterial(n, elevation, surfaceAttributes).submerged;
+  ground = applySnowCover(ground, worldPosition, n, elevation);
+  ground = applyRunoff(ground, worldPosition, n, elevation, submerged);
+  ground = applyPuddles(ground, worldPosition, n, submerged);
 
   if(layerFlags.y<0.5) {
     if(layerFlags.x<0.5)discard;
-    fragColor=vec4(ground,1.0);return;
+    fragColor=vec4(applyAtmosphere(ground, worldPosition),1.0);return;
   }
   // Each cell contributes a rounded radial footprint, not a square block.
   // Look up neighboring cell centers so adjacent active fires merge smoothly.
@@ -553,7 +1008,7 @@ void main() {
   vec3 fireColor = mix(vec3(0.79, 0.075, 0.01),
                        vec3(1.0, 0.46, 0.025), clamp(flame, 0.0, 1.0));
   ground = mix(ground, fireColor * pulse, flame);
-  fragColor = vec4(ground, 1.0);
+  fragColor = vec4(applyAtmosphere(ground, worldPosition), 1.0);
 }
 )GLSL";
 
@@ -619,7 +1074,7 @@ in vec3 surfacePosition;
 in float bedHeight;
 in vec2 bedGradient;
 out vec4 fragColor;
-)GLSL") + kNoiseGlsl + kWaterStyleGlsl + R"GLSL(
+)GLSL") + kNoiseGlsl + kAtmosphereGlsl + kWaterStyleGlsl + R"GLSL(
 // One directional wave: shoals (grows) and shortens over shallow ground, is
 // capped by the depth it travels in, and accumulates height and slope.
 void addWave(inout vec3 acc, vec2 p, vec2 dir, float amplitude, float wavelength, float speed,
@@ -640,7 +1095,32 @@ vec2 rotate(vec2 v, float radians) {
   float c = cos(radians), s = sin(radians);
   return vec2(c * v.x - s * v.y, s * v.x + c * v.y);
 }
+// Normal perturbation of expanding impact rings (see main): x and z slopes.
+vec3 rainRings(vec2 p, float t, float rate, float dropMm) {
+  vec3 bump = vec3(0.0);
+  for (int layer = 0; layer < 2; ++layer) {
+    float cell = layer == 0 ? 0.35 : 0.8;
+    vec2 g = floor(p / cell);
+    for (int dy = -1; dy <= 1; ++dy) for (int dx = -1; dx <= 1; ++dx) {
+      vec2 c = g + vec2(dx, dy);
+      float h1 = terrainHash(c + vec2(3.7 * float(layer), 1.1)), h2 = terrainHash(c + vec2(9.2, 5.3 + float(layer)));
+      if (h1 > rate * 0.9 + 0.1) continue;                   // fewer active impact points in light rain
+      vec2 center = (c + vec2(h2, terrainHash(c + vec2(2.4, 8.8)))) * cell;
+      float period = 0.4 + 0.6 * h1;
+      float age = fract(t / period + h2) * period;
+      float radius = age * 0.35;
+      float dist = length(p - center);
+      float wavelength = 0.04 + 0.012 * dropMm;
+      float envelope = exp(-age * 3.5) * (1.0 - smoothstep(0.0, 0.04 + 0.025 * dropMm, abs(dist - radius)));
+      float slope = cos((dist - radius) * 6.2831853 / wavelength) * envelope * (0.08 + 0.04 * dropMm);
+      vec2 radial = dist > 1e-4 ? (p - center) / dist : vec2(0.0);
+      bump += vec3(-radial.x, 0.0, -radial.y) * slope;
+    }
+  }
+  return bump;
+}
 void main() {
+  atmosphereJitter = atmosphereDither(gl_FragCoord.xy);
   float depth = surface.x - bedHeight;
   if (depth <= 0.001) discard;            // land corners of shoreline triangles
   vec2 p = surfacePosition.xz;
@@ -665,6 +1145,14 @@ void main() {
   vec3 ripple = terrainNoise(p * 0.45 + dir * time * 0.8) + terrainNoise(p * 1.1 - dir.yx * time * 0.5);
   float rippleFade = terrainDetailFade(pixelMeters, 1.1) * smoothstep(0.0, 0.2, height) * chop;
   vec3 n = normalize(vec3(-acc.y - ripple.y * 0.12 * rippleFade, 1.0, -acc.z - ripple.z * 0.12 * rippleFade));
+  float rain = atmosphereEnabled() && atmoWeather.y < 0.5 ? atmoWeather.x : 0.0;
+  if (rain > 0.0) {
+    // Raindrops hit the surface and send out rings: a jittered grid of impact points (two
+    // scales), each repeating with its own period; a ring spreads at 0.5 m/s and its
+    // capillary crests decay within a second. Bigger drops make bigger rings.
+    vec3 rings = rainRings(p, atmoWind.w, rain, atmoRain.x) * terrainDetailFade(pixelMeters, 6.0);
+    n = normalize(n + rings);
+  }
 
   // Foam: surging shoreline band, splashes on rocky (steep) shores, and the
   // crests of breaking waves. Flat water (zero height) has no foam at all.
@@ -682,21 +1170,53 @@ void main() {
   float foam = clamp((shoreFoam * 0.85 + splash + breakFoam) * foamStrength, 0.0, 1.0);
 
   // Color: depth absorption, Fresnel sky reflection, sun glitter, opacity.
+  // With the atmosphere active the reflected sky, the light and the haze come
+  // from the weather; otherwise the style's fixed sky and sun.
   vec3 view = normalize(eye.xyz - surfacePosition);
   float cosTheta = max(dot(n, view), 0.0);
   float fresnel = 0.02 + 0.98 * pow(1.0 - cosTheta, 5.0);
   vec3 body = mix(shallow.rgb, deep.rgb, 1.0 - exp(-depth / shallow.w));
   vec3 r = reflect(-view, n);
-  vec3 skyColor = mix(horizon.rgb, zenith.rgb, clamp(r.y, 0.0, 1.0));
-  float specular = pow(max(dot(r, sun.xyz), 0.0), horizon.w) * sun.w;
-  float lit = 0.75 + 0.25 * max(dot(n, sun.xyz), 0.0);
+  vec3 lightDir = atmosphereLightDirection(sun.xyz);
+  float diffuse = max(dot(n, lightDir), 0.0);
+  vec3 skyColor, lit, specularColor, foamLight;
+  if (atmosphereEnabled()) {
+    vec3 reflected = atmosphereSkyColor(r);
+    vec4 clouds = cloudAlong(surfacePosition, r, 1e9);
+    skyColor = reflected * clouds.a + clouds.rgb;
+    float shadow = cloudShadow(surfacePosition);
+    vec3 ambient = atmoAmbient.rgb * atmoSunColor.w, direct = atmoSunColor.rgb * atmoSun.w * shadow;
+    lit = ambient * 2.4 + direct * (0.3 + 0.7 * diffuse) + vec3(0.55, 0.62, 0.80) * (0.6 * atmoHorizon.w);
+    specularColor = direct * (1.0 / 0.72);
+    foamLight = ambient * 2.4 + direct * (0.4 + 0.6 * diffuse);
+  } else {
+    skyColor = mix(horizon.rgb, zenith.rgb, clamp(r.y, 0.0, 1.0));
+    lit = vec3(0.75 + 0.25 * diffuse);
+    specularColor = vec3(1.0);
+    foamLight = vec3(0.75 + 0.25 * diffuse);
+  }
+  // Sun glitter: a Beckmann microfacet lobe whose roughness grows with the waves, the chop
+  // and the rain, so a calm lake shows a tight sun image and a rain-dimpled or rough one a
+  // broad, softer glare (the energy spreads: peak height falls as the lobe widens).
+  float specular;
+  if (atmosphereEnabled()) {
+    float m = 0.03 + 0.07 * clamp(height / 5.0, 0.0, 1.0) + 0.05 * chop + 0.12 * rain;
+    vec3 hv = normalize(view + lightDir);
+    float cosA = max(dot(n, hv), 1e-3);
+    float tan2 = (1.0 - cosA * cosA) / (cosA * cosA);
+    specular = exp(-tan2 / (m * m)) / max(cosA * cosA * cosA * cosA, 1e-3) * (0.0025 / (m * m)) * sun.w;
+    // Rain scatters the reflected sky into a dull sheen.
+    skyColor = mix(skyColor, mix(atmoHorizon.rgb, atmoZenith.rgb, 0.5), 0.4 * rain);
+  } else {
+    specular = pow(max(dot(r, lightDir), 0.0), horizon.w) * sun.w;
+  }
   float reflection = fresnel * zenith.w;
-  vec3 color = mix(body * lit, skyColor, reflection) + vec3(specular);
+  vec3 color = mix(body * lit, skyColor, reflection) + specularColor * specular;
   float alpha = max(1.0 - exp(-depth / deep.w), reflection);
-  vec3 foamColor = vec3(0.93, 0.95, 0.96) * (0.75 + 0.25 * max(dot(n, sun.xyz), 0.0));
+  vec3 foamColor = vec3(0.93, 0.95, 0.96) * foamLight;
   color = mix(color, foamColor, foam);
   alpha = mix(alpha, 1.0, foam);
-  fragColor = vec4(color, alpha);
+  fragColor = vec4(applyAtmosphere(color, surfacePosition), alpha);
 }
 )GLSL";
 
@@ -723,6 +1243,7 @@ struct PlantInstance { vec4 positionScale; vec4 motion; vec4 tint; }; // motion:
 layout(std430, binding = 4) readonly buffer InstanceData { PlantInstance plants[]; };
 layout(std430, binding = 5) readonly buffer PlantFireState { uint plantFireStates[]; };
 out vec3 worldNormal;
+out vec3 worldPosition;
 out vec3 plantColor;
 out float plantFlex;
 out float plantBurn;   // 0 unburned, 1 burned (charred), 2 burning (glowing)
@@ -766,9 +1287,14 @@ void main() {
   vec3 local = rotation * (POSITION * scale);
   // Wind: the tip leads, the base stays anchored; gusts vary along the wind direction.
   float gust = sin(wind.w * (0.6 + 0.25 * wind.z) + plant.motion.y + dot(plant.positionScale.xz, wind.xy) * 0.05);
-  float sway = params.x * (0.02 + 0.012 * wind.z) * scale * FLEX * FLEX * (gust + 0.35 * sin(wind.w * 2.3 + plant.motion.y * 1.7));
+  // Sway grows faster than the wind (drag goes with its square) and a gale adds a fast flutter.
+  float strength = 0.02 + 0.012 * wind.z + 0.0007 * wind.z * wind.z;
+  float flutter = smoothstep(8.0, 20.0, wind.z) * 0.35 * sin(wind.w * 6.5 + plant.motion.y * 3.1 + FLEX * 4.0);
+  float sway = params.x * strength * scale * FLEX * FLEX * (gust + 0.35 * sin(wind.w * 2.3 + plant.motion.y * 1.7) + flutter);
   vec3 offset = vec3(wind.x, 0.0, wind.y) * sway + vec3(-wind.y, 0.0, wind.x) * sway * 0.3;
   offset += vec3(wind.x, 0.0, wind.y) * plant.motion.z * 0.08 * scale * FLEX;  // permanent lean on steep ground
+  // Storm bending: the whole crown leans downwind, up to a quarter of the height in a gale.
+  offset += vec3(wind.x, 0.0, wind.y) * (0.012 * max(wind.z - 6.0, 0.0)) * scale * FLEX * FLEX;
   vec3 world = plant.positionScale.xyz + local + offset;
   worldNormal = rotation * NORMAL;
   vec3 living = COLOR * mix(vec3(1.0), plant.tint.rgb, TINT_WEIGHT);
@@ -784,12 +1310,14 @@ void main() {
     plantColor = living;
   }
   plantFlex = FLEX;
+  worldPosition = world;
   gl_Position = viewProjection * vec4(world, 1.0);
 }
 )GLSL";
 
 const std::string kVegetationFragmentShader = std::string(R"GLSL(#version 430 core
 in vec3 worldNormal;
+in vec3 worldPosition;
 in vec3 plantColor;
 in float plantFlex;
 in float plantBurn;
@@ -802,16 +1330,18 @@ layout(std140, binding = 13) uniform VegetationStyle {
   vec4 fireOrigin;
 };
 out vec4 fragColor;
+)GLSL") + kNoiseGlsl + kAtmosphereGlsl + R"GLSL(
 void main() {
+  atmosphereJitter = atmosphereDither(gl_FragCoord.xy);
   vec3 n = normalize(worldNormal);
   // Two-sided, wrapped lighting: thin blades and cone skins never go black.
-  float diffuse = 0.35 + 0.65 * abs(dot(n, light.xyz));
+  float diffuse = 0.35 + 0.65 * abs(dot(n, atmosphereLightDirection(light.xyz)));
   float occlusion = 0.72 + 0.28 * plantFlex;              // darker toward the base
-  vec3 color = plantColor * (light.w + (1.0 - light.w) * diffuse) * occlusion;
+  vec3 color = atmosphereLit(plantColor, n, diffuse, light.xyz, light.w, vec3(1.0), worldPosition) * occlusion;
   if (plantBurn > 1.5) color = max(color, plantColor * 0.8); // embers are self-lit
-  fragColor = vec4(color, 1.0);
+  fragColor = vec4(applyAtmosphere(color, worldPosition), 1.0);
 }
-)GLSL");
+)GLSL";
 
 
 // Flames and smoke plumes: camera-facing (cylindrical) billboards with
@@ -832,6 +1362,7 @@ out vec2 uv;
 out float intensity;
 out float kind;
 out float seed;
+out vec3 worldPosition;
 void main() {
   FireRecord item = records[gl_InstanceID];
   vec3 base = item.positionSize.xyz;
@@ -843,16 +1374,20 @@ void main() {
   float width = kind < 0.5 ? height * 0.55 : height * (0.35 + 0.55 * TEXCOORD.y);
   vec3 offset = right * POSITION.x * width;
   if (kind < 0.5) {
-    // Flames flicker: the tip sways and the height pulses.
+    // Flames flicker: the tip sways and the height pulses; the fire weather (params.w)
+    // lifts them in hot dry air and beats them down in rain.
     float flicker = 0.85 + 0.15 * sin(time * 7.0 + item.motion.x * 3.0) * (0.5 + 0.5 * sin(time * 11.0 + seed));
     float sway = sin(time * 9.0 + item.motion.x) * 0.18 * height * TEXCOORD.y * TEXCOORD.y;
     offset += right * sway + vec3(wind.x, 0.0, wind.y) * (0.03 * wind.z * height * TEXCOORD.y);
-    height *= flicker;
+    height *= flicker * params.w;
   } else {
+    // Smoke: a subdued fire smoulders lower; wet fuel steams more (see the fragment stage).
+    height *= 0.6 + 0.4 * params.w;
     // Smoke leans downwind as it rises.
     offset += vec3(wind.x, 0.0, wind.y) * (0.02 + 0.06 * wind.z) * height * TEXCOORD.y * TEXCOORD.y;
   }
   vec3 world = base + offset + vec3(0.0, POSITION.y * height, 0.0);
+  worldPosition = world;
   gl_Position = viewProjection * vec4(world, 1.0);
 }
 )GLSL");
@@ -862,6 +1397,7 @@ in vec2 uv;
 in float intensity;
 in float kind;
 in float seed;
+in vec3 worldPosition;
 layout(std140, binding = 14) uniform FireStyle {
   vec4 wind;
   vec4 eye;
@@ -869,11 +1405,12 @@ layout(std140, binding = 14) uniform FireStyle {
   vec4 light;
 };
 out vec4 fragColor;
-)GLSL") + kNoiseGlsl + R"GLSL(
+)GLSL") + kNoiseGlsl + kAtmosphereGlsl + R"GLSL(
 float fbm(vec2 p) {
   return 0.55 * terrainNoise(p).x + 0.30 * terrainNoise(p * 2.1 + vec2(3.1, 7.7)).x + 0.15 * terrainNoise(p * 4.3 + vec2(9.2, 1.3)).x;
 }
 void main() {
+  atmosphereJitter = atmosphereDither(gl_FragCoord.xy);
   float time = wind.w;
   if (kind < 0.5) {
     // Flame: a tongue narrowing toward the tip, eroded by rising noise.
@@ -888,7 +1425,7 @@ void main() {
     vec3 core = vec3(1.0, 0.96, 0.70), mid = vec3(1.0, 0.48, 0.06), edge = vec3(0.78, 0.10, 0.01);
     vec3 color = mix(core, mid, smoothstep(0.0, 0.45, heat));
     color = mix(color, edge, smoothstep(0.45, 1.0, heat));
-    fragColor = vec4(color, alpha);
+    fragColor = vec4(applyAtmosphere(color, worldPosition), alpha);
   } else {
     // Smoke plume: widening column of drifting grey, thinning with height.
     float halfWidth = 0.5 * (0.2 + 0.8 * uv.y);
@@ -897,13 +1434,413 @@ void main() {
     float n = fbm(vec2(uv.x * 2.5 + seed, uv.y * 3.0 - time * 0.18 - seed * 0.3));
     float density = smoothstep(0.28, 0.62, n) * column * (1.0 - uv.y) * smoothstep(0.0, 0.08, uv.y);
     float scale = params.x * (kind > 1.5 ? 0.35 : 1.0) * intensity;
-    float alpha = density * 0.55 * scale;
+    // Rain on a fire makes steam: denser, whiter plumes.
+    float steam = atmosphereEnabled() ? atmoWeather.x : 0.0;
+    float alpha = density * 0.55 * scale * (1.0 + 0.7 * steam);
     if (alpha < 0.015) discard;
-    float lit = 0.55 + 0.45 * max(light.y, 0.0) * (0.5 + 0.5 * n);
-    vec3 smoke = vec3(0.36, 0.34, 0.33) * lit;
+    vec3 lit = vec3(0.55 + 0.45 * max(light.y, 0.0) * (0.5 + 0.5 * n));
+    if (atmosphereEnabled())
+      lit = atmoAmbient.rgb * atmoSunColor.w * 2.0 + atmoSunColor.rgb * atmoSun.w * (0.8 * (0.5 + 0.5 * n)) +
+            vec3(0.55, 0.62, 0.80) * (0.6 * atmoHorizon.w);
+    vec3 smoke = mix(vec3(0.36, 0.34, 0.33), vec3(0.72, 0.72, 0.74), steam) * lit;
     if (kind < 1.5) smoke = mix(vec3(0.55, 0.28, 0.12), smoke, smoothstep(0.0, 0.2, uv.y)); // lit from the fire below
-    fragColor = vec4(smoke, alpha);
+    fragColor = vec4(applyAtmosphere(smoke, worldPosition), alpha);
   }
+}
+)GLSL";
+
+
+// Sky dome: one fullscreen triangle pinned to the far depth, so it only fills
+// pixels no geometry covered. The fragment stage reconstructs the view ray
+// from the camera basis, shades the clear sky (gradient, sun glow and disc,
+// stars, moon, lightning) and ray-marches the cloud layer over it.
+constexpr char kSkyVertexShader[] = R"GLSL(#version 430 core
+layout(location = 0) in vec2 POSITION;
+out vec2 ndc;
+void main() { ndc = POSITION; gl_Position = vec4(POSITION, 0.9999, 1.0); }
+)GLSL";
+const std::string kSkyFragmentShader = std::string(R"GLSL(#version 430 core
+in vec2 ndc;
+out vec4 fragColor;
+)GLSL") + kNoiseGlsl + kAtmosphereGlsl + R"GLSL(
+// Sparse procedural stars on an azimuth/altitude lattice, dimmed toward the horizon.
+vec3 starField(vec3 dir) {
+  if (dir.y <= 0.0) return vec3(0.0);
+  vec2 uv = vec2(atan(dir.x, dir.z), asin(clamp(dir.y, -1.0, 1.0))) * 70.0;
+  vec2 cell = floor(uv);
+  float h = terrainHash(cell + vec2(31.0, 17.0));
+  if (h < 0.965) return vec3(0.0);
+  vec2 center = cell + 0.5 + (vec2(terrainHash(cell + vec2(3.0, 9.0)), terrainHash(cell + vec2(7.0, 1.0))) - 0.5) * 0.7;
+  float d = length(uv - center);
+  float brightness = (h - 0.965) / 0.035;
+  float star = (1.0 - smoothstep(0.0, 0.2 + 0.22 * brightness, d)) * (0.55 + 0.6 * brightness);
+  vec3 tint = mix(vec3(0.85, 0.9, 1.0), vec3(1.0, 0.95, 0.85), terrainHash(cell + vec2(5.0, 5.0)));
+  return tint * star * smoothstep(0.0, 0.15, dir.y);
+}
+// Procedural lunar surface: maria as dark noise patches, craters on two scales as bowls with
+// bright sun-facing rims. `uv` is the position on the apparent disc (the same face always
+// faces the Earth), `sunOnDisc` the projected sun direction.
+float moonSurface(vec2 uv, vec2 sunOnDisc, float lit, out float albedo) {
+  float maria = 0.55 * terrainNoise(uv * 2.6 + vec2(3.1, 7.7)).x + 0.45 * terrainNoise(uv * 5.2 + vec2(1.3, 9.1)).x;
+  albedo = mix(0.92, 0.52, smoothstep(0.48, 0.62, maria));
+  float shade = lit;
+  for (int layer = 0; layer < 2; ++layer) {
+    float cells = layer == 0 ? 7.0 : 16.0;
+    vec2 g = floor(uv * cells);
+    for (int dy = -1; dy <= 1; ++dy) for (int dx = -1; dx <= 1; ++dx) {
+      vec2 c = g + vec2(dx, dy);
+      float h = terrainHash(c + vec2(11.0 * float(layer), 5.0));
+      if (h < 0.55) continue;
+      vec2 center = (c + vec2(terrainHash(c + vec2(2.0, 3.0)), terrainHash(c + vec2(8.0, 6.0)))) / cells;
+      float radius = (0.18 + 0.28 * terrainHash(c + vec2(4.0, 1.0))) / cells;
+      vec2 toPoint = uv - center;
+      float r = length(toPoint) / radius;
+      if (r > 1.25) continue;
+      vec2 radial = toPoint / max(length(toPoint), 1e-5);
+      float facing = dot(radial, sunOnDisc);
+      float bowl = 1.0 - smoothstep(0.55, 0.95, r);              // floor in shadow on the sun-facing wall
+      float rim = smoothstep(0.8, 1.0, r) * (1.0 - smoothstep(1.0, 1.25, r));
+      shade *= 1.0 - 0.35 * bowl * max(facing, 0.0) - 0.12 * bowl;
+      shade += lit * rim * (0.25 * max(-facing, 0.0) - 0.12 * max(facing, 0.0));
+      albedo *= 1.0 - 0.1 * bowl;
+    }
+  }
+  return max(shade, 0.0);
+}
+vec3 moonDisc(vec3 dir, vec3 sky) {
+  vec3 moonDir = atmoMoon.xyz;
+  float cosDisc = dot(dir, moonDir);
+  float radius = radians(atmoLife.z) * 0.5;
+  float angle = acos(clamp(cosDisc, -1.0, 1.0));
+  float visible = smoothstep(-0.5, 2.0, degrees(asin(clamp(moonDir.y, -1.0, 1.0))));
+  if (visible <= 0.0) return vec3(0.0);
+  // Halo around the lit moon at night.
+  float halo = exp(-angle / (radius * 4.0)) * 0.12 * atmoMoon.w * (1.0 - atmoAmbient.w);
+  if (angle > radius * 1.02) return vec3(0.8, 0.85, 1.0) * halo * visible;
+  vec3 right = normalize(cross(moonDir, vec3(0.0, 1.0, 0.0)));
+  vec3 up = cross(right, moonDir);
+  vec3 onDisc = normalize(dir - moonDir * cosDisc);
+  float rr = min(angle / radius, 1.0);
+  vec2 uv = vec2(dot(onDisc, right), dot(onDisc, up)) * rr;
+  vec3 normal = normalize(right * uv.x + up * uv.y - moonDir * sqrt(max(1.0 - dot(uv, uv), 0.0)));
+  float lit = max(dot(normal, atmoSunDisc.xyz), 0.0);
+  vec2 sunOnDisc = normalize(vec2(dot(atmoSunDisc.xyz, right), dot(atmoSunDisc.xyz, up)) + vec2(1e-5, 0.0));
+  float albedo;
+  float shade = moonSurface(uv, sunOnDisc, lit, albedo);
+  float earthshine = 0.025 * (1.0 - atmoAmbient.w);
+  vec3 lunar = vec3(0.96, 0.96, 0.92) * albedo * (shade * 1.05 + earthshine);
+  float edge = 1.0 - smoothstep(0.97, 1.0, rr);
+  // By day the pale disc blends with the bright sky; at night the dark side is black.
+  return mix(vec3(0.0), max(lunar - sky, vec3(0.0)) + (sky * 0.9 - sky), edge) * visible;
+}
+void main() {
+  atmosphereJitter = atmosphereDither(gl_FragCoord.xy);
+  vec3 dir = normalize(camForward.xyz + camRight.xyz * (ndc.x * camForward.w) + camUp.xyz * (ndc.y * camRight.w));
+  vec3 sky = atmosphereSkyColor(dir);
+  // Stars, then the moon: a sphere shaded by the sun (so the phase and terminator follow the
+  // ephemeris), with maria and craters on the face that always turns toward us, a faint
+  // earthshine on its night side and a soft halo; the dark part occludes the stars.
+  sky += starField(dir) * atmoWeather.w;
+  sky += moonDisc(dir, sky);
+  // A strike lights the sky around its channel; the flash of the return strokes is brief.
+  if (atmoStrike.w > 0.0) {
+    vec3 toStrike = normalize(atmoStrike.xyz - atmoEye.xyz);
+    float angle = acos(clamp(dot(dir, toStrike), -1.0, 1.0));
+    sky += vec3(0.75, 0.8, 1.0) * (atmoStrike.w * 0.7 * exp(-angle * angle / 0.035));
+  }
+  sky *= alexanderBand(dir);
+  sky += rainbowAt(dir);
+  vec4 clouds = cloudAlong(atmoEye.xyz, dir, 1.0e9);
+  fragColor = vec4(sky * clouds.a + clouds.rgb, 1.0);
+}
+)GLSL";
+
+// Precipitation: the vertex stage derives every streak from its particle
+// index, the time and the wind, wrapped in a world-anchored box around the
+// camera; rain falls fast and leans with the wind, snow drifts and sways.
+// Streaks keep a minimum screen size so distant rain remains visible. Rain
+// exists only below the local cloud base and thins in the rain shadow.
+const std::string kPrecipitationVertexShader = std::string(R"GLSL(#version 430 core
+layout(location = 0) in vec2 CORNER;
+layout(location = 1) in float PARTICLE;
+layout(std140, binding = 0) uniform Camera { mat4 viewProjection; };
+out vec2 uv;
+out float fade;
+out float flakiness;
+out vec3 worldPosition;
+)GLSL") + kNoiseGlsl + kAtmosphereGlsl + R"GLSL(
+void main() {
+  // Phase from the altitude: snow above the freezing level, melting to rain through the
+  // layer below it (sleet in between), judged at the camera's altitude since the box of
+  // drops around it is far smaller than the melting layer.
+  float snowiness = smoothstep(atmoSnow.x - atmoSnow.y, atmoSnow.x, atmoEye.y);
+  vec3 box = mix(vec3(40.0, 26.0, 40.0), vec3(34.0, 22.0, 34.0), snowiness);
+  vec3 h = vec3(terrainHash(vec2(PARTICLE, 1.3)), terrainHash(vec2(PARTICLE * 1.7, 7.1)), terrainHash(vec2(PARTICLE * 0.37, 3.9)));
+  // Three forces: gravity against drag sets the terminal velocity of each drop from its
+  // diameter (Atlas et al.: v = 9.65 - 10.3 exp(-0.6 D), D in mm; drizzle 0.4 mm falls at
+  // 2 m/s, thunderstorm drops of 3 mm at 8 m/s); diameters scatter around the form's mean
+  // (exponential, Marshall-Palmer-like); the wind carries small drops fully and big drops
+  // with a lag. Snowflakes fall slowly, ride the wind and sway.
+  float diameter = clamp(atmoRain.x * (0.45 + 1.1 * pow(-log(max(1.0 - h.x, 1e-3)), 0.7)), 0.15, 6.0);
+  // Flakes fall at about a metre a second and ride the wind fully; a strong wind lofts them
+  // and carries them off sideways. A melting flake speeds up toward the drop's velocity.
+  float rainFall = max(9.65 - 10.3 * exp(-0.6 * diameter), 0.3);
+  float loft = smoothstep(6.0, 15.0, atmoWind.z);
+  float snowFall = (0.8 + 0.5 * h.x) * (1.0 - 0.5 * loft);
+  float fall = mix(rainFall, snowFall, snowiness);
+  float windFollow = mix(1.0 - 0.25 * smoothstep(1.0, 4.0, diameter), 1.0 + 0.3 * loft, snowiness);
+  vec3 velocity = vec3(atmoWind.x, 0.0, atmoWind.y) * atmoWind.z * windFollow + vec3(0.0, -fall, 0.0);
+  velocity.xz += vec2(sin(atmoWind.w * 1.3 + h.y * 6.28), cos(atmoWind.w * 1.1 + h.z * 6.28)) * (0.6 + 0.8 * loft) * snowiness;
+  velocity.y += sin(atmoWind.w * 2.1 + h.z * 6.28) * 0.35 * loft * snowiness;
+  vec3 path = h * box + velocity * atmoWind.w;
+  vec3 rel = path - atmoEye.xyz + box * 0.5;
+  rel -= box * floor(rel / box);
+  vec3 p = atmoEye.xyz - box * 0.5 + rel;
+  // Drops exist inside and below the (locally lifted) cloud, never above its top.
+  vec4 oro = orographicAt(p.xz);
+  float localTop = atmoCloud.y + oro.x * atmoFieldScale.z;
+  float rainHere = clamp(oro.w * 2.0, 0.0, 1.5) * atmoWeather.x;
+  float presence = (p.y < localTop && h.y < rainHere) ? 1.0 : 0.0;
+  vec3 toEye = atmoEye.xyz - p;
+  float dist = max(length(toEye), 0.1);
+  vec3 along = normalize(velocity);
+  vec3 right = normalize(cross(along, toEye / dist) + vec3(1e-4, 0.0, 0.0));
+  // A streak is the distance a drop falls during an exposure of about 1/30 s; its width is
+  // the drop (min one-and-a-half pixels so distant rain stays visible).
+  float len = max(mix(0.033 * length(velocity), 0.10 + 0.08 * h.z, snowiness), dist * mix(0.009, 0.004, snowiness));
+  float width = max(mix(0.0012 * diameter, 0.05 + 0.05 * h.z, snowiness), dist * mix(0.0016, 0.0009, snowiness));
+  vec3 world = p + right * (CORNER.x * width) - along * ((CORNER.y - 0.5) * len);
+  uv = vec2(CORNER.x + 0.5, CORNER.y);  // 0..1 across and along the quad
+  flakiness = snowiness;
+  fade = presence * (1.0 - smoothstep(box.x * 0.32, box.x * 0.5, length(toEye.xz))) * mix(0.55 + 0.18 * diameter, 1.0 - 0.6 * smoothstep(6.0, 20.0, dist), snowiness);
+  worldPosition = world;
+  gl_Position = presence > 0.0 ? viewProjection * vec4(world, 1.0) : vec4(2.0, 2.0, 2.0, 1.0);
+}
+)GLSL";
+const std::string kPrecipitationFragmentShader = std::string(R"GLSL(#version 430 core
+in vec2 uv;
+in float fade;
+in float flakiness;
+in vec3 worldPosition;
+out vec4 fragColor;
+)GLSL") + kNoiseGlsl + kAtmosphereGlsl + R"GLSL(
+void main() {
+  atmosphereJitter = atmosphereDither(gl_FragCoord.xy);
+  float flake = 1.0 - smoothstep(0.3, 0.5, length(uv - 0.5));
+  float streak = (1.0 - smoothstep(0.2, 0.5, abs(uv.x - 0.5))) * (1.0 - 0.6 * abs(uv.y - 0.5) * 2.0);
+  float shape = mix(streak, flake, flakiness);
+  float alpha = shape * fade * mix(0.42, 0.85, flakiness);
+  if (alpha < 0.01) discard;
+  vec3 light = atmoAmbient.rgb * atmoSunColor.w * 2.5 + atmoSunColor.rgb * atmoSun.w * 0.6 + vec3(0.55, 0.62, 0.80) * atmoHorizon.w;
+  vec3 color = mix(vec3(0.75, 0.80, 0.90), vec3(0.95), flakiness) * light;
+  fragColor = vec4(applyAtmosphere(color, worldPosition), alpha);
+}
+)GLSL";
+
+
+// Lightning: emissive camera-facing strips with a white-blue core fading into a soft halo.
+constexpr char kLightningVertexShader[] = R"GLSL(#version 430 core
+layout(location = 0) in vec3 POSITION;
+layout(location = 1) in float GLOW;
+layout(std140, binding = 0) uniform Camera { mat4 viewProjection; };
+out float glow;
+void main() { glow = GLOW; gl_Position = viewProjection * vec4(POSITION, 1.0); }
+)GLSL";
+const std::string kLightningFragmentShader = std::string(R"GLSL(#version 430 core
+in float glow;
+out vec4 fragColor;
+)GLSL") + kAtmosphereBlockGlsl + R"GLSL(
+void main() {
+  // glow: signed position across the strip in halo units (+-1 at the halo edge). A white-hot
+  // core a few metres wide inside a blue-white halo falling off like a gaussian.
+  float intensity = atmoStrike.w;
+  float x = abs(glow);
+  float core = exp(-x * x * 60.0);
+  float halo = exp(-x * x * 2.2) * 0.45;
+  vec3 color = mix(vec3(0.55, 0.65, 1.0), vec3(1.0), core) * intensity * (1.2 + 1.5 * core);
+  float alpha = (core + halo) * smoothstep(0.0, 0.15, intensity);
+  if (alpha < 0.01) discard;
+  fragColor = vec4(clamp(color, 0.0, 1.0), clamp(alpha, 0.0, 1.0));
+}
+)GLSL";
+
+// Waterfall spray: every drop is derived from its emitter (a lip, a ledge the fall strikes
+// or a plunge pool), its index and the clock; it launches with the water and decays to its
+// own terminal velocity in the wind. Lit drop by drop: the sun (or moon) scatters forward
+// through it, the drops around it and the cliff shadow it, and those at the bow angle show
+// a speck of the spectrum, so the plume carries a fragmented bow down the cascade.
+const std::string kSprayVertexShader = std::string(R"GLSL(#version 430 core
+layout(location = 0) in vec2 CORNER;
+layout(location = 1) in float PARTICLE;
+layout(location = 2) in vec3 ORIGIN;
+layout(location = 3) in vec3 FLOW;
+layout(location = 4) in vec3 FACE;
+layout(location = 5) in vec4 SHAPE;
+layout(std140, binding = 0) uniform Camera { mat4 viewProjection; };
+out vec2 uv;
+out vec3 worldPosition;
+out vec4 dropColor;
+out float softness;
+)GLSL") + kNoiseGlsl + kAtmosphereGlsl + R"GLSL(
+const float kPuffs = 14.0;  // the first particles of every emitter are mist puffs, the rest drops
+void main() {
+  float kind = SHAPE.x, strength = SHAPE.y, drop = SHAPE.z, width = SHAPE.w;
+  float time = atmoWind.w;
+  float seed = PARTICLE + fract(ORIGIN.x * 0.137 + ORIGIN.z * 0.071) * 977.0;
+  vec4 h = vec4(terrainHash(vec2(seed, 1.3)), terrainHash(vec2(seed * 1.7, 7.1)),
+                terrainHash(vec2(seed * 0.37, 3.9)), terrainHash(vec2(seed * 2.3, 5.7)));
+  vec3 g = vec3(terrainHash(vec2(seed * 0.71, 9.2)), terrainHash(vec2(seed * 1.13, 2.6)), terrainHash(vec2(seed * 3.1, 4.4)));
+  bool puff = PARTICLE < kPuffs;
+  vec2 downXZ = FLOW.xy;
+  float launch = FLOW.z;
+  vec3 down = vec3(downXZ.x, 0.0, downXZ.y), side = vec3(-downXZ.y, 0.0, downXZ.x), up = vec3(0.0, 1.0, 0.0);
+  // Water runs only below the freezing level, and only while the rain's runoff lasts.
+  float liquid = 1.0 - smoothstep(atmoSnow.x - 150.0, atmoSnow.x + 50.0, ORIGIN.y);
+  float running = atmoSnow.z * liquid;
+  // The drops leave where the ropes of water pour (the same rope field the ground paints):
+  // of three places across the texel, each drop takes the one most inside a rope.
+  vec2 perpXZ = vec2(-downXZ.y, downXZ.x);
+  float alongE = dot(ORIGIN.xz, downXZ), acrossE = dot(ORIGIN.xz, perpXZ);
+  float heightE = smoothstep(0.0, 120.0, drop);
+  // (The stream is strongest at the texel's centre, so a rope near the middle wins.)
+  float across = 0.0, ribbon = -1.0;
+  for (int c = 0; c < 3; ++c) {
+    float u = fract(h.x + 0.37 * float(c));
+    float candidate = (u - 0.5) * width;
+    vec2 at = ORIGIN.xz + perpXZ * candidate;
+    float deflect = (ridgedFbm(at * kCragFrequency).x - 0.5) * 3.0 + (ridgedFbm(at * 0.21 + vec2(2.0, 8.0)).x - 0.5) * 1.2;
+    float r = waterfallRope(acrossE + candidate + deflect, alongE, ORIGIN.y, heightE, time) * (1.0 - 0.4 * abs(u - 0.5) * 2.0);
+    if (r > ribbon) { ribbon = r; across = candidate; }
+  }
+  ribbon = smoothstep(0.35, 0.6, ribbon);
+  float weight = mix(0.45, 1.0, ribbon) * sqrt(strength) * running;
+  // Drop size: the lip sheds a fine drizzle, the ledges and the pool throw coarser splash.
+  float fineShare = kind == 0.0 ? 0.75 : 0.45;
+  float diameter = h.w < fineShare ? mix(0.06, 0.35, h.w / fineShare) : mix(0.35, 2.0, pow((h.w - fineShare) / (1.0 - fineShare), 1.5));
+  if (puff) diameter = 0.16;  // a puff is the haze of the finest drops, seen together (a pale fog bow)
+  // Terminal velocity from the diameter (Atlas et al.). A big drop flies ballistically and
+  // relaxes to it in terminal / g; a fine one is carried by the air it left with, and that
+  // parcel of air keeps its momentum for about a second before the fall's own wind
+  // (dragged down with the water, thrown up and out at the pool) and the weather's take over.
+  float terminal = max(9.65 - 10.3 * exp(-0.6 * diameter), 0.25);
+  float fineness = 1.0 - smoothstep(0.3, 1.5, diameter);
+  float tau = max(terminal / 9.81, (0.7 + 0.5 * h.y) * fineness);
+  float life = mix(1.0, 2.8, h.y) * (kind == 2.0 ? 1.3 : 1.0) * mix(1.0, 0.6, smoothstep(0.8, 2.0, diameter)) * (puff ? 1.6 : 1.0);
+  float age = fract(time / life + h.z) * life;
+  // The rock is displaced by its crags on the GPU only (on rock, by slope): lift the emitter
+  // with the same field, never sinking it more than a metre.
+  float rockiness = smoothstep(28.0, 48.0, degrees(acos(clamp(FACE.y, 0.0, 1.0))));
+  vec3 relief = up * (max(atmoLife.w * rockiness * (ridgedFbm(ORIGIN.xz * kCragFrequency).x - 0.5) * 2.0, -1.0) + 0.4);
+  vec3 p0, v0;
+  if (kind == 0.0) {
+    // Lip: the water shoots over the edge; the drizzle lifts off the top of the sheet.
+    p0 = ORIGIN + relief + side * across + FACE * (0.8 + 1.2 * g.x) + up * (0.3 + 0.6 * g.y);
+    v0 = down * launch * (0.6 + 0.7 * g.x) + side * (g.z - 0.5) * launch * 0.5 + up * (0.3 + 2.0 * g.y);
+  } else if (kind == 1.0) {
+    // Contact: the fall strikes a ledge and splashes off the face, still heading down.
+    p0 = ORIGIN + relief + side * across + FACE * (0.8 + 1.2 * g.x) + down * (g.y - 0.5) * width * 0.3;
+    v0 = FACE * launch * (0.4 + 0.6 * g.x) + side * (g.z - 0.5) * launch * 0.7 + down * launch * 0.25 - up * launch * (0.1 + 0.3 * g.y);
+  } else {
+    // Plunge: the pool throws a plume up and outward, the biggest drops highest.
+    p0 = ORIGIN + relief + side * across * 0.8 + down * (g.x - 0.5) * width * 0.5 + up * 0.2;
+    v0 = up * launch * (0.45 + 0.75 * g.y) + down * launch * (0.15 + 0.45 * g.x) + side * (g.z - 0.5) * launch * 0.9;
+  }
+  float loft = smoothstep(6.0, 15.0, atmoWind.z);
+  float windFollow = 1.0 - 0.6 * smoothstep(0.3, 2.0, diameter);
+  vec3 carried = vec3(atmoWind.x, 0.0, atmoWind.y) * atmoWind.z * windFollow + vec3(0.0, -terminal, 0.0);
+  // The finest drops ride the air the fall drags down, the plume the pool throws up and
+  // the eddies around both.
+  carried.y += (kind == 0.0 ? -0.6 : kind == 1.0 ? -0.8 : 0.4) * fineness * (0.5 + 0.5 * strength);
+  carried.xz += vec2(sin(time * 1.7 + h.y * 6.28), cos(time * 1.3 + h.z * 6.28)) * 0.5 * fineness * (1.0 + loft);
+  float relax = tau * (1.0 - exp(-age / tau));
+  vec3 p = p0 + carried * age + (v0 - carried) * relax;
+  // The falling sheet drags the air (and the drizzle in it) down with it, faster and faster
+  // until the air's own drag caps it: fine drops off a lip or a ledge sink with the fall.
+  float dragged = (kind == 0.0 ? 1.0 : kind == 1.0 ? 0.6 : 0.0) * fineness * (0.4 + 0.6 * strength);
+  p.y -= dragged * (age < 1.333 ? 1.5 * age * age : 4.0 * age - 2.667);
+  vec3 velocity = carried + (v0 - carried) * exp(-age / tau);
+  // Drops that fall back into the pool or against the rock are gone.
+  float sunk = kind == 2.0 ? smoothstep(0.0, 0.8, ORIGIN.y + relief.y - p.y) : kind == 1.0 ? smoothstep(0.0, 1.0, -dot(p - ORIGIN - relief, FACE) - 0.2) : 0.0;
+  float fadeIn = smoothstep(0.0, 0.06 * life, age), fadeOut = 1.0 - smoothstep(0.6 * life, life, age);
+  vec3 toEye = atmoEye.xyz - p;
+  float dist = max(length(toEye), 0.1);
+  vec3 viewDir = -toEye / dist;
+  // Lighting. The plume around the emitter shadows the drops inside and behind it: the
+  // deeper into the plume the light has to reach, the darker the drop (and the drops
+  // cluster, so whole wisps go dark). The cliff shadows drops close to a face turned away
+  // from the light; the farther out and the higher the light, the more escape it.
+  vec3 sun = atmoSun.xyz;
+  vec3 centre = ORIGIN + relief + (kind == 0.0 ? down * 1.5 + up * 0.8 : kind == 1.0 ? FACE * 1.5 : up * 2.0);
+  vec3 o = p - centre;
+  float radius = 2.5 + 2.5 * strength + (kind == 0.0 ? 0.0 : 0.04 * drop);
+  float depth = clamp((radius - dot(o, sun)) / (2.0 * radius), 0.0, 1.0);
+  float density = strength * running * (0.5 + 0.5 * ribbon);
+  float amongDrops = exp(-2.4 * density * depth);
+  float clump = terrainNoise(vec2(dot(p, vec3(0.7, 0.5, 0.5)), dot(p, vec3(-0.4, 0.8, 0.45))) * 0.9 + vec2(time * 0.3, -time * 0.2)).x;
+  amongDrops *= mix(0.3, 1.0, smoothstep(0.3, 0.65, clump));
+  float faceLit = smoothstep(-0.35, 0.15, dot(FACE, sun));
+  float escape = smoothstep(0.5, 6.0, dot(o, FACE)) * smoothstep(0.05, 0.45, sun.y);
+  float rock = mix(faceLit, 1.0, kind == 0.0 ? max(escape, 0.6) : escape);
+  float lit = amongDrops * rock * atmoSun.w * cloudShadow(p);  // the clouds shade the spray like the ground
+  // Forward scattering makes a drop between the eye and the light sparkle; at the bow
+  // angle (40.6..42.4 degrees from the anti-light point, the secondary at 50..53.5) it
+  // shows a speck of the spectrum: tiny drops give a broad pale fog bow, bigger ones a
+  // saturated one, and each drop is offset a little, so the bow is fragmented.
+  float cosSun = dot(viewDir, sun);
+  float glint = 0.9 + 2.6 * pow(max(cosSun, 0.0), 5.0);  // white in any light, a sparkle toward the light
+  float pale = smoothstep(0.08, 0.35, diameter);
+  float widen = mix(2.2, 1.0, smoothstep(0.1, 0.5, diameter));
+  float a = degrees(acos(clamp(-cosSun, -1.0, 1.0))) + (g.x - 0.5) * 0.9;
+  float t1 = (a - 40.6) / (1.8 * widen), t2 = (53.5 - a) / (3.4 * widen);
+  vec3 bow = vec3(0.0);
+  if (t1 > 0.0 && t1 < 1.0) bow += mix(vec3(0.8), spectrum(t1), pale) * smoothstep(0.0, 0.2, t1) * (1.0 - smoothstep(0.8, 1.0, t1)) * 0.8;
+  if (t2 > 0.0 && t2 < 1.0) bow += mix(vec3(0.6), spectrum(t2), pale) * smoothstep(0.0, 0.25, t2) * (1.0 - smoothstep(0.75, 1.0, t2)) * 0.25;
+  bow *= smoothstep(0.3, 0.8, g.z);
+  vec3 skyLight = atmoAmbient.rgb * atmoSunColor.w * 2.2 + vec3(0.55, 0.62, 0.80) * atmoHorizon.w;
+  // In the bow the drop's own white gives way to its colour (added on top it would only clip to white).
+  float bowAmount = min(max(max(bow.r, bow.g), bow.b) * 1.25, 1.0) * lit;
+  vec3 color = vec3(0.86, 0.91, 1.0) * (skyLight + atmoSunColor.rgb * lit * glint) * (1.0 - 0.65 * bowAmount) + bow * atmoSunColor.rgb * lit * 2.4;
+  // A streak as long as the drop moves in about 1/40 s, never thinner than a pixel or two;
+  // a puff is a soft camera-facing disc a few metres wide that swells as it thins out.
+  float speed = max(length(velocity), 0.1);
+  vec3 along = velocity / speed;
+  vec3 right = normalize(cross(along, toEye / dist) + vec3(1e-4, 0.0, 0.0));
+  float thickness = max(0.01 + 0.025 * diameter, dist * 0.0028);
+  float len = max(thickness, 0.025 * speed);
+  float alpha = weight * fadeIn * fadeOut * (1.0 - sunk) * mix(0.6, 0.95, smoothstep(0.1, 1.0, diameter)) *
+                (1.0 - smoothstep(900.0, 2500.0, dist)) * (0.5 + 0.5 * lit);
+  if (puff) {
+    float swell = (2.5 + 4.0 * g.y + (kind == 0.0 ? 0.0 : 0.05 * drop)) * (0.4 + 0.6 * age / life);
+    p += FACE * (1.5 + swell * 0.5);  // the haze hangs off the rock, not half inside it
+    thickness = swell; len = swell;
+    along = normalize(cross(toEye / dist, vec3(1.0, 0.0, 0.0)) + vec3(0.0, 1e-3, 0.0));
+    right = normalize(cross(along, toEye / dist));
+    alpha = weight * fadeIn * pow(1.0 - age / life, 0.7) * (1.0 - sunk) * 0.5 * (1.0 - smoothstep(900.0, 2500.0, dist)) * (0.6 + 0.4 * lit);
+    color = vec3(0.9, 0.94, 1.0) * (skyLight * 1.6 + atmoSunColor.rgb * lit * (0.9 + 1.6 * pow(max(cosSun, 0.0), 4.0))) * (1.0 - 0.4 * bowAmount) +
+            bow * atmoSunColor.rgb * lit * 1.4;
+  }
+  vec3 world = p + right * (CORNER.x * thickness) + along * ((CORNER.y - 0.5) * len);
+  uv = vec2(CORNER.x + 0.5, CORNER.y);  // 0..1 across and along the quad
+  softness = puff ? 1.0 : 0.0;
+  worldPosition = world;
+  dropColor = vec4(color, alpha);
+  gl_Position = alpha > 0.003 ? viewProjection * vec4(world, 1.0) : vec4(2.0, 2.0, 2.0, 1.0);
+}
+)GLSL";
+const std::string kSprayFragmentShader = std::string(R"GLSL(#version 430 core
+in vec2 uv;
+in vec3 worldPosition;
+in vec4 dropColor;
+in float softness;
+out vec4 fragColor;
+)GLSL") + kNoiseGlsl + kAtmosphereGlsl + R"GLSL(
+void main() {
+  atmosphereJitter = atmosphereDither(gl_FragCoord.xy);
+  float r = length(uv - 0.5);
+  float shape = mix(1.0 - smoothstep(0.28, 0.5, r), exp(-r * r * 14.0) * (1.0 - smoothstep(0.35, 0.5, r)), softness);
+  float alpha = shape * dropColor.a;
+  if (alpha < 0.01) discard;
+  fragColor = vec4(applyAtmosphere(dropColor.rgb, worldPosition), alpha);
 }
 )GLSL";
 
@@ -1232,6 +2169,8 @@ ShaderLayout reflect_program(const GL& gl, GLuint program, const ShaderLayout& e
       throw std::runtime_error("VegetationStyle UBO must contain six vec4s");
     if(name=="FireStyle" && values[4]!=static_cast<GLint>(kFireStyleBytes))
       throw std::runtime_error("FireStyle UBO must contain four vec4s");
+    if(name=="Atmosphere" && values[4]!=static_cast<GLint>(kAtmosphereBytes))
+      throw std::runtime_error("Atmosphere UBO must contain twenty-five vec4s");
     if (name == "PbrMaterial" && values[4] != 64)
       throw std::runtime_error("PbrMaterial UBO must have four vec4s");
     if (name == "Object" && values[4] != 144)
@@ -1243,6 +2182,13 @@ ShaderLayout reflect_program(const GL& gl, GLuint program, const ShaderLayout& e
                          (values[3]?kFragmentStage:0U);
     if(name=="PbrMaterial" || name=="LayerVisibility")stages=kFragmentStage;
     if(name=="TerrainStyle" || name=="VegetationStyle" || name=="FireStyle")stages=kVertexStage|kFragmentStage;
+    // The shared Atmosphere block is compiled into whichever stages the
+    // program's contract declares; Mesa's reference flags are unreliable for it.
+    if(name=="Atmosphere") {
+      const auto declared=std::find_if(expected.bindings.begin(),expected.bindings.end(),
+          [](const ShaderBinding& b){return b.name=="Atmosphere";});
+      if(declared!=expected.bindings.end())stages=declared->stages;
+    }
     actual.bindings.push_back({name,ShaderResourceKind::UniformBuffer,
                               static_cast<std::uint32_t>(values[1]),stages});
   }
@@ -1535,9 +2481,10 @@ TextureHandle OpenGLRenderDevice::create_texture2d(
   impl_->gl.TexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,gl_mag_filter(desc.sampling.mag));
   impl_->gl.TexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,gl_wrap(desc.sampling.wrap_s));
   impl_->gl.TexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,gl_wrap(desc.sampling.wrap_t));
-  impl_->gl.TexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,
+  const bool wide=desc.format==TextureFormat::Rgba16;
+  impl_->gl.TexImage2D(GL_TEXTURE_2D,0,wide?GL_RGBA16:GL_RGBA8,
                         static_cast<GLsizei>(desc.width),static_cast<GLsizei>(desc.height),
-                        0,GL_RGBA,GL_UNSIGNED_BYTE,rgba8.data());
+                        0,GL_RGBA,wide?GL_UNSIGNED_SHORT:GL_UNSIGNED_BYTE,rgba8.data());
   if(desc.sampling.uses_mipmaps())impl_->gl.GenerateMipmap(GL_TEXTURE_2D);
   impl_->textures.emplace(handle.id,Impl::GpuTexture{name});
   return handle;
@@ -1643,6 +2590,10 @@ PipelineHandle OpenGLRenderDevice::create_pipeline(PipelineDesc desc) {
     case ShaderProgramId::Water:vertex_source=kWaterVertexShaderFull.c_str();fragment_source=kWaterFragmentShader.c_str();break;
     case ShaderProgramId::Vegetation:vertex_source=kVegetationVertexShader.c_str();fragment_source=kVegetationFragmentShader.c_str();break;
     case ShaderProgramId::Fire:vertex_source=kFireVertexShaderSource.c_str();fragment_source=kFireFragmentShaderSource.c_str();break;
+    case ShaderProgramId::Sky:vertex_source=kSkyVertexShader;fragment_source=kSkyFragmentShader.c_str();break;
+    case ShaderProgramId::Precipitation:vertex_source=kPrecipitationVertexShader.c_str();fragment_source=kPrecipitationFragmentShader.c_str();break;
+    case ShaderProgramId::Lightning:vertex_source=kLightningVertexShader;fragment_source=kLightningFragmentShader.c_str();break;
+    case ShaderProgramId::Spray:vertex_source=kSprayVertexShader.c_str();fragment_source=kSprayFragmentShader.c_str();break;
     case ShaderProgramId::Object:vertex_source=kObjectVertexShader;fragment_source=kObjectFragmentShader;break;
     case ShaderProgramId::TexturedObject:vertex_source=kTexturedVertexShader;fragment_source=kTexturedFragmentShader;break;
     case ShaderProgramId::InstancedTexturedObject:vertex_source=kInstancedTexturedVertexShader;fragment_source=kTexturedFragmentShader;break;

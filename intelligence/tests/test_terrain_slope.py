@@ -8,7 +8,7 @@ from math import sqrt
 
 from pydantic import ValidationError
 
-from app.contracts import CONTRACT_VERSION, CONTRACT_VERSION_V1, CONTRACT_VERSION_V2, SpreadRequest
+from app.contracts import CONTRACT_VERSION, CONTRACT_VERSION_V1, CONTRACT_VERSION_V2, CONTRACT_VERSION_V3, SpreadRequest
 from app.spread_kernel import (SLOPE_DOWNHILL_WEIGHT, SLOPE_SATURATION_DEGREES, SLOPE_UPHILL_WEIGHT, WIND_HEADWIND_WEIGHT,
                                WIND_WEIGHT, WIND_WEIGHT_V1, simulate, slope_degrees, slope_term, wind_term)
 
@@ -246,7 +246,7 @@ class ContractVersionTest(unittest.TestCase):
     def test_new_requests_default_to_current_contract(self):
         request = line(MARGINAL, self.RIDGE)
         self.assertEqual(request.contract_version, CONTRACT_VERSION)
-        self.assertEqual(request.contract_version, CONTRACT_VERSION_V2)
+        self.assertEqual(request.contract_version, CONTRACT_VERSION_V3)
 
     def test_v1_ignores_elevation_and_matches_elevation_free_request(self):
         v1_with_elevation = line(MARGINAL, self.RIDGE, contract_version=CONTRACT_VERSION_V1)
@@ -263,13 +263,13 @@ class ContractVersionTest(unittest.TestCase):
         self.assertEqual(burned(steep), {(0, 0)})
 
     def test_response_echoes_request_version(self):
-        for version in (CONTRACT_VERSION_V1, CONTRACT_VERSION_V2):
+        for version in (CONTRACT_VERSION_V1, CONTRACT_VERSION_V2, CONTRACT_VERSION_V3):
             with self.subTest(version=version):
                 response = simulate(line(MARGINAL, self.RIDGE, contract_version=version))
                 self.assertEqual(response.contract_version, version)
 
     def test_unknown_version_is_rejected(self):
-        for bad in ("terraflux.compute/v3", "terraflux.compute/v0", "v2", ""):
+        for bad in ("terraflux.compute/v4", "terraflux.compute/v0", "v2", ""):
             with self.subTest(version=bad), self.assertRaises(ValidationError):
                 line(MARGINAL, self.RIDGE, contract_version=bad)
 

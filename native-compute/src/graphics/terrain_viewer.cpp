@@ -6,6 +6,7 @@
 #include <terraflux/graphics/water_shading.hpp>
 #include <terraflux/graphics/vegetation.hpp>
 #include <terraflux/graphics/fire_effects.hpp>
+#include <terraflux/graphics/weather.hpp>
 #include <terraflux/terrain_water.hpp>
 #include <terraflux/graphics/terrain_tiles.hpp>
 #include <terraflux/graphics/layer_visibility.hpp>
@@ -38,6 +39,7 @@
 #include <charconv>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <exception>
 #include <fstream>
 #include <filesystem>
@@ -93,6 +95,7 @@ struct Options {
   bool hide_terrain=false,hide_fire=false,layers_test=false,replay_controls_test=false;
   double replay_speed=1.0;
   bool replay_speed_requested=false;
+  std::optional<std::size_t> replay_frame; // start paused on this zero-based frame
   bool terrain_tiles=false,terrain_tile_test=false,terrain_residency=false,terrain_residency_test=false,terrain_retention_test=false;
   bool terrain_shading_test=false;
   std::optional<double> terrain_contour_interval; // unset: automatic spacing
@@ -112,6 +115,18 @@ struct Options {
   bool vegetation_test=false;
   double flame_scale=1.0,smoke_scale=1.0;
   bool fire_test=false;
+  // Weather: unset keeps the interactive default (cumulus) and turns weather
+  // off in smoke runs, so every reference comparison keeps the neutral sky.
+  std::optional<std::string> weather; // off|clear|cirrus|cumulus|stratocumulus|stratus|nimbostratus|cumulonimbus
+  std::optional<double> cloud_cover,cloud_base,dew_point;
+  double temperature=18.0,stability=0.01;
+  std::optional<double> wind_direction; // unset: follows --wave-direction (or the replay request's wind)
+  std::optional<double> wind_min,wind_max; // unset: 2..6 m/s (or 0.6..1.3 x the replay request's wind)
+  double wind_swing=20.0,wind_period=12.0;
+  double hour=10.0,latitude=47.0,day_of_year=172.0,time_scale=10.0,weather_time=0.0,moon_size=2.0;
+  std::optional<double> moon_phase;
+  double rainfall_mm=0.0; // rain already on the ground at the start (wet, running, flooded) // unset: from the day of the year
+  bool weather_test=false;
   std::optional<std::uint32_t> floor_seed;
   std::optional<double> floor_patch_size;
   std::uint32_t max_resident_terrain_tiles=4096,terrain_retention_frames=0;
@@ -120,6 +135,8 @@ struct Options {
   std::uint32_t max_resident_meshes=512,max_scene_instances=1024;
   std::optional<std::uint64_t> resource_budget_bytes,cpu_recipe_budget_bytes;
   std::uint32_t benchmark_frames=0;
+  std::optional<double> view_yaw,view_pitch,view_zoom; // initial orbit camera: degrees, degrees, fraction of the framing distance
+  double view_x=0.0,view_z=0.0; // initial target offset from the terrain centre, meters (follows the ground)
   std::string load_state,save_state,screenshot_file;
   std::string request_file, response_file, obj_file, gltf_file, texture_file, scene_file;
 };
@@ -137,6 +154,13 @@ Options parse_args(int argc, char** argv) {
         throw std::invalid_argument("invalid --replay-speed");
       (void)terraflux::replay::ReplayClock::speed_units(speed);
       options.replay_speed=speed;options.replay_speed_requested=true;
+    }
+    else if(arg=="--replay-frame" && i+1<argc) {
+      const std::string text=argv[++i];std::size_t frame=0;
+      const auto parsed=std::from_chars(text.data(),text.data()+text.size(),frame);
+      if(parsed.ec!=std::errc{} || parsed.ptr!=text.data()+text.size() || frame>719)
+        throw std::invalid_argument("--replay-frame must be 0..719");
+      options.replay_frame=frame;
     }
     else if(arg=="--hide-terrain")options.hide_terrain=true;
     else if(arg=="--hide-fire")options.hide_fire=true;
@@ -248,6 +272,55 @@ Options parse_args(int argc, char** argv) {
       if(arg=="--flame-scale")options.flame_scale=value;else options.smoke_scale=value;
     }
     else if(arg=="--fire-test")options.fire_test=true;
+    else if(arg=="--weather" && i+1<argc) {
+      options.weather=argv[++i];
+      if(*options.weather!="off" && *options.weather!="auto")(void)terraflux::graphics::parse_cloud_type(options.weather->c_str());
+    }
+    else if((arg=="--cloud-cover" || arg=="--cloud-base" || arg=="--temperature" || arg=="--dew-point" || arg=="--stability" ||
+             arg=="--wind-direction" || arg=="--wind-min" || arg=="--wind-max" || arg=="--wind-swing" || arg=="--wind-period" ||
+             arg=="--hour" || arg=="--latitude" || arg=="--day-of-year" || arg=="--time-scale" || arg=="--weather-time" ||
+             arg=="--moon-phase" || arg=="--moon-size" || arg=="--rainfall") && i+1<argc) {
+      const std::string text=argv[++i];double value=0;
+      const auto parsed=std::from_chars(text.data(),text.data()+text.size(),value);
+      if(parsed.ec!=std::errc{} || parsed.ptr!=text.data()+text.size() || !std::isfinite(value))
+        throw std::invalid_argument(arg+" must be a finite number");
+      const auto bounded=[&](double lo,double hi,const char* what){if(value<lo || value>hi)throw std::invalid_argument(arg+" must be "+what);};
+      if(arg=="--cloud-cover"){bounded(0,1,"0..1");options.cloud_cover=value;}
+      else if(arg=="--cloud-base"){bounded(-12000,20000,"-12000..20000 meters");options.cloud_base=value;}
+      else if(arg=="--temperature"){bounded(-40,50,"-40..50 degrees Celsius");options.temperature=value;}
+      else if(arg=="--dew-point"){bounded(-60,50,"-60..50 degrees Celsius");options.dew_point=value;}
+      else if(arg=="--stability"){bounded(0.002,0.05,"0.002..0.05 per second");options.stability=value;}
+      else if(arg=="--wind-direction"){bounded(0,360,"0..360 compass degrees");options.wind_direction=value;}
+      else if(arg=="--wind-min"){bounded(0,60,"0..60 m/s");options.wind_min=value;}
+      else if(arg=="--wind-max"){bounded(0,60,"0..60 m/s");options.wind_max=value;}
+      else if(arg=="--wind-swing"){bounded(0,90,"0..90 degrees");options.wind_swing=value;}
+      else if(arg=="--wind-period"){bounded(1,3600,"1..3600 seconds");options.wind_period=value;}
+      else if(arg=="--hour"){bounded(0,24,"0..24");options.hour=value;}
+      else if(arg=="--latitude"){bounded(-90,90,"-90..90 degrees");options.latitude=value;}
+      else if(arg=="--day-of-year"){bounded(1,366,"1..366");options.day_of_year=value;}
+      else if(arg=="--weather-time"){bounded(0,86400,"0..86400 seconds");options.weather_time=value;}
+      else if(arg=="--moon-phase"){bounded(0,1,"0 (new) .. 0.5 (full) .. 1");options.moon_phase=value;}
+      else if(arg=="--moon-size"){bounded(0.25,6,"0.25..6 degrees of apparent diameter");options.moon_size=value;}
+      else if(arg=="--rainfall"){bounded(0,500,"0..500 mm already on the ground");options.rainfall_mm=value;}
+      else {bounded(0,3600,"0..3600 seconds per simulated hour");options.time_scale=value;}
+    }
+    else if(arg=="--weather-test")options.weather_test=true;
+    else if((arg=="--view-x" || arg=="--view-z") && i+1<argc) {
+      const std::string text=argv[++i];double value=0;
+      const auto parsed=std::from_chars(text.data(),text.data()+text.size(),value);
+      if(parsed.ec!=std::errc{} || parsed.ptr!=text.data()+text.size() || !std::isfinite(value) || value<-100000 || value>100000)
+        throw std::invalid_argument(arg+" must be -100000..100000 meters");
+      if(arg=="--view-x")options.view_x=value;else options.view_z=value;
+    }
+    else if((arg=="--view-yaw" || arg=="--view-pitch" || arg=="--view-zoom") && i+1<argc) {
+      const std::string text=argv[++i];double value=0;
+      const auto parsed=std::from_chars(text.data(),text.data()+text.size(),value);
+      if(parsed.ec!=std::errc{} || parsed.ptr!=text.data()+text.size() || !std::isfinite(value))
+        throw std::invalid_argument(arg+" must be a finite number");
+      if(arg=="--view-yaw"){if(value<-360 || value>360)throw std::invalid_argument("--view-yaw must be -360..360 degrees");options.view_yaw=value;}
+      else if(arg=="--view-pitch"){if(value<6 || value>84)throw std::invalid_argument("--view-pitch must be 6..84 degrees above the ground");options.view_pitch=value;}
+      else {if(value<0.03 || value>4)throw std::invalid_argument("--view-zoom must be 0.03..4 times the framing distance");options.view_zoom=value;}
+    }
     else if(arg=="--water-floor" && i+1<argc) {
       options.water_floor=argv[++i];
       if(options.water_floor!="random")(void)terraflux::graphics::parse_water_floor(options.water_floor.c_str());
@@ -333,13 +406,15 @@ Options parse_args(int argc, char** argv) {
     else if (arg == "--screenshot" && i+1<argc)options.screenshot_file=argv[++i];
     else if (arg == "--scene" && i + 1 < argc) options.scene_file = argv[++i];
     else throw std::invalid_argument(
-        "usage: terraflux-terrain-viewer [--request request.json --response response.json] [--obj model.obj | --gltf model.gltf] [--texture texture.ppm] [--scene scene.json (legacy scenes require --obj)] [--replay-speed 1] [--replay-controls-test with replay --smoke-test] [--hide-terrain] [--hide-fire] [--layers-test with replay --smoke-test] [--terrain-contours 50] [--render-cell 5] [--max-render-vertices 4000000] [--terrain-detail 1] [--rock-relief 5] [--snow-line 0.72] [--terrain-shading-test with --smoke-test] [--water-level 35] [--wave-height 0.6] [--wave-length 24] [--wave-speed 3] [--wave-direction 90] [--water-clarity 4] [--water-floor sand|vegetation|mud|stones|mixed|random] [--floor-seed 7] [--floor-patch-size 45] [--water-test with --smoke-test] [--vegetation off|low|medium|high] [--tree-style conifer|broadleaf|mixed|custom] [--tree-obj model.obj] [--tree-spacing 12] [--grass-spacing 2.5] [--grass-distance 300] [--tree-height 16] [--vegetation-seed 0] [--vegetation-test with --smoke-test] [--flame-scale 1] [--smoke-scale 1] [--fire-test with replay --smoke-test] [--terrain-tiles] [--terrain-residency] [--terrain-retain-frames 30] [--terrain-retention-test with --smoke-test --terrain-retain-frames 2] [--max-resident-terrain-tiles 4096] [--terrain-residency-test with --smoke-test --terrain-residency] [--terrain-tile-quads 32] [--terrain-tile-test with --smoke-test --terrain-tiles] [--offscreen] [--offscreen-resize-test with --offscreen --smoke-test] [--profile] [--no-culling] [--no-instancing] [--asset-preview with --gltf] [--benchmark-frames 60] [--screenshot frame.ppm] [--smoke-test] [--asset-lifecycle-test with --smoke-test]");
+        "usage: terraflux-terrain-viewer [--request request.json --response response.json] [--obj model.obj | --gltf model.gltf] [--texture texture.ppm] [--scene scene.json (legacy scenes require --obj)] [--replay-speed 1] [--replay-frame 0] [--replay-controls-test with replay --smoke-test] [--hide-terrain] [--hide-fire] [--layers-test with replay --smoke-test] [--terrain-contours 50] [--render-cell 5] [--max-render-vertices 4000000] [--terrain-detail 1] [--rock-relief 5] [--snow-line 0.72] [--terrain-shading-test with --smoke-test] [--water-level 35] [--wave-height 0.6] [--wave-length 24] [--wave-speed 3] [--wave-direction 90] [--water-clarity 4] [--water-floor sand|vegetation|mud|stones|mixed|random] [--floor-seed 7] [--floor-patch-size 45] [--water-test with --smoke-test] [--vegetation off|low|medium|high] [--tree-style conifer|broadleaf|mixed|custom] [--tree-obj model.obj] [--tree-spacing 12] [--grass-spacing 2.5] [--grass-distance 300] [--tree-height 16] [--vegetation-seed 0] [--vegetation-test with --smoke-test] [--flame-scale 1] [--smoke-scale 1] [--fire-test with replay --smoke-test] [--weather off|auto|clear|cirrus|cumulus|stratocumulus|stratus|nimbostratus|cumulonimbus] [--cloud-cover 0.35] [--cloud-base 1200] [--temperature 18] [--dew-point 8] [--stability 0.01] [--wind-direction 90] [--wind-min 2] [--wind-max 6] [--wind-swing 20] [--wind-period 12] [--hour 10] [--latitude 47] [--day-of-year 172] [--time-scale 10] [--weather-time 0] [--moon-phase 0.5] [--moon-size 2] [--rainfall 0] [--weather-test with --smoke-test] [--view-yaw 26] [--view-pitch 43] [--view-zoom 1] [--view-x 0] [--view-z 0] [--terrain-tiles] [--terrain-residency] [--terrain-retain-frames 30] [--terrain-retention-test with --smoke-test --terrain-retain-frames 2] [--max-resident-terrain-tiles 4096] [--terrain-residency-test with --smoke-test --terrain-residency] [--terrain-tile-quads 32] [--terrain-tile-test with --smoke-test --terrain-tiles] [--offscreen] [--offscreen-resize-test with --offscreen --smoke-test] [--profile] [--no-culling] [--no-instancing] [--asset-preview with --gltf] [--benchmark-frames 60] [--screenshot frame.ppm] [--smoke-test] [--asset-lifecycle-test with --smoke-test]");
   }
   if(options.replay_speed_requested && options.request_file.empty())
     throw std::invalid_argument("--replay-speed requires replay input");
+  if(options.replay_frame && options.request_file.empty())
+    throw std::invalid_argument("--replay-frame requires replay input");
   if(options.replay_controls_test && (!options.smoke_test || options.request_file.empty() ||
       !options.scene_file.empty() || !options.obj_file.empty() || !options.gltf_file.empty() ||
-      options.layers_test || options.hide_terrain || options.hide_fire || options.replay_speed!=1 ||
+      options.layers_test || options.hide_terrain || options.hide_fire || options.replay_speed!=1 || options.replay_frame ||
       options.offscreen_resize_test || options.asset_lifecycle_test || options.scene_controls_test ||
       options.scene_detach_test || options.scene_residency_test || options.terrain_tile_test ||
       options.terrain_residency_test || options.terrain_retention_test))
@@ -367,6 +442,16 @@ Options parse_args(int argc, char** argv) {
       options.scene_controls_test || options.scene_detach_test || options.scene_residency_test || options.terrain_tile_test ||
       options.terrain_residency_test || options.terrain_retention_test))
     throw std::invalid_argument("--fire-test requires replay smoke mode with both layers and vegetation enabled and no assets or other scripted test");
+  if(options.wind_max.value_or(6.0)<options.wind_min.value_or(2.0))
+    throw std::invalid_argument("--wind-max must not be below --wind-min");
+  if(options.weather_test && (!options.smoke_test || !options.scene_file.empty() || !options.obj_file.empty() ||
+      !options.gltf_file.empty() || options.hide_terrain || options.hide_fire || options.weather || options.cloud_cover ||
+      options.cloud_base || options.wind_direction || options.wave_direction!=90.0 || options.weather_time!=0.0 || options.layers_test ||
+      options.replay_controls_test || options.terrain_shading_test || options.water_test || options.vegetation_test ||
+      options.fire_test || options.offscreen_resize_test || options.asset_lifecycle_test || options.scene_controls_test ||
+      options.scene_detach_test || options.scene_residency_test || options.terrain_tile_test || options.terrain_residency_test ||
+      options.terrain_retention_test))
+    throw std::invalid_argument("--weather-test requires smoke mode with visible layers, default weather/wind options and no assets or other scripted test");
   if(options.vegetation_test && (!options.smoke_test || !options.scene_file.empty() || !options.obj_file.empty() ||
       !options.gltf_file.empty() || options.hide_terrain || options.vegetation=="off" || options.layers_test ||
       options.replay_controls_test || options.terrain_shading_test || options.water_test || options.offscreen_resize_test ||
@@ -677,6 +762,115 @@ int main(int argc, char** argv) {
                <<",\"detail\":"<<terrain_style.detail_strength
                <<",\"rock_relief_m\":"<<terrain_style.rock_relief_meters<<"}\n";
 
+    // Weather: wind wandering between two thresholds, a solar clock with
+    // twilight, a cloud form with the conditions it announces and the
+    // orographic response of this terrain. Smoke runs keep it off unless asked
+    // (--weather), so every reference comparison keeps the neutral sky; the
+    // scripted --weather-test drives it explicitly.
+    const bool weather_requested=options.weather?*options.weather!="off":!options.smoke_test;
+    terraflux::graphics::WeatherConfig weather_config;
+    weather_config.enabled=weather_requested && !options.weather_test;
+    // "auto" (or no option) leaves the form to the replay's weather, cumulus otherwise.
+    const bool explicit_form=options.weather && *options.weather!="off" && *options.weather!="auto";
+    weather_config.clouds=explicit_form?terraflux::graphics::parse_cloud_type(options.weather->c_str()):terraflux::graphics::CloudType::Cumulus;
+    weather_config.coverage=options.cloud_cover;
+    weather_config.cloud_base_meters=options.cloud_base;
+    weather_config.temperature_celsius=options.temperature;
+    weather_config.dew_point_celsius=options.dew_point;
+    weather_config.reference_elevation_meters=mesh.min_elevation_meters;
+    weather_config.stability_hz=options.stability;
+    // A replay brings its own drivers: the request's wind (v2/v3 blow FROM the given compass
+    // angle) seeds the viewer's wind unless overridden, and a v3 weather series steers the
+    // temperature, humidity, rain and cloud form frame by frame (replay_weather below).
+    const bool replay_wind=playback && playback->contract_version!=terraflux::compute::kContractVersionV1 && playback->wind_speed_kmh>0;
+    const double replay_wind_mps=replay_wind?playback->wind_speed_kmh/3.6:0.0;
+    weather_config.wind.direction_degrees=options.wind_direction.value_or(
+        replay_wind?std::fmod(playback->wind_direction_degrees+180.0,360.0):options.wave_direction);
+    weather_config.wind.speed_min_mps=options.wind_min.value_or(replay_wind?std::clamp(0.6*replay_wind_mps,0.0,60.0):2.0);
+    weather_config.wind.speed_max_mps=options.wind_max.value_or(replay_wind?std::clamp(1.3*replay_wind_mps,0.0,60.0):6.0);
+    if(weather_config.wind.speed_max_mps<weather_config.wind.speed_min_mps)weather_config.wind.speed_max_mps=weather_config.wind.speed_min_mps;
+    weather_config.wind.swing_degrees=options.wind_swing;weather_config.wind.period_seconds=options.wind_period;
+    weather_config.wind.seed=options.vegetation_seed;
+    weather_config.daylight.latitude_degrees=options.latitude;weather_config.daylight.day_of_year=options.day_of_year;
+    weather_config.daylight.start_hour=options.hour;weather_config.daylight.seconds_per_hour=options.time_scale;
+    weather_config.daylight.moon_phase=options.moon_phase;weather_config.daylight.moon_diameter_degrees=options.moon_size;
+    weather_config.seed=options.vegetation_seed;
+    terraflux::graphics::validate_weather(weather_config);
+    terraflux::graphics::WeatherSimulation weather(weather_config);
+    // Reproduce a moment of a gust, a shower band or a strike, with the rain that fell until then.
+    for(double elapsed=0;elapsed<options.weather_time;elapsed+=1.0)weather.advance(std::min(1.0,options.weather_time-elapsed));
+    if(options.rainfall_mm>0.0)weather.set_rainfall_mm(options.rainfall_mm+weather.rainfall_mm());
+    const auto height_field=terraflux::graphics::sample_height_field(mesh,128);
+    // Where rain runs: drainage, slopes, waterfalls and their spray (static), on a finer
+    // lattice than the orographic field so the cascades resolve their lips and ledges.
+    const auto runoff_terrain=terraflux::graphics::sample_height_field(mesh,256);
+    const auto runoff_field=terraflux::graphics::compute_runoff_field(runoff_terrain);
+    auto spray_emitters=terraflux::graphics::waterfall_spray_emitters(runoff_field,runoff_terrain);
+    // The lattice averages the rendered surface: seat every emitter on the mesh itself so
+    // its drops start on the rock, not inside it.
+    for(auto& e:spray_emitters)
+      if(const auto ground=ground_sampler.sample(e.position.x,e.position.z))e.position.y=std::max(e.position.y,ground->position.y)+0.3;
+    // v3 replay weather: the sample of the shown frame sets the surface conditions the fire
+    // was simulated under; the cloud form follows the rain unless --weather chose one.
+    const bool replay_weather=playback && !playback->weather.empty();
+    std::optional<std::size_t> replay_weather_frame;
+    const auto apply_replay_weather=[&](std::size_t frame) {
+      if(!replay_weather || replay_weather_frame==frame)return;
+      const auto sample=*playback->weather_for_frame(frame);
+      auto config=weather.config();
+      config.temperature_celsius=std::clamp(sample.temperature_celsius,-40.0,50.0);
+      config.dew_point_celsius=std::clamp(terraflux::graphics::dew_point_from_humidity(config.temperature_celsius,sample.relative_humidity),-60.0,50.0);
+      if(!explicit_form) {
+        // The form follows the sample; its base is the form's typical one (the saturated
+        // surface air of a rainy step would otherwise put the base on the ground as fog).
+        config.clouds=terraflux::graphics::cloud_type_for_sample(sample,terraflux::graphics::CloudType::Cumulus);
+        if(!options.cloud_base)config.cloud_base_meters=config.reference_elevation_meters+terraflux::graphics::cloud_profile(config.clouds).base_meters_agl;
+        if(!options.cloud_cover)config.coverage.reset();
+      }
+      config.precipitation_mm_h=std::clamp(sample.precipitation_mm_h,0.0,200.0);
+      weather.set_config(config);
+      replay_weather_frame=frame;
+    };
+    if(replay_weather)apply_replay_weather(0);
+    const auto report_weather=[&](const char* event) {
+      if(!(options.smoke_test || options.profile || options.residency_report || options.benchmark_frames))return;
+      const auto& c=weather.config();
+      const auto layer=weather.layer();
+      const auto sun=weather.sun();
+      const auto wind=weather.wind();
+      const auto* field=weather.field();
+      terraflux::graphics::CameraBasis probe;probe.eye={0,c.reference_elevation_meters,0};
+      const auto now=weather.state(probe,c.reference_elevation_meters);
+      std::cout<<"WEATHER_JSON={\"event\":\""<<event<<"\",\"enabled\":"<<(c.enabled?"true":"false")
+               <<",\"surface_temperature_c\":"<<now.temperature_celsius<<",\"relative_humidity\":"<<now.relative_humidity
+               <<",\"rain_mm_h\":"<<now.precipitation_mm_h<<",\"fire_weather\":"<<now.fire_weather<<",\"snow\":"<<(now.snow?"true":"false")
+               <<",\"fire_vigour\":"<<(c.enabled?std::clamp(1.0+2.5*now.fire_weather,0.25,1.6):1.0)
+               <<",\"rainfall_mm\":"<<now.rainfall_mm<<",\"ponding\":"<<now.ponding<<",\"flood_rise_m\":"<<now.flood_rise_meters
+               <<",\"convection\":"<<now.convection<<",\"rainbow\":"<<now.rainbow<<",\"drop_mm\":"<<now.drop_diameter_mm
+               <<",\"freezing_level_m\":"<<now.freezing_level_meters<<",\"runoff\":"<<now.runoff<<",\"snow_cover\":"<<now.snow_cover
+               <<",\"channel_texels\":"<<runoff_field.channel_texels<<",\"waterfall_texels\":"<<runoff_field.waterfall_texels
+               <<",\"lip_texels\":"<<runoff_field.lip_texels<<",\"plunge_texels\":"<<runoff_field.plunge_texels
+               <<",\"max_drop_m\":"<<runoff_field.max_drop_meters<<",\"spray_emitters\":"<<spray_emitters.size()
+               <<",\"replay_weather\":"<<(replay_weather?"true":"false")
+               <<",\"clouds\":\""<<terraflux::graphics::cloud_type_name(layer.type)<<"\",\"expected\":\""
+               <<terraflux::graphics::cloud_profile(layer.type).expected_weather<<"\""
+               <<",\"cloud_base_m\":"<<layer.base_meters<<",\"cloud_top_m\":"<<layer.top_meters<<",\"coverage\":"<<layer.coverage
+               <<",\"precipitation\":"<<layer.precipitation<<",\"storm\":"<<layer.storm<<",\"visibility_m\":"<<layer.visibility_meters
+               <<",\"temperature_c\":"<<c.temperature_celsius<<",\"dew_point_c\":"<<layer.dew_point_celsius
+               <<",\"hour\":"<<sun.hour<<",\"phase\":\""<<terraflux::graphics::daylight_phase_name(sun.phase)<<"\""
+               <<",\"sun_altitude_deg\":"<<sun.altitude_degrees<<",\"sun_azimuth_deg\":"<<sun.azimuth_degrees<<",\"daylight\":"<<sun.daylight
+               <<",\"moon_phase\":"<<sun.moon_phase<<",\"moon_illumination\":"<<sun.moon_illumination<<",\"moon_altitude_deg\":"<<sun.moon_altitude_degrees
+               <<",\"moon_azimuth_deg\":"<<sun.moon_azimuth_degrees<<",\"moonlight\":"<<sun.moon_intensity
+               <<",\"wind_toward_deg\":"<<wind.direction_degrees<<",\"wind_mps\":"<<wind.speed_mps
+               <<",\"wind_range_mps\":["<<weather.effective_wind().speed_min_mps<<","<<weather.effective_wind().speed_max_mps<<"]"
+               <<",\"field\":"<<(field?"{\"width\":"+std::to_string(field->width)+",\"height\":"+std::to_string(field->height)+
+                   ",\"coupling\":"+std::to_string(field->coupling)+",\"froude\":"+std::to_string(field->froude)+
+                   ",\"max_thickening\":"+std::to_string(field->max_thickening)+",\"max_dissipation\":"+std::to_string(field->max_dissipation)+
+                   ",\"windward_texels\":"+std::to_string(field->windward_texels)+",\"lee_texels\":"+std::to_string(field->lee_texels)+
+                   ",\"blocked_texels\":"+std::to_string(field->blocked_texels)+",\"in_cloud_texels\":"+std::to_string(field->in_cloud_texels)+"}":"null")
+               <<"}\n";
+    };
+
     // Still-water surface: the demo lake by default, otherwise only on request.
     std::optional<terraflux::graphics::WaterStyle> water_style;
     terraflux::graphics::WaterUpload water_upload;
@@ -722,6 +916,16 @@ int main(int argc, char** argv) {
       }
     }
 
+    // An initial target offset walks the camera over the ground (or the water) like W/A/S/D.
+    if(options.view_x!=0.0 || options.view_z!=0.0) {
+      auto target=scene_camera.target;
+      target.x=std::clamp(target.x+options.view_x,ground_sampler.lower_bound().x,ground_sampler.upper_bound().x);
+      target.z=std::clamp(target.z+options.view_z,ground_sampler.lower_bound().z,ground_sampler.upper_bound().z);
+      if(const auto ground=ground_sampler.sample(target.x,target.z))
+        target.y=std::max(ground->position.y,water_style?water_style->level_meters:ground->position.y)+1.5;
+      scene_camera.target=target;
+    }
+
     GlfwSession glfw;
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
@@ -745,6 +949,21 @@ int main(int argc, char** argv) {
     std::optional<ResizeAttempt> failed_resize;
     std::optional<RenderTargetDesc> resize_test_original;
     RenderResourceOwner owned(device);
+    // Daylight/cloud block and orographic field bound by every world draw;
+    // the sky dome and precipitation only exist when weather can be shown.
+    AtmosphereGpu atmosphere(device);
+    if(weather_requested || options.weather_test)atmosphere.update_runoff(runoff_field);
+    std::unique_ptr<SkyRenderer> sky;
+    std::unique_ptr<PrecipitationRenderer> precipitation;
+    std::unique_ptr<LightningRenderer> lightning;
+    std::unique_ptr<SprayRenderer> spray;
+    if(weather_requested || options.weather_test) {
+      sky=std::make_unique<SkyRenderer>(device);
+      precipitation=std::make_unique<PrecipitationRenderer>(device);
+      lightning=std::make_unique<LightningRenderer>(device);
+      spray=std::make_unique<SprayRenderer>(device);
+      spray->set_emitters(spray_emitters);
+    }
     const auto vertices = bytes_of(upload.vertices);
     const auto indices = bytes_of(upload.indices);
     BufferHandle vb{},ib{};
@@ -758,9 +977,26 @@ int main(int argc, char** argv) {
       const auto flags=layer_visibility.uniform();
       layer_buffer=owned.create_buffer({BufferUsage::Uniform,sizeof(flags)},std::as_bytes(std::span(&flags,1)));
     }
+    const auto weather_title=[&]()->std::string {
+      if(!sky)return "";
+      const auto& c=weather.config();
+      if(!c.enabled)return " | O weather off";
+      const auto sun=weather.sun();const auto wind=weather.wind();
+      terraflux::graphics::CameraBasis probe;probe.eye={0,c.reference_elevation_meters,0};
+      const auto now=weather.state(probe,scene_camera.target.y);
+      char hour[16];std::snprintf(hour,sizeof hour,"%02d:%02d",static_cast<int>(sun.hour),static_cast<int>(std::fmod(sun.hour,1.0)*60));
+      std::ostringstream text;
+      text<<" | "<<cloud_type_name(c.clouds)<<" (C) | "<<hour<<' '<<daylight_phase_name(sun.phase)<<" (J/K) | wind "
+          <<static_cast<int>(std::lround(wind.speed_mps))<<" m/s from "<<static_cast<int>(std::lround(std::fmod(wind.direction_degrees+180.0,360.0)))
+          <<"\u00b0 (X) | "<<static_cast<int>(std::lround(now.temperature_celsius))<<"\u00b0C";
+      if(now.precipitation_mm_h>0)text<<", "<<(now.snow?"snow ":"rain ")<<static_cast<int>(std::lround(now.precipitation_mm_h))<<" mm/h";
+      if(now.strike.active)text<<", lightning";
+      text<<" | O weather";
+      return text.str();
+    };
     const auto layer_title=[&] {
       return std::string(" | T terrain ")+(layer_visibility.terrain?"on":"off")+
-             " | F fire "+(playback?(layer_visibility.fire?"on":"off"):"unavailable");
+             " | F fire "+(playback?(layer_visibility.fire?"on":"off"):"unavailable")+weather_title();
     };
     const auto style_packed=pack_terrain_style(terrain_style);
     const auto style_buffer=owned.create_buffer({BufferUsage::Uniform,sizeof(style_packed)},
@@ -829,6 +1065,30 @@ int main(int argc, char** argv) {
     };
     terrain_style.canopy_on_ground=canopy_for(vegetation_style.trees);
     refresh_terrain_style();
+    // Flooding: heavy rain raises the standing water. The surface is rebuilt at the
+    // raised level (new shoreline triangles) between passes; the floor follows.
+    const double base_water_level=water_style?water_style->level_meters:0.0;
+    double built_flood_rise=0.0;
+    const auto rebuild_water=[&](double rise) {
+      if(!water || !water_style)return;
+      const double level=base_water_level+rise;
+      const auto water_mesh=terraflux::terrain::build_water_mesh(mesh,level);
+      if(water_mesh.indices.empty())return;
+      auto upload=terraflux::graphics::prepare_water_upload(water_mesh);
+      const auto vertices=bytes_of(upload.vertices);
+      const auto indices=bytes_of(upload.indices);
+      const auto vb=owned.create_buffer({BufferUsage::Vertex,vertices.size()},vertices);   // admit before retiring
+      const auto ib=owned.create_buffer({BufferUsage::Index,indices.size()},indices);
+      owned.release_buffer(water->vb);owned.release_buffer(water->ib);
+      water->vb=vb;water->ib=ib;water->indices=static_cast<std::uint32_t>(upload.indices.size());
+      water_upload=std::move(upload);
+      water_style->level_meters=level;
+      terrain_style.submerged_level_meters=level;
+      refresh_terrain_style();
+      built_flood_rise=rise;
+      if(options.smoke_test || options.profile)
+        std::cout<<"FLOOD_JSON={\"rise_m\":"<<rise<<",\"level_m\":"<<level<<",\"triangles\":"<<water_mesh.indices.size()/3<<"}\n";
+    };
     bool fire_emitters_dirty=true;
     std::unique_ptr<VegetationRenderer> vegetation;
     std::optional<BufferHandle> vegetation_style_buffer;
@@ -861,6 +1121,7 @@ int main(int argc, char** argv) {
       rebuild_vegetation();
       report_vegetation("initial");
     }
+    report_weather("initial");
     // Burn states for plants come from the same fire field the ground uses; a
     // one-record buffer stands in when there is no replay.
     VegetationFireGrid vegetation_fire;
@@ -1525,16 +1786,22 @@ int main(int argc, char** argv) {
 
     if(options.activate_node)reattach_node(*options.activate_node);
 
-    double yaw = 0.45, pitch = options.asset_preview?0.42:0.75;
-    double distance=scene_camera.starting_distance*(options.asset_preview?0.75:1.0);
+    constexpr double kDegrees=3.14159265358979323846/180.0;
+    double yaw = options.view_yaw?*options.view_yaw*kDegrees:0.45, pitch = options.view_pitch?*options.view_pitch*kDegrees:(options.asset_preview?0.42:0.75);
+    double distance=scene_camera.starting_distance*options.view_zoom.value_or(options.asset_preview?0.75:1.0);
     double previous_time = glfwGetTime();
     terraflux::runtime::FixedStepScheduler scheduler(1.0/60.0,0.25,8);
     terraflux::runtime::ScenePlayback scene_playback;
     bool previous_pause=false,previous_step=false,previous_terrain_key=false,previous_fire_key=false;
     bool previous_vegetation_key=false,previous_tree_key=false,previous_grass_key=false;
+    bool previous_cloud_key=false,previous_earlier_key=false,previous_later_key=false,previous_wind_key=false,previous_weather_key=false;
     std::vector<std::uint8_t> vegetation_reference,vegetation_frame,fire_reference,fire_frame;
     std::vector<int> fire_top_row;
     std::vector<std::uint8_t> layers_both,layers_ground,layers_fire,shading_reference,water_reference,water_waves;
+    std::vector<std::uint8_t> weather_reference,weather_before_rain,weather_cumulus;
+    std::vector<bool> weather_sky_mask;
+    double weather_day_brightness=0,weather_night_brightness=0,weather_cumulus_wind=0;
+    double rendered_rock_relief=terrain_style.detail_strength*terrain_style.rock_relief_meters; // the crag displacement the spray must clear
     std::vector<bool> water_mask;
     std::vector<std::uint32_t> layers_field_snapshot;
     std::size_t layers_frame_snapshot=0;
@@ -1542,7 +1809,7 @@ int main(int argc, char** argv) {
     if(!options.smoke_test && !options.benchmark_frames)
       std::cout<<"Layer controls: T terrain | F fire (visibility only; replay continues)\n"
                <<"Vegetation controls: V density | B tree meshes | G grass distance\n";
-    std::string last_scene_title;
+    std::string last_scene_title,last_weather_title=weather_title();
     std::optional<terraflux::scene::Scene> expected_controls_scene;
     if(options.scene_controls_test) {
       expected_controls_scene=imported->scene;
@@ -1571,7 +1838,11 @@ int main(int argc, char** argv) {
     std::uint64_t benchmark_draws=0,benchmark_visible=0,benchmark_culled=0;
     if(options.profile && !options.benchmark_frames)device.enable_gpu_timing();
 
-    if(playback && options.smoke_test && playback->frames.size()>1 && !options.replay_controls_test) {
+    if(playback && options.replay_frame) {
+      if(*options.replay_frame>=playback->frames.size())throw std::invalid_argument("--replay-frame is beyond the replay");
+      replay_clock->seek(*options.replay_frame); // paused on the requested frame
+      playback_frame=replay_clock->frame();
+    } else if(playback && options.smoke_test && playback->frames.size()>1 && !options.replay_controls_test) {
       replay_clock->seek(1);replay_clock->set_playing(true);
       playback_frame=replay_clock->frame(); // Exercise non-initial fire state in smoke tests.
     }
@@ -1628,8 +1899,10 @@ int main(int argc, char** argv) {
       previous_time = now;
       // Clamp large stalls and catch-up work while keeping updates at 60 Hz.
       // Render/input continues once per frame, independent of fixed updates.
+      double weather_step=0.0;
       const auto fixed_report=scheduler.advance(elapsed,[&](double dt) {
         engine_time+=dt;
+        weather_step+=dt;
         if(replay_clock)replay_clock->tick();
       });
       (void)fixed_report;
@@ -1702,6 +1975,66 @@ int main(int argc, char** argv) {
         }
         previous_vegetation_key=vegetation_key;previous_tree_key=tree_key;previous_grass_key=grass_key;
       }
+      bool weather_changed=false;
+      {
+        // Weather controls: C cycles the cloud form, J/K move the solar clock
+        // an hour back/forward, X cycles wind presets, O toggles the weather.
+        const bool cloud_key=glfwGetKey(window.get(),GLFW_KEY_C)==GLFW_PRESS;
+        const bool earlier_key=glfwGetKey(window.get(),GLFW_KEY_J)==GLFW_PRESS;
+        const bool later_key=glfwGetKey(window.get(),GLFW_KEY_K)==GLFW_PRESS;
+        const bool wind_key=glfwGetKey(window.get(),GLFW_KEY_X)==GLFW_PRESS;
+        const bool weather_key=glfwGetKey(window.get(),GLFW_KEY_O)==GLFW_PRESS;
+        if(!options.smoke_test && !options.benchmark_frames && sky) {
+          auto config=weather.config();
+          if(cloud_key && !previous_cloud_key) {
+            config.clouds=static_cast<CloudType>((static_cast<std::size_t>(config.clouds)+1)%kCloudTypeCount);
+            config.coverage.reset();config.cloud_base_meters.reset();
+            std::cout<<"Clouds: "<<cloud_type_name(config.clouds)<<" - "<<cloud_profile(config.clouds).expected_weather<<'\n';
+            weather_changed=true;
+          }
+          if((earlier_key && !previous_earlier_key) || (later_key && !previous_later_key)) {
+            const double hour=weather.sun().hour+(later_key && !previous_later_key?1.0:-1.0);
+            // Move the start hour so the running clock lands on the new hour.
+            const double elapsed_hours=config.daylight.seconds_per_hour>0?weather.time()/config.daylight.seconds_per_hour:0.0;
+            config.daylight.start_hour=hour-24.0*std::floor(hour/24.0);
+            config.daylight.start_hour-=elapsed_hours-24.0*std::floor(elapsed_hours/24.0);
+            if(config.daylight.start_hour<0)config.daylight.start_hour+=24.0;
+            weather_changed=true;
+          }
+          if(wind_key && !previous_wind_key) {
+            constexpr std::array<std::pair<double,double>,4> presets{{{0.0,1.0},{2.0,6.0},{6.0,12.0},{12.0,24.0}}};
+            std::size_t next=0;
+            for(std::size_t i=0;i<presets.size();++i)if(std::abs(config.wind.speed_max_mps-presets[i].second)<1e-9)next=(i+1)%presets.size();
+            config.wind.speed_min_mps=presets[next].first;config.wind.speed_max_mps=presets[next].second;
+            std::cout<<"Wind: "<<config.wind.speed_min_mps<<".."<<config.wind.speed_max_mps<<" m/s\n";
+            weather_changed=true;
+          }
+          if(weather_key && !previous_weather_key){config.enabled=!config.enabled;weather_changed=true;}
+          if(weather_changed) {
+            try{weather.set_config(config);report_weather("changed");}
+            catch(const std::exception& error){std::cerr<<"Weather change rejected; previous state preserved: "<<error.what()<<'\n';}
+            previous_time=glfwGetTime();
+          }
+        }
+        previous_cloud_key=cloud_key;previous_earlier_key=earlier_key;previous_later_key=later_key;
+        previous_wind_key=wind_key;previous_weather_key=weather_key;
+        // Smoke runs freeze the weather clock (the scripted test drives it);
+        // interactive runs integrate cloud drift with the engine clock.
+        if(!options.smoke_test)weather.advance(weather_step);
+        if(weather.config().enabled) {
+          // The gusting wind steers the plants, the flames and the smoke.
+          const auto wind=weather.wind();
+          vegetation_style.wind_direction_degrees=wind.direction_degrees;
+          vegetation_style.wind_speed_mps=std::min(30.0,wind.speed_mps);
+          fire_style.wind_direction_degrees=wind.direction_degrees;
+          fire_style.wind_speed_mps=std::min(30.0,wind.speed_mps);
+        }
+      }
+      {
+        // The title's clock and wind follow the simulation (once a minute of solar time).
+        const auto current=weather_title();
+        if(current!=last_weather_title){last_weather_title=current;weather_changed=true;}
+      }
       const bool terrain_key=glfwGetKey(window.get(),GLFW_KEY_T)==GLFW_PRESS;
       const bool fire_key=glfwGetKey(window.get(),GLFW_KEY_F)==GLFW_PRESS;
       const bool layer_changed=(terrain_key && !previous_terrain_key) || (fire_key && !previous_fire_key);
@@ -1712,7 +2045,7 @@ int main(int argc, char** argv) {
         constexpr std::array<LayerVisibility,5> states{{{true,true},{true,false},{false,true},{false,false},{true,true}}};
         layer_visibility=states.at(rendered_frames);
       }
-      if(layer_changed)glfwSetWindowTitle(window.get(),(std::string("TerraFlux")+layer_title()).c_str());
+      if(layer_changed || weather_changed)glfwSetWindowTitle(window.get(),(std::string("TerraFlux")+layer_title()).c_str());
       if(options.terrain_shading_test) {
         // Frames 0 and 2: base materials without contours or detail (CPU reference
         // parity). Frame 1: eight contour levels. Frame 3: full procedural detail.
@@ -1722,6 +2055,7 @@ int main(int argc, char** argv) {
         if(!(range>0))throw std::runtime_error("terrain shading test requires terrain with relief");
         if(rendered_frames==1)staged.contour_interval_meters=range/8.0;
         if(rendered_frames==3)staged.detail_strength=1.0;
+        rendered_rock_relief=staged.detail_strength*staged.rock_relief_meters;
         const auto packed=pack_terrain_style(staged);
         device.update_buffer(style_buffer,0,std::as_bytes(std::span(packed)));
       }
@@ -1765,8 +2099,9 @@ int main(int argc, char** argv) {
           device.update_buffer(*fire_buffer,0,std::as_bytes(std::span(fire_field->states)));
           fire_emitters_dirty=true;
           uploaded_frame=playback_frame;
+          if(replay_weather){apply_replay_weather(playback_frame);if(options.smoke_test || options.profile)report_weather("replay");}
         }
-        if(frame_changed || speed_changed || options.smoke_test || (space && !previous_space) ||
+        if(frame_changed || speed_changed || options.smoke_test || weather_changed || (space && !previous_space) ||
            (home && !previous_home) || (back && !previous_back) || (forward && !previous_forward)) {
           const auto& current=playback->frames[playback_frame];
           std::string title="TerraFlux - "+playback->grid_key+" | step "+std::to_string(current.step+1)+"/"+
@@ -1890,6 +2225,52 @@ int main(int argc, char** argv) {
         // Close enough to the ground that grass tufts are inside their draw distance.
         distance=scene_camera.starting_distance*0.12;yaw=0.4;pitch=0.3;
       }
+      if(options.weather_test) {
+        // Low enough that the sky fills the upper part of the frame. Frames:
+        // 0 weather off (reference), 1 clear noon, 2 clear midnight, 3 clear
+        // civil twilight, 4 stratus at noon (overcast, drizzle, summit in
+        // cloud), 5 cumulus at t = 0, 6 cumulus 120 s later, 7 a thunderstorm
+        // at the moment of a strike over the middle of the terrain, 8 four hours
+        // of nimbostratus rain (puddles, runoff and a flood rise), 9 the same rain
+        // in freezing air (snow and snow cover), 10 weather off.
+        distance=scene_camera.starting_distance*0.3;yaw=1.05;pitch=0.42;
+        auto config=weather_config;
+        config.enabled=rendered_frames>=1 && rendered_frames<=9;
+        config.daylight.seconds_per_hour=rendered_frames>=8?10.0:0.0;
+        config.clouds=rendered_frames==4?CloudType::Stratus:rendered_frames==7?CloudType::Cumulonimbus:rendered_frames>=8?CloudType::Nimbostratus:
+                      (rendered_frames>=5?CloudType::Cumulus:CloudType::Clear);
+        if(rendered_frames==9)config.temperature_celsius=-3.0;
+        config.daylight.start_hour=12;
+        if(rendered_frames==2){config.daylight.start_hour=0;config.daylight.moon_phase=0.5;} // a full moon due south
+        if(rendered_frames==3) {
+          // Bisect the evening hour at which the sun stands three degrees below the horizon.
+          double lo=12,hi=24;
+          for(int i=0;i<60;++i){const double mid=0.5*(lo+hi);if(sun_for_hour(config.daylight,mid).altitude_degrees>-3)lo=mid;else hi=mid;}
+          config.daylight.start_hour=0.5*(lo+hi);
+        }
+        weather.set_config(config);
+        weather.reset();
+        if(rendered_frames==6)weather.advance(120.0);
+        if(rendered_frames==8){for(int i=0;i<2400;++i)weather.advance(0.1);weather.set_time(0.0);} // four weather hours of rain, frozen sun
+        if(rendered_frames==9){for(int i=0;i<2400;++i)weather.advance(0.1);weather.set_time(0.0);} // four weather hours of snow
+        if(rendered_frames==7) {
+          // The first bright strike that lands near the middle of the terrain.
+          double strike_time=-1;
+          for(double t=0.05;t<3600 && strike_time<0;t+=0.05) {
+            const auto strike=lightning_strike_at(t,1.0,config.seed);
+            if(strike.active && strike.intensity>0.85 && std::abs(strike.u-0.5)<0.12 && std::abs(strike.v-0.5)<0.12)strike_time=t;
+          }
+          if(strike_time<0)throw std::runtime_error("no central lightning strike within an hour of storm");
+          weather.set_time(strike_time);
+        }
+        // Frames 1..3 compare against the CPU lighting twin and frame 4 against
+        // frame 1's brightness: plain materials without contours or detail.
+        auto staged=terrain_style;
+        if(rendered_frames>=1 && rendered_frames<=4){staged.contour_interval_meters=0;staged.detail_strength=0;}
+        rendered_rock_relief=staged.detail_strength*staged.rock_relief_meters;
+        const auto packed=pack_terrain_style(staged);
+        device.update_buffer(style_buffer,0,std::as_bytes(std::span(packed)));
+      }
       if(options.terrain_tile_test && rendered_frames>0) {
         distance=scene_camera.starting_distance*0.2;
         yaw=rendered_frames==1?0.45:1.95;pitch=0.55;
@@ -1912,6 +2293,34 @@ int main(int argc, char** argv) {
                      options.vegetation_test || options.fire_test)?0.0:engine_time);
       const auto& camera_vp=camera_frame.view_projection;
       const auto terrain_frustum=Frustum::from_view_projection(camera_vp);
+      // Atmosphere for this frame: the camera basis for the sky rays, the sun,
+      // the cloud layer and the wind; the orographic field follows the wind
+      // and is recomputed between passes whenever it veers or gusts enough.
+      AtmosphereState weather_state;
+      if(weather.config().enabled) {
+        const auto wind=weather.wind();
+        if(weather.field_stale(wind)) {
+          const auto field=compute_orographic_field(height_field,wind,weather.layer(),weather.config().stability_hz);
+          atmosphere.update_field(field);
+          weather.mark_field(wind,field);
+          report_weather("field");
+        }
+        CameraBasis basis;
+        basis.eye=camera_frame.eye;
+        basis.forward=(scene_camera.target-camera_frame.eye).normalized();
+        basis.right=basis.forward.cross({0,1,0}).normalized();
+        basis.up=basis.right.cross(basis.forward).normalized();
+        basis.tan_half_fov_y=std::tan(3.14159265358979323846/6.0);
+        basis.tan_half_fov_x=basis.tan_half_fov_y*static_cast<double>(scene_width)/static_cast<double>(scene_height);
+        weather_state=weather.state(basis,scene_camera.target.y);
+        weather_state.rock_relief_meters=std::clamp(rendered_rock_relief,0.0,50.0);
+      }
+      atmosphere.update(weather_state);
+      if(weather_state.enabled && std::abs(weather_state.flood_rise_meters-built_flood_rise)>0.15)rebuild_water(weather_state.flood_rise_meters);
+      else if(!weather_state.enabled && built_flood_rise>0.0)rebuild_water(0.0);
+      // Fire weather: hot dry air lifts the flames, rain beats them down (visual only; the
+      // replay decided which cells burn under the same conditions through the v3 contract).
+      fire_style.vigour=weather_state.enabled?std::clamp(1.0+2.5*weather_state.fire_weather,0.25,1.6):1.0;
       TerrainResidencyChange terrain_residency_change;
       if(options.terrain_residency) {
         terrain_residency_change=draw_surface?tiled_terrain->synchronize_visible(terrain_frustum,!options.no_culling):
@@ -1923,7 +2332,8 @@ int main(int argc, char** argv) {
       }
       if(record_gpu)device.begin_gpu_timing();
       DrawIndexed command{pipeline,vb,ib,0,static_cast<std::uint32_t>(upload.indices.size()),
-                          {{0,camera},{kTerrainStyleSlot,style_buffer}}, {}};
+                          {{0,camera},{kTerrainStyleSlot,style_buffer},{kAtmosphereSlot,atmosphere.binding().block}}, {},
+                          {{kOrographicFieldSlot,atmosphere.binding().field},{kRunoffFieldSlot,atmosphere.binding().runoff}}};
       if(fire_buffer)command.storage_buffers.push_back({1,*fire_buffer});
       if(layer_buffer)command.uniform_buffers.push_back({10,*layer_buffer});
       std::vector<std::uint8_t> terrain_reference;
@@ -1935,7 +2345,7 @@ int main(int argc, char** argv) {
       RenderPassScope terrain_pass(device,{scene_target});
       TerrainTileDrawStats terrain_stats;
       if(tiled_terrain) {
-        if(draw_surface)terrain_stats=tiled_terrain->draw(pipeline,camera,fire_buffer,terrain_frustum,!options.no_culling,layer_buffer,style_buffer);
+        if(draw_surface)terrain_stats=tiled_terrain->draw(pipeline,camera,atmosphere.binding(),fire_buffer,terrain_frustum,!options.no_culling,layer_buffer,style_buffer);
         else terrain_stats.total=tiled_terrain->tile_count();
         frame_draws+=static_cast<std::uint32_t>(terrain_stats.draws);
         if(options.smoke_test && device.capture_rgba(scene_width,scene_height)!=terrain_reference)
@@ -2152,11 +2562,160 @@ int main(int argc, char** argv) {
            (rendered_frames==6 && pixels!=replay_initial_pixels))
           throw std::runtime_error("replay backward/reset pixels did not restore selected frame");
       }
+      // The sky dome fills what no terrain covered (far depth), before the
+      // transparent water so reflections and waves blend over it.
+      if(sky && weather_state.enabled){sky->draw(atmosphere.binding());++frame_draws;}
+      if(options.weather_test) {
+        const auto pixels=device.capture_rgba(scene_width,scene_height);
+        const auto clear=RenderPassDesc{}.clear_color;
+        std::array<std::uint8_t,3> clear_rgb{};
+        for(std::size_t c=0;c<3;++c)clear_rgb[c]=static_cast<std::uint8_t>(std::lround(clear[c]*255.0));
+        const std::size_t count=pixels.size()/4;
+        const auto luminance=[&](std::size_t i){return (0.299*pixels[i*4]+0.587*pixels[i*4+1]+0.114*pixels[i*4+2])/255.0;};
+        // Mean brightness of the ground (non-sky) and the sky regions.
+        double ground_sum=0,sky_sum=0,sky_r=0,sky_b=0;std::size_t ground_n=0,sky_n=0,sky_changed=0,bright_sky=0,grey_sky=0;
+        for(std::size_t i=0;i<count;++i) {
+          const bool is_sky=!weather_sky_mask.empty() && weather_sky_mask[i];
+          if(is_sky) {
+            ++sky_n;sky_sum+=luminance(i);sky_r+=pixels[i*4];sky_b+=pixels[i*4+2];
+            if(pixels[i*4]!=clear_rgb[0] || pixels[i*4+1]!=clear_rgb[1] || pixels[i*4+2]!=clear_rgb[2])++sky_changed;
+            if(luminance(i)>0.4)++bright_sky;
+            const int hi=std::max({pixels[i*4],pixels[i*4+1],pixels[i*4+2]}),lo=std::min({pixels[i*4],pixels[i*4+1],pixels[i*4+2]});
+            if(hi-lo<28)++grey_sky;
+          } else {++ground_n;ground_sum+=luminance(i);}
+        }
+        const double ground_mean=ground_n?ground_sum/ground_n:0,sky_mean=sky_n?sky_sum/sky_n:0;
+        // CPU twin of the lighting and haze at every visible interior vertex (clear sky frames).
+        std::size_t candidates=0,matched=0;
+        if(rendered_frames>=1 && rendered_frames<=3) {
+          auto base_style=terrain_style;base_style.contour_interval_meters=0;base_style.detail_strength=0;
+          constexpr int kTolerance=12;
+          for(const auto& vertex:mesh.vertices) {
+            const std::int64_t sim_x=mesh.origin_grid_x+(static_cast<std::int64_t>(vertex.grid_x)-mesh.origin_grid_x)/mesh.refinement;
+            const std::int64_t sim_y=mesh.origin_grid_y+(static_cast<std::int64_t>(vertex.grid_y)-mesh.origin_grid_y)/mesh.refinement;
+            bool interior=true;
+            for(int dy=-1;dy<=2 && interior;++dy)for(int dx=-1;dx<=2;++dx) {
+              const auto neighbour=grid.find(static_cast<int>(sim_x+dx),static_cast<int>(sim_y+dy));
+              if(neighbour==terraflux::compute::kAbsent || !grid.cells[static_cast<std::size_t>(neighbour)].elevation_meters){interior=false;break;}
+            }
+            if(!interior)continue;
+            const auto clip=camera_vp.transform({vertex.position.x,vertex.position.y,vertex.position.z,1});
+            if(!(clip.w>0))continue;
+            const double nx=clip.x/clip.w,ny=clip.y/clip.w;
+            if(nx<-0.98 || nx>0.98 || ny<-0.98 || ny>0.98)continue;
+            const int px=std::clamp(static_cast<int>(std::floor((nx*0.5+0.5)*scene_width)),0,scene_width-1);
+            const int py=std::clamp(static_cast<int>(std::floor((ny*0.5+0.5)*scene_height)),0,scene_height-1);
+            const TerrainSurfacePoint point{vertex.position.y,vertex.normal,vertex.fuel_load,vertex.fuel_moisture,vertex.curvature};
+            const auto material=terrain_material(point,base_style);
+            const auto lit=atmosphere_shade(material.albedo,vertex.normal,weather_state);
+            const auto expected=atmosphere_haze(lit,vertex.position,weather_state);
+            const double channels[3]={expected.x,expected.y,expected.z};
+            bool ok=true;
+            for(int c=0;c<3;++c) {
+              const int want=static_cast<int>(std::lround(std::clamp(channels[c],0.0,1.0)*255.0));
+              if(std::abs(want-static_cast<int>(pixels[(static_cast<std::size_t>(py)*scene_width+px)*4+c]))>kTolerance)ok=false;
+            }
+            ++candidates;if(ok)++matched;
+          }
+        }
+        const auto* field=weather.field();
+        std::cout<<"WEATHER_TEST_JSON={\"frame\":"<<rendered_frames<<",\"enabled\":"<<(weather_state.enabled?"true":"false")
+                 <<",\"phase\":\""<<daylight_phase_name(weather_state.sun.phase)<<"\",\"sun_altitude_deg\":"<<weather_state.sun.altitude_degrees
+                 <<",\"ground_mean\":"<<ground_mean<<",\"sky_mean\":"<<sky_mean<<",\"sky_pixels\":"<<sky_n<<",\"sky_changed\":"<<sky_changed
+                 <<",\"bright_sky\":"<<bright_sky<<",\"grey_sky\":"<<grey_sky<<",\"sky_red_over_blue\":"<<(sky_b>0?sky_r/sky_b:0)
+                 <<",\"candidates\":"<<candidates<<",\"matched\":"<<matched
+                 <<",\"wind_mps\":"<<weather_state.wind.speed_mps<<",\"precipitation\":"<<weather_state.precipitation
+                 <<",\"in_cloud_texels\":"<<(field?field->in_cloud_texels:0)<<",\"windward_texels\":"<<(field?field->windward_texels:0)<<"}\n";
+        const auto wc=weather.effective_wind();
+        if(weather_state.enabled && (weather_state.wind.speed_mps<wc.speed_min_mps-1e-9 || weather_state.wind.speed_mps>wc.speed_max_mps+1e-9))
+          throw std::runtime_error("wind left its thresholds");
+        if(rendered_frames==7 && wc.speed_max_mps<=weather_config.wind.speed_max_mps+6.0)
+          throw std::runtime_error("the thunderstorm did not widen the wind thresholds");
+        if(rendered_frames==0) {
+          if(weather_state.enabled)throw std::runtime_error("weather test frame 0 must be neutral");
+          weather_reference=pixels;
+          weather_sky_mask.assign(count,false);
+          std::size_t sky_count=0;
+          for(std::size_t i=0;i<count;++i) {
+            weather_sky_mask[i]=pixels[i*4]==clear_rgb[0] && pixels[i*4+1]==clear_rgb[1] && pixels[i*4+2]==clear_rgb[2];
+            if(weather_sky_mask[i])++sky_count;
+          }
+          if(sky_count*10<count*2)throw std::runtime_error("weather test needs the sky in at least a fifth of the frame");
+        } else if(rendered_frames==1) {
+          if(sky_changed*100<sky_n*99)throw std::runtime_error("the sky dome did not cover the clear color");
+          if(bright_sky*10<sky_n*6 || sky_r>=sky_b)throw std::runtime_error("the noon sky is not bright and blue");
+          if(candidates<100 || matched*10<candidates*6)throw std::runtime_error("daylight terrain pixels do not match the CPU lighting twin");
+          weather_day_brightness=ground_mean;
+        } else if(rendered_frames==2) {
+          if(weather_state.sun.phase!=DaylightPhase::Night)throw std::runtime_error("midnight is not night");
+          if(ground_mean>weather_day_brightness*0.3)throw std::runtime_error("the ground is not dark at night");
+          if(sky_mean>0.12)throw std::runtime_error("the night sky is not dark");
+          std::size_t stars=0;
+          for(std::size_t i=0;i<count;++i)if(weather_sky_mask[i] && luminance(i)>0.3)++stars;
+          if(stars<10)throw std::runtime_error("no stars at night");
+          if(candidates<100 || matched*10<candidates*6)throw std::runtime_error("moonlit terrain pixels do not match the CPU lighting twin");
+          if(weather_state.sun.moon_intensity<0.08 || weather_state.sun.light_direction.dot(weather_state.sun.moon_direction)<0.999)
+            throw std::runtime_error("the full moon is not the night's light");
+          weather_night_brightness=ground_mean;
+        } else if(rendered_frames==3) {
+          if(weather_state.sun.phase!=DaylightPhase::CivilTwilight)throw std::runtime_error("the twilight frame is not civil twilight");
+          if(ground_mean<=weather_night_brightness*1.25 || ground_mean>=weather_day_brightness*0.8)
+            throw std::runtime_error("civil twilight is not between night and day");
+          // The glow above the horizon is warm: sample the sky just above the silhouette.
+          double r=0,b=0;std::size_t n=0;
+          for(int x=0;x<scene_width;++x) {
+            int horizon=-1;
+            for(int y=0;y<scene_height && horizon<0;++y)if(weather_sky_mask[static_cast<std::size_t>(y)*scene_width+x])horizon=y;
+            if(horizon<0)continue;
+            for(int y=horizon;y<std::min(scene_height,horizon+24);++y) {
+              const std::size_t i=static_cast<std::size_t>(y)*scene_width+x;
+              if(!weather_sky_mask[i])continue;
+              r+=pixels[i*4];b+=pixels[i*4+2];++n;
+            }
+          }
+          if(!n || r<=b*1.15)throw std::runtime_error("the twilight horizon does not glow warm");
+          if(candidates<100 || matched*10<candidates*6)throw std::runtime_error("twilight terrain pixels do not match the CPU lighting twin");
+        } else if(rendered_frames==4) {
+          if(grey_sky*10<sky_n*8)throw std::runtime_error("the stratus sky is not overcast grey");
+          if(ground_mean>=weather_day_brightness*0.95)throw std::runtime_error("the overcast ground is not darker than the clear noon");
+          if(!field || field->in_cloud_texels==0 || field->windward_texels==0)
+            throw std::runtime_error("stratus did not reach the summit or thicken on the windward slope");
+          weather_before_rain=pixels;
+        } else if(rendered_frames==5) {
+          weather_cumulus=pixels;
+        } else if(rendered_frames==6) {
+          std::size_t moved=0;
+          for(std::size_t i=0;i<count;++i)
+            if(weather_sky_mask[i] && (pixels[i*4]!=weather_cumulus[i*4] || pixels[i*4+1]!=weather_cumulus[i*4+1] || pixels[i*4+2]!=weather_cumulus[i*4+2]))++moved;
+          if(moved*20<sky_n)throw std::runtime_error("the clouds did not drift with the wind");
+          if(std::abs(weather_state.wind.speed_mps-weather_cumulus_wind)<1e-6)throw std::runtime_error("the wind did not gust between the frames");
+        } else if(rendered_frames==7) {
+          if(weather_state.cloud.storm<0.99 || weather_state.lightning<0.5)throw std::runtime_error("the thunderstorm frame has no flash");
+          if(weather_state.precipitation<=0.3)throw std::runtime_error("the thunderstorm frame is not raining");
+        } else if(rendered_frames==8) {
+          std::cout<<"WEATHER_FLOOD_JSON={\"rainfall_mm\":"<<weather_state.rainfall_mm<<",\"ponding\":"<<weather_state.ponding
+                   <<",\"flood_rise_m\":"<<weather_state.flood_rise_meters<<",\"water_level_m\":"<<(water_style?water_style->level_meters:0.0)
+                   <<",\"base_level_m\":"<<base_water_level<<"}\n";
+          if(weather_state.rainfall_mm<8.0 || weather_state.ponding<0.3 || weather_state.flood_rise_meters<0.15)
+            throw std::runtime_error("four hours of rain left no puddles or flood rise");
+          if(!water_style || water_style->level_meters<base_water_level+0.15)throw std::runtime_error("the flood did not raise the water");
+          if(weather_state.runoff<0.5 || weather_state.snow || weather_state.freezing_level_meters<weather_state.camera.eye.y)
+            throw std::runtime_error("warm rain did not run off below a freezing level above the scene");
+          if(runoff_field.channel_texels==0 || runoff_field.waterfall_texels==0)throw std::runtime_error("the demo terrain has no channels or waterfalls");
+        } else if(rendered_frames==9) {
+          std::cout<<"WEATHER_SNOW_JSON={\"snow\":"<<(weather_state.snow?"true":"false")<<",\"freezing_level_m\":"<<weather_state.freezing_level_meters
+                   <<",\"snow_cover\":"<<weather_state.snow_cover<<",\"runoff\":"<<weather_state.runoff<<",\"surface_temperature_c\":"<<weather_state.temperature_celsius<<"}\n";
+          if(!weather_state.snow || weather_state.freezing_level_meters>scene_camera.target.y+1.0 || weather_state.snow_cover<0.3 || weather_state.runoff>0.0)
+            throw std::runtime_error("freezing rain did not turn to snow with a cover on the ground and no runoff");
+        } else if(pixels!=weather_reference)throw std::runtime_error("disabling the weather did not restore the reference");
+        if(rendered_frames==5)weather_cumulus_wind=weather_state.wind.speed_mps;
+      }
       // Water belongs to the surface layer: it follows the terrain in the same
       // pass so asset diagnostics still compare against the complete ground.
       std::vector<std::uint8_t> water_before;
       if(water && layer_visibility.terrain) {
-        auto staged=*water_style;
+        // The wind raises the sea: storms bring high, fast, choppy waves; a calm flattens them.
+        auto staged=weather_state.enabled?weather.water_for(*water_style):*water_style;
         // Smoke diagnostics compare frames, so their water does not animate.
         double water_time=options.smoke_test?0.0:engine_time;
         if(options.water_test) {
@@ -2169,7 +2728,8 @@ int main(int argc, char** argv) {
         const auto packed=pack_water_style(staged,camera_frame.eye,water_time);
         device.update_buffer(water->style,0,std::as_bytes(std::span(packed)));
         device.draw_indexed({water->pipeline,water->vb,water->ib,0,water->indices,
-                             {{0,camera},{kWaterStyleSlot,water->style}},{}});
+                             {{0,camera},{kWaterStyleSlot,water->style},{kAtmosphereSlot,atmosphere.binding().block}},{},
+                             {{kOrographicFieldSlot,atmosphere.binding().field}}});
         ++frame_draws;
       }
       if(options.water_test) {
@@ -2280,8 +2840,8 @@ int main(int argc, char** argv) {
         const double vegetation_time=options.vegetation_test?(rendered_frames==3?1.5:0.0):(options.smoke_test?0.0:engine_time);
         const auto packed=pack_vegetation_style(vegetation_style,camera_frame.eye,vegetation_time,vegetation_fire);
         device.update_buffer(*vegetation_style_buffer,0,std::as_bytes(std::span(packed)));
-        vegetation_stats=vegetation->draw(*vegetation_pipeline,camera,*vegetation_style_buffer,vegetation_fire_buffer,terrain_frustum,
-                                          camera_frame.eye,vegetation_style,!options.no_culling);
+        vegetation_stats=vegetation->draw(*vegetation_pipeline,camera,*vegetation_style_buffer,vegetation_fire_buffer,atmosphere.binding(),
+                                          terrain_frustum,camera_frame.eye,vegetation_style,!options.no_culling);
         frame_draws+=static_cast<std::uint32_t>(vegetation_stats.draws);
         if(options.smoke_test || (options.profile && profile_frames%120==0))
           std::cout<<"VEGETATION_DRAW_JSON={\"chunks_visible\":"<<vegetation_stats.chunks_visible<<",\"chunks\":"<<vegetation_stats.chunks_total
@@ -2463,11 +3023,85 @@ int main(int argc, char** argv) {
         const double fire_time=options.fire_test?(rendered_frames==2?0.6:0.0):(options.smoke_test?0.0:engine_time);
         const auto packed=pack_fire_style(fire_style,camera_frame.eye,fire_time);
         device.update_buffer(*fire_style_buffer,0,std::as_bytes(std::span(packed)));
-        fire_stats=fire_effects->draw(*fire_pipeline,camera,*fire_style_buffer,terrain_frustum,camera_frame.eye,
+        fire_stats=fire_effects->draw(*fire_pipeline,camera,*fire_style_buffer,atmosphere.binding(),terrain_frustum,camera_frame.eye,
                                       fire_style.draw_distance_meters,!options.no_culling);
         frame_draws+=static_cast<std::uint32_t>(fire_stats.draws);
         if(options.smoke_test || (options.profile && profile_frames%120==0))
           std::cout<<"FIRE_DRAW_JSON={\"flames\":"<<fire_stats.flames<<",\"smoke\":"<<fire_stats.smoke<<",\"draws\":"<<fire_stats.draws<<"}\n";
+      }
+      // Lightning channels from the cloud base to the ground while a flash lasts.
+      LightningDrawStats lightning_stats;
+      std::vector<std::uint8_t> before_lightning;
+      if(options.weather_test && rendered_frames==7)before_lightning=device.capture_rgba(scene_width,scene_height);
+      if(lightning && weather_state.enabled && weather_state.strike.active) {
+        const auto& strike=weather_state.strike;
+        const terraflux::math::Vec3 top{weather_state.strike_position.x,weather_state.cloud.base_meters,weather_state.strike_position.z};
+        const auto ground=ground_sampler.sample(top.x,top.z);
+        const double ground_y=ground?ground->position.y:mesh.min_elevation_meters;
+        lightning_stats=lightning->draw(camera,atmosphere.binding(),strike,top,ground_y,camera_frame.eye);
+        frame_draws+=static_cast<std::uint32_t>(lightning_stats.draws);
+      }
+      if(options.weather_test && rendered_frames==7) {
+        const auto after=device.capture_rgba(scene_width,scene_height);
+        std::size_t bolt_pixels=0;
+        for(std::size_t i=0;i<after.size();i+=4)
+          if(after[i]!=before_lightning[i] || after[i+1]!=before_lightning[i+1] || after[i+2]!=before_lightning[i+2])++bolt_pixels;
+        std::cout<<"WEATHER_STORM_JSON={\"strike\":"<<(weather_state.strike.active?"true":"false")<<",\"flash\":"<<weather_state.strike.intensity
+                 <<",\"segments\":"<<lightning_stats.segments<<",\"bolt_pixels\":"<<bolt_pixels<<",\"rain_mm_h\":"<<weather_state.precipitation_mm_h
+                 <<",\"surface_temperature_c\":"<<weather_state.temperature_celsius<<",\"fire_weather\":"<<weather_state.fire_weather
+                 <<",\"wind_mps\":"<<weather_state.wind.speed_mps<<",\"wave_height_m\":"<<weather.water_for(*water_style).wave_height_meters<<"}\n";
+        if(!weather_state.strike.active || weather_state.strike.intensity<0.5 || !lightning_stats.segments || bolt_pixels<40)
+          throw std::runtime_error("the thunderstorm drew no lightning channel");
+        if(weather_state.precipitation_mm_h<5.0 || weather_state.fire_weather>-0.1)
+          throw std::runtime_error("the thunderstorm brings no heavy rain that cools the fire weather");
+        if(weather_state.temperature_celsius>=weather_config.temperature_celsius-3.0)
+          throw std::runtime_error("the downpour did not cool the surface air");
+        if(weather.water_for(*water_style).wave_height_meters<=water_style->wave_height_meters)
+          throw std::runtime_error("the storm wind did not raise the waves");
+      }
+      // Waterfall spray: drizzle off the lips, splash off the ledges and plumes from the
+      // plunge pools while rain water runs; lit and bowed drop by drop.
+      SprayDrawStats spray_stats;
+      std::vector<std::uint8_t> before_spray;
+      const bool spray_report=options.smoke_test && (options.weather_test?rendered_frames==8:rendered_frames==0) && weather_state.enabled && weather_state.runoff>0.0;
+      if(spray_report)before_spray=device.capture_rgba(scene_width,scene_height);
+      if(spray && weather_state.enabled && weather_state.runoff>0.0) {
+        spray_stats=spray->draw(camera,atmosphere.binding(),weather_state.runoff);
+        frame_draws+=static_cast<std::uint32_t>(spray_stats.draws);
+      }
+      if(spray_report) {
+        const auto after=device.capture_rgba(scene_width,scene_height);
+        std::size_t spray_pixels=0,lit_pixels=0,tinted_pixels=0;
+        for(std::size_t i=0;i<after.size();i+=4) {
+          const int dr=int(after[i])-before_spray[i],dg=int(after[i+1])-before_spray[i+1],db=int(after[i+2])-before_spray[i+2];
+          if(dr || dg || db)++spray_pixels;
+          if(dr+dg+db>30)++lit_pixels;
+          // A bow fragment: a brightening with an unequal spread across the channels.
+          if(dr+dg+db>12 && std::max({dr,dg,db})-std::min({dr,dg,db})>10)++tinted_pixels;
+        }
+        std::cout<<"WEATHER_SPRAY_JSON={\"emitters\":"<<spray_stats.emitters<<",\"particles\":"<<spray_stats.particles<<",\"draws\":"<<spray_stats.draws
+                 <<",\"changed\":"<<spray_pixels<<",\"lit\":"<<lit_pixels<<",\"tinted\":"<<tinted_pixels<<",\"runoff\":"<<weather_state.runoff
+                 <<",\"lips\":"<<runoff_field.lip_texels<<",\"plunges\":"<<runoff_field.plunge_texels<<",\"max_drop_m\":"<<runoff_field.max_drop_meters<<"}\n";
+        if(options.weather_test && (!spray_stats.draws || !spray_stats.emitters || runoff_field.lip_texels==0 || runoff_field.plunge_texels==0 || spray_pixels<100))
+          throw std::runtime_error("running water drew no visible waterfall spray");
+      }
+      if(options.weather_test && rendered_frames==9 && spray_stats.draws)throw std::runtime_error("frozen ground sprayed a waterfall");
+      // Rain or snow last: streaks around the camera, blended over everything.
+      PrecipitationDrawStats precipitation_stats;
+      std::vector<std::uint8_t> dry_pixels;
+      if(options.weather_test && (rendered_frames==4 || rendered_frames==9))dry_pixels=device.capture_rgba(scene_width,scene_height);
+      if(precipitation && weather_state.enabled && weather_state.precipitation>0.0) {
+        precipitation_stats=precipitation->draw(camera,atmosphere.binding(),weather_state.precipitation);
+        frame_draws+=static_cast<std::uint32_t>(precipitation_stats.draws);
+      }
+      if(options.weather_test && (rendered_frames==4 || rendered_frames==9)) {
+        const auto wet_pixels=device.capture_rgba(scene_width,scene_height);
+        std::size_t streaks=0;
+        for(std::size_t i=0;i<wet_pixels.size();i+=4)
+          if(wet_pixels[i]!=dry_pixels[i] || wet_pixels[i+1]!=dry_pixels[i+1] || wet_pixels[i+2]!=dry_pixels[i+2])++streaks;
+        std::cout<<"WEATHER_RAIN_JSON={\"particles\":"<<precipitation_stats.particles<<",\"draws\":"<<precipitation_stats.draws
+                 <<",\"changed\":"<<streaks<<",\"snow\":"<<(weather_state.snow?"true":"false")<<"}\n";
+        if(!precipitation_stats.draws || streaks<200)throw std::runtime_error(rendered_frames==4?"stratus drizzle drew no visible precipitation":"snow drew no visible flakes");
       }
       if(options.fire_test) {
         const auto pixels=device.capture_rgba(scene_width,scene_height);
@@ -2611,6 +3245,11 @@ int main(int argc, char** argv) {
         if(rendered_frames==4) {
           // Charred plants: trees in burned cells must render darker than living ones.
           std::cout<<"Fire effects passed: fuel-gated flames and smoke rise from burning cells, animate, char the vegetation and hide cleanly\n";
+          break;
+        }
+      }else if(options.weather_test) {
+        if(rendered_frames==11) {
+          std::cout<<"Weather passed: sky dome, daylight and moonlight match the CPU twin, twilight glows, stratus fogs the summit and drizzles, cumulus drifts with a gusting wind, the thunderstorm strikes, pours, squalls and cools, rain runs off, floods and sprays off the cliffs, freezing rain snows, disabling restores the reference\n";
           break;
         }
       }else if(options.vegetation_test) {

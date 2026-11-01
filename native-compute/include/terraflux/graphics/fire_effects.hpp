@@ -31,13 +31,16 @@ struct FireStyle {
   double draw_distance_meters = 6000;  // 100 .. 50000
   double wind_direction_degrees = 90;  // compass direction the wind blows toward
   double wind_speed_mps = 3.0;         // 0 .. 30
+  // Fire weather: 1 is neutral; hot dry air lifts the flames, rain beats them down and turns
+  // the smoke to steam (0.1 .. 3, per frame, no emitter rebuild).
+  double vigour = 1.0;
   std::uint32_t seed = 0;
   math::Vec3 light_direction{-0.4545, 0.7660, 0.4545};
 };
 // Uniform block "FireStyle" at slot 14, std140, four vec4s:
 //   wind:   unit direction (x, z), speed, time
 //   eye:    camera position, flame scale
-//   params: smoke scale, smoke height, draw distance, 0
+//   params: smoke scale, smoke height, draw distance, vigour
 //   light:  unit direction toward the light, 0
 inline constexpr std::uint32_t kFireStyleSlot = 14;
 inline constexpr std::size_t kFireStyleBytes = 64;
@@ -49,7 +52,8 @@ struct FireVertex { float position[2]; float uv[2]; };
 struct FireMesh { std::vector<FireVertex> vertices; std::vector<std::uint32_t> indices; };
 FireMesh make_fire_quad();
 // POSITION (0, float2), TEXCOORD (1, float2); Camera at slot 0, FireStyle at
-// slot 14 (both stages), InstanceData at slot 4 with 48-byte records.
+// slot 14 (both stages), InstanceData at slot 4 with 48-byte records,
+// Atmosphere at slot 15 (fragment) and the OrographicField texture at slot 1.
 ShaderLayout fire_shader_layout();
 
 // One flame or plume: std430 three vec4s.
@@ -106,8 +110,8 @@ class FireEffectsRenderer {
   const FireEmitters& emitters() const { return emitters_; }
   std::size_t capacity() const { return capacity_; }
   // Transparent pass: draws flames then smoke within the draw distance and frustum.
-  FireDrawStats draw(PipelineHandle pipeline, BufferHandle camera, BufferHandle style, const Frustum& frustum,
-                     math::Vec3 eye, double draw_distance_meters, bool cull = true);
+  FireDrawStats draw(PipelineHandle pipeline, BufferHandle camera, BufferHandle style, const AtmosphereBinding& atmosphere,
+                     const Frustum& frustum, math::Vec3 eye, double draw_distance_meters, bool cull = true);
  private:
   RenderDevice& device_;
   RenderResourceOwner resources_;

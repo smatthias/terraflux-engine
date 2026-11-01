@@ -1,6 +1,6 @@
 """Deterministic reference implementation. Native execution must preserve this contract."""
 from math import atan, atan2, cos, pi, sqrt
-from .contracts import GridCell, SpreadFrame, SpreadRequest, SpreadResponse, terrain_enabled
+from .contracts import GridCell, SpreadFrame, SpreadRequest, SpreadResponse, WeatherSample, terrain_enabled, weather_enabled
 
 # Environmental drivers (wind and terrain). Constants are mirrored in
 # native-compute/include/terraflux/contracts.hpp; keep them in sync.
@@ -46,6 +46,30 @@ WIND_HEADWIND_WEIGHT = 0.10
 SLOPE_UPHILL_WEIGHT = 0.15
 SLOPE_DOWNHILL_WEIGHT = 0.075
 SLOPE_SATURATION_DEGREES = 30.0
+# v3 weather term (see weather_term()):
+#
+#   heat    = clamp((T - 20) / 20, -1, 1)        -1 at 0 C, 0 at 20 C, +1 at 40 C
+#   dryness = 1 - relative_humidity
+#   rain    = clamp(P / 10, 0, 1)                 saturates at 10 mm/h
+#   weather = heat * (0.5 + 0.5 * dryness) * HEAT_WEIGHT - rain * RAIN_WEIGHT
+#
+# Rationale:
+# * Air temperature and humidity set the equilibrium moisture of fine dead fuel (the fuel
+#   moisture is still the cell's own input; the weather shifts the propensity around it). A hot
+#   and dry afternoon adds up to +0.10 - comparable to a moderate tail wind - so marginal fuel
+#   burns that would not at 20 C; cold air subtracts up to 0.10 (0.05 when saturated). Humid heat
+#   dries less than dry heat, hence the (0.5 + 0.5 * dryness) factor.
+# * Rain wets the fuel within the step: 10 mm/h or more subtracts 0.30, more than any single
+#   other driver, so a downpour stops most running fires; only saturated fuel under a gale on
+#   a steep climb keeps creeping. Drizzle (1 mm/h) costs 0.03. The term is stateless per step:
+#   authors model persistence by listing wet steps (fuel that stays wet) in the series.
+# * 20 C, 50 % humidity and no rain give exactly 0.0, as does an absent weather block, so v3
+#   without weather reproduces v2 bit-for-bit (the term is appended last).
+HEAT_WEIGHT = 0.10
+RAIN_WEIGHT = 0.30
+WEATHER_NEUTRAL_TEMPERATURE = 20.0
+WEATHER_HEAT_SCALE_DEGREES = 20.0
+WEATHER_RAIN_SATURATION_MM_H = 10.0
 # Elevation voids are filled in-engine (v2) from the nearest known cell along each of the 8 compass
 # rays, inverse-distance weighted - the same scheme as GDAL's FillNodata. The nearest hits are found
 # with one linear sweep per direction, so the cost is O(cells) however far away the hits are, and
@@ -219,15 +243,39 @@ def wind_term(wind_norm: float, wind_cos: float) -> float:
     return tail_drive * WIND_WEIGHT - head_drive * WIND_HEADWIND_WEIGHT
 
 
+def weather_term(sample: WeatherSample | None) -> float:
+    """v3 contribution of air temperature, humidity and rain; exactly 0.0 without a sample."""
+    if sample is None:
+        return 0.0
+    heat = _clamp((sample.temperature_celsius - WEATHER_NEUTRAL_TEMPERATURE) / WEATHER_HEAT_SCALE_DEGREES, -1, 1)
+    dryness = 1 - sample.relative_humidity
+    rain = _clamp(sample.precipitation_mm_h / WEATHER_RAIN_SATURATION_MM_H, 0, 1)
+    return heat * (0.5 + 0.5 * dryness) * HEAT_WEIGHT - rain * RAIN_WEIGHT
+
+
+def weather_for_step(request: SpreadRequest, step: int) -> WeatherSample | None:
+    """The sample that applies to ``step``: the single sample, or the series entry (the last
+    entry persists past the end of the series). None under v1/v2 or without weather."""
+    if not weather_enabled(request.contract_version) or request.weather is None:
+        return None
+    if isinstance(request.weather, WeatherSample):
+        return request.weather
+    if not request.weather:
+        return None
+    return request.weather[min(step, len(request.weather) - 1)]
+
+
 def spread_score(request: SpreadRequest, target: GridCell, dx: int, dy: int,
-                 z_source: float | None = None, z_target: float | None = None) -> float:
+                 z_source: float | None = None, z_target: float | None = None,
+                 weather: WeatherSample | None = None) -> float:
     """Spread propensity in [0, 1] for fire moving to the adjacent ``target`` along (dx, dy).
 
     ``z_source``/``z_target`` are the (possibly engine-filled) elevations; ``None`` means unknown.
     Pure arithmetic; the ignition rules (already burned, no fuel under v2, corner cutting,
     threshold) live in ``simulate``. Term order is part of the contract: the v1 partial sum must
-    stay bit-identical to the original kernel, and the v2 terrain term is appended last so
-    flat/missing terrain (exactly 0.0) leaves the sum untouched.
+    stay bit-identical to the original kernel, the v2 terrain term is appended after it so
+    flat/missing terrain (exactly 0.0) leaves the sum untouched, and the v3 weather term comes
+    last so neutral or absent weather (exactly 0.0) reproduces v2.
     """
     use_terrain = terrain_enabled(request.contract_version)
     bearing = (atan2(dx, dy) * 180 / pi + 360) % 360
@@ -251,7 +299,8 @@ def spread_score(request: SpreadRequest, target: GridCell, dx: int, dy: int,
         + (1 - target.fuel_moisture) * 0.25
         + target.burn_susceptibility * 0.25
         + wind
-        + terrain,
+        + terrain
+        + weather_term(weather),
         0,
         1,
     )
@@ -283,6 +332,7 @@ def simulate(request: SpreadRequest, engine: str = "python-reference") -> Spread
     frames: list[SpreadFrame] = []
     for step in range(request.steps):
         next_burning: set[tuple[int, int]] = set()
+        weather = weather_for_step(request, step)
         for x, y in burning:
             for dx, dy in NEIGHBOURS:
                 target = (x + dx, y + dy)
@@ -300,7 +350,7 @@ def simulate(request: SpreadRequest, engine: str = "python-reference") -> Spread
                     # break that is continuous on the ground.
                     if dx and dy and not passable((x + dx, y)) and not passable((x, y + dy)):
                         continue
-                score = spread_score(request, cell, dx, dy, elevations[(x, y)], elevations[target])
+                score = spread_score(request, cell, dx, dy, elevations[(x, y)], elevations[target], weather)
                 if score >= request.spread_threshold:
                     next_burning.add(target)
                     burned.add(target)

@@ -1,4 +1,5 @@
 #include <terraflux/graphics/vegetation.hpp>
+#include <terraflux/graphics/weather.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -284,7 +285,8 @@ ShaderLayout vegetation_shader_layout() {
           {{"Camera", ShaderResourceKind::UniformBuffer, 0, kVertexStage},
            {"VegetationStyle", ShaderResourceKind::UniformBuffer, kVegetationStyleSlot, kVertexStage | kFragmentStage},
            {"InstanceData", ShaderResourceKind::StorageBuffer, 4, kVertexStage},
-           {"PlantFireState", ShaderResourceKind::StorageBuffer, kVegetationFireSlot, kVertexStage}}};
+           {"PlantFireState", ShaderResourceKind::StorageBuffer, kVegetationFireSlot, kVertexStage},
+           atmosphere_binding(kFragmentStage), orographic_field_binding()}};
 }
 
 // ---------------------------------------------------------------------------
@@ -538,8 +540,8 @@ std::uint64_t VegetationRenderer::geometry_bytes() const {
 }
 
 VegetationDrawStats VegetationRenderer::draw(PipelineHandle pipeline, BufferHandle camera, BufferHandle style,
-                                             BufferHandle fire_states, const Frustum& frustum, math::Vec3 eye,
-                                             const VegetationStyle& ranges, bool cull) {
+                                             BufferHandle fire_states, const AtmosphereBinding& atmosphere,
+                                             const Frustum& frustum, math::Vec3 eye, const VegetationStyle& ranges, bool cull) {
   if (!device_.active_render_pass_id()) throw std::logic_error("vegetation requires an active pass");
   VegetationDrawStats stats;
   stats.chunks_total = placement_.chunks.size();
@@ -579,7 +581,9 @@ VegetationDrawStats VegetationRenderer::draw(PipelineHandle pipeline, BufferHand
       const auto count = std::min<std::size_t>(list.size() - offset, std::min<std::size_t>(capacity, 65535));
       device_.update_buffer(instances, 0, std::as_bytes(std::span(list).subspan(offset, count)));
       DrawIndexed command{pipeline, mesh.vb, mesh.ib, 0, mesh.indices,
-                          {{0, camera}, {kVegetationStyleSlot, style}}, {{4, instances}, {kVegetationFireSlot, fire_states}}, {},
+                          {{0, camera}, {kVegetationStyleSlot, style}, {kAtmosphereSlot, atmosphere.block}},
+                          {{4, instances}, {kVegetationFireSlot, fire_states}},
+                          {{kOrographicFieldSlot, atmosphere.field}},
                           static_cast<std::uint32_t>(count)};
       device_.draw_indexed(command);
       ++stats.draws;

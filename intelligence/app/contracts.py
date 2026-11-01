@@ -6,18 +6,38 @@ from pydantic import BaseModel, Field, field_validator
 # Contract history
 #   v1  fuel / moisture / susceptibility / wind. `elevation_meters` is accepted but has no effect.
 #   v2  adds `cell_size_meters` and the terrain (slope) term. Elevation now changes results.
-# Both versions remain accepted. A request is evaluated under the semantics of the version it
-# declares, so stored v1 requests replay bit-for-bit even if they carry elevation data.
+#   v3  adds `weather`: air temperature, relative humidity and rainfall, constant or per step,
+#       as a bounded additive term (heat dries the fuel, rain wets it). Absent weather is v2.
+# All versions remain accepted. A request is evaluated under the semantics of the version it
+# declares, so stored v1 requests replay bit-for-bit even if they carry elevation data, and
+# stored v2 requests replay bit-for-bit even if they carry a weather block.
 CONTRACT_VERSION_V1 = "terraflux.compute/v1"
 CONTRACT_VERSION_V2 = "terraflux.compute/v2"
-CONTRACT_VERSION = CONTRACT_VERSION_V2
-SUPPORTED_CONTRACT_VERSIONS = (CONTRACT_VERSION_V1, CONTRACT_VERSION_V2)
-ContractVersion = Literal["terraflux.compute/v1", "terraflux.compute/v2"]
+CONTRACT_VERSION_V3 = "terraflux.compute/v3"
+CONTRACT_VERSION = CONTRACT_VERSION_V3
+SUPPORTED_CONTRACT_VERSIONS = (CONTRACT_VERSION_V1, CONTRACT_VERSION_V2, CONTRACT_VERSION_V3)
+ContractVersion = Literal["terraflux.compute/v1", "terraflux.compute/v2", "terraflux.compute/v3"]
 
 
 def terrain_enabled(contract_version: str) -> bool:
     """Terrain was introduced in v2; v1 keeps the legacy, elevation-blind behaviour."""
     return contract_version != CONTRACT_VERSION_V1
+
+
+def weather_enabled(contract_version: str) -> bool:
+    """The weather term was introduced in v3; earlier versions ignore a `weather` block."""
+    return contract_version == CONTRACT_VERSION_V3
+
+
+class WeatherSample(BaseModel):
+    """Air conditions at fire height for one simulation step (v3).
+
+    `temperature_celsius` 20 is neutral; `relative_humidity` 0..1 scales how strongly heat dries
+    the fuel; `precipitation_mm_h` saturates at 10 mm/h (a downpour).
+    """
+    temperature_celsius: float = Field(default=20.0, ge=-60, le=60)
+    relative_humidity: float = Field(default=0.5, ge=0, le=1)
+    precipitation_mm_h: float = Field(default=0.0, ge=0, le=200)
 
 
 class GridCell(BaseModel):
@@ -57,6 +77,16 @@ class SpreadRequest(BaseModel):
     # turn `elevation_meters` differences into slope angles; has no effect when elevation is
     # absent. Default matches common 30 m DEM products (SRTM 1", Copernicus GLO-30).
     cell_size_meters: float = Field(default=30.0, gt=0, le=10_000)
+    # v3: one sample for the whole run, or one per step (a shorter list keeps its last sample for
+    # the remaining steps; an empty list means no weather). Ignored under v1 and v2.
+    weather: WeatherSample | list[WeatherSample] | None = None
+
+    @field_validator("weather")
+    @classmethod
+    def bounded_series(cls, weather):
+        if isinstance(weather, list) and len(weather) > 720:
+            raise ValueError("weather series must not exceed 720 steps")
+        return weather
 
     @field_validator("cells")
     @classmethod

@@ -5,6 +5,7 @@
 #include <type_traits>
 #include <terraflux/graphics/terrain_upload.hpp>
 #include <terraflux/graphics/terrain_shading.hpp>
+#include <terraflux/graphics/weather.hpp>
 #include <terraflux/grid.hpp>
 #include <terraflux/terrain_mesh.hpp>
 #include <terraflux/graphics/mesh_upload.hpp>
@@ -61,7 +62,7 @@ void test_vertex_and_shader_contract() {
 
 void test_binding_reflection_mismatch() {
   auto expected = terrain_shader_layout();
-  expected.bindings.push_back({"Fuel", ShaderResourceKind::SampledTexture, 2, kFragmentStage});
+  expected.bindings.push_back({"Fuel", ShaderResourceKind::SampledTexture, 4, kFragmentStage});
   auto reflected = expected;
   std::swap(reflected.bindings[0], reflected.bindings[1]);
   validate_shader_reflection(expected, reflected);
@@ -91,6 +92,13 @@ terraflux::compute::GridCell cell(int x, int y, double z) {
   return result;
 }
 
+// Every world shader samples the orographic field; tests bind one neutral texel.
+TextureHandle field_texel(ValidatingRenderDevice& device) {
+  const std::array<std::byte,4> texel{std::byte{0},std::byte{0},std::byte{128},std::byte{128}};
+  return device.create_texture2d({1,1},texel);
+}
+std::vector<TextureBinding> field_binding(TextureHandle field) { return {{kOrographicFieldSlot,field},{kRunoffFieldSlot,field}}; }
+
 TerrainUpload quad_upload() {
   terraflux::compute::Grid grid({cell(0, 0, 10), cell(1, 0, 10),
                                  cell(0, 1, 20), cell(1, 1, 20)});
@@ -118,8 +126,9 @@ void test_create_draw_destroy() {
   const auto vb = device.create_buffer({BufferUsage::Vertex, vertex_bytes.size()}, vertex_bytes);
   const auto ib = device.create_buffer({BufferUsage::Index, index_bytes.size()}, index_bytes);
   const auto pipeline = device.create_pipeline({terraflux::graphics::ShaderProgramId::Terrain,terrain_shader_layout(), true});
-  device.draw_indexed({pipeline, vb, ib, 0, 6, {}, {}});
-  device.draw_indexed({pipeline, vb, ib, 3, 3, {}, {}});
+  const auto field = field_texel(device);
+  device.draw_indexed({pipeline, vb, ib, 0, 6, {}, {}, field_binding(field)});
+  device.draw_indexed({pipeline, vb, ib, 3, 3, {}, {}, field_binding(field)});
   require(device.draw_count() == 2, "valid indexed draws must be recorded");
   require(device.live_buffer_count() == 2 && device.live_pipeline_count() == 1,
           "device must own resources");
@@ -129,7 +138,7 @@ void test_create_draw_destroy() {
   require(device.live_buffer_count() == 0 && device.live_pipeline_count() == 0,
           "resources should be released");
   must_throw([&] { device.destroy_buffer(vb); }, "double destroy must be rejected");
-  must_throw([&] { device.draw_indexed({pipeline, vb, ib, 0, 3, {}, {}}); },
+  must_throw([&] { device.draw_indexed({pipeline, vb, ib, 0, 3, {}, {}, field_binding(field)}); },
              "stale resource handles must not be valid");
 }
 
@@ -183,11 +192,12 @@ void test_uniform_buffer_updates() {
   const auto vb = device.create_buffer({BufferUsage::Vertex, vb_bytes.size()}, vb_bytes);
   const auto ib = device.create_buffer({BufferUsage::Index, ib_bytes.size()}, ib_bytes);
   const auto pipeline = device.create_pipeline({terraflux::graphics::ShaderProgramId::Terrain,terrain_shader_layout(), true});
-  device.draw_indexed({pipeline, vb, ib, 0, 6, {{0, uniform}}, {}});
+  const auto field = field_texel(device);
+  device.draw_indexed({pipeline, vb, ib, 0, 6, {{0, uniform}}, {}, field_binding(field)});
   require(device.draw_count() == 1, "camera buffer draw must validate");
-  must_throw([&] { device.draw_indexed({pipeline, vb, ib, 0, 6, {{1, uniform}}, {}}); },
+  must_throw([&] { device.draw_indexed({pipeline, vb, ib, 0, 6, {{1, uniform}}, {}, field_binding(field)}); },
              "undeclared uniform slot must fail");
-  must_throw([&] { device.draw_indexed({pipeline, vb, ib, 0, 6, {{0, vb}}, {}}); },
+  must_throw([&] { device.draw_indexed({pipeline, vb, ib, 0, 6, {{0, vb}}, {}, field_binding(field)}); },
              "incorrect uniform buffer usage must fail");
   device.destroy_buffer(uniform);
   must_throw([&] { device.update_buffer(uniform, 0, bytes); }, "destroyed uniform buffer must reject update");
@@ -211,13 +221,16 @@ void test_storage_buffer_validation() {
   const auto flags=LayerVisibility{}.uniform();
   const auto layers=device.create_buffer({BufferUsage::Uniform,sizeof(flags)},std::as_bytes(std::span(&flags,1)));
   const auto pipeline = device.create_pipeline({ShaderProgramId::ContractOnly,layout, true});
-  device.draw_indexed({pipeline, vb, ib, 0, 6, {{10,layers}}, {{1, field}}});
-  must_throw([&] { device.draw_indexed({pipeline, vb, ib, 0, 6, {{10,layers}}, {}}); },
+  const auto texel = field_texel(device);
+  device.draw_indexed({pipeline, vb, ib, 0, 6, {{10,layers}}, {{1, field}}, field_binding(texel)});
+  must_throw([&] { device.draw_indexed({pipeline, vb, ib, 0, 6, {{10,layers}}, {}, field_binding(texel)}); },
              "missing field storage buffer must be rejected");
-  must_throw([&] { device.draw_indexed({pipeline, vb, ib, 0, 6, {{10,layers}}, {{1, vb}}}); },
+  must_throw([&] { device.draw_indexed({pipeline, vb, ib, 0, 6, {{10,layers}}, {{1, vb}}, field_binding(texel)}); },
              "vertex buffer cannot be bound as shader storage");
-  must_throw([&] { device.draw_indexed({pipeline, vb, ib, 0, 6, {{10,layers}}, {{2, field}}}); },
+  must_throw([&] { device.draw_indexed({pipeline, vb, ib, 0, 6, {{10,layers}}, {{2, field}}, field_binding(texel)}); },
              "storage binding must match shader layout");
+  must_throw([&] { device.draw_indexed({pipeline, vb, ib, 0, 6, {{10,layers}}, {{1, field}}}); },
+             "the orographic field texture is required");
   device.destroy_buffer(field);
 }
 void test_object_uniform_bindings() {
@@ -298,6 +311,16 @@ void test_resource_bytes() {
   auto no_mips=desc;no_mips.sampling.min=terraflux::TextureMinFilter::Linear;
   require(rgba8_storage_bytes(no_mips)==60,"base-level-only texture accounting");
   must_throw([&]{(void)rgba8_storage_bytes({0,1});},"invalid texture dimensions rejected");
+  // Sixteen-bit channels double the bytes per texel and must be supplied that way.
+  auto wide=no_mips;wide.format=TextureFormat::Rgba16;
+  require(texture_bytes_per_texel(TextureFormat::Rgba16)==8 && rgba8_storage_bytes(wide)==120,"RGBA16 texture accounting");
+  must_throw([&]{(void)device.create_texture2d(wide,pixels);},"RGBA16 texture with RGBA8 bytes rejected");
+  {
+    std::array<std::byte,120> wide_pixels{};
+    const auto wide_texture=device.create_texture2d(wide,wide_pixels);
+    require(device.live_resource_bytes().texture_bytes==120,"RGBA16 bytes counted");
+    device.destroy_texture(wide_texture);
+  }
   device.set_resource_byte_budget(104);
   const auto storage=device.create_buffer({BufferUsage::Storage,buffer.size()},buffer);
   const auto texture=device.create_texture2d(desc,pixels);
@@ -380,8 +403,9 @@ void test_layer_visibility_contract() {
   const auto layers=owner.create_buffer({BufferUsage::Uniform,sizeof(flags)},std::as_bytes(std::span(&flags,1)));
   const std::array<std::byte,8> small{};
   const auto short_buffer=owner.create_buffer({BufferUsage::Uniform,small.size()},small);
+  const auto texel=field_texel(device);
   RenderPassScope pass(device,{{64,64}});
-  DrawIndexed draw{pipeline,vb,ib,0,6,{},{{1,field}}};
+  DrawIndexed draw{pipeline,vb,ib,0,6,{},{{1,field}},field_binding(texel)};
   must_throw([&]{device.draw_indexed(draw);},"wildfire layers require explicit uniform binding");
   draw.uniform_buffers={{10,short_buffer}};
   must_throw([&]{device.draw_indexed(draw);},"undersized layer uniform rejected");
@@ -595,7 +619,8 @@ void test_render_pass_contract() {
   const auto vb=device.create_buffer({BufferUsage::Vertex,vertices.size()},vertices);
   const auto ib=device.create_buffer({BufferUsage::Index,indices.size()},indices);
   const auto pipeline=device.create_pipeline({ShaderProgramId::Terrain,terrain_shader_layout()});
-  const DrawIndexed draw{pipeline,vb,ib,0,6,{}, {}};
+  const auto texel=field_texel(device);
+  const DrawIndexed draw{pipeline,vb,ib,0,6,{}, {},field_binding(texel)};
   const auto before=device.live_resource_bytes();
   must_throw([&]{device.draw_indexed(draw);},"draw before begin rejected");
   must_throw([&]{device.end_render_pass();},"end without begin rejected");
@@ -775,8 +800,9 @@ void test_terrain_style_contract() {
   const std::array<float,8> half{};
   const auto truncated=device.create_buffer({BufferUsage::Uniform,sizeof(half)},std::as_bytes(std::span(half)));
   const auto pipeline=device.create_pipeline({ShaderProgramId::Terrain,terrain_shader_layout()});
-  device.draw_indexed({pipeline,vb,ib,0,6,{{kTerrainStyleSlot,full}},{}});
-  must_throw([&]{device.draw_indexed({pipeline,vb,ib,0,6,{{kTerrainStyleSlot,truncated}},{}});},
+  const auto texel=field_texel(device);
+  device.draw_indexed({pipeline,vb,ib,0,6,{{kTerrainStyleSlot,full}},{},field_binding(texel)});
+  must_throw([&]{device.draw_indexed({pipeline,vb,ib,0,6,{{kTerrainStyleSlot,truncated}},{},field_binding(texel)});},
              "short terrain style buffer rejected");
   require(device.draw_count()==1,"styled terrain draw recorded once");
 }

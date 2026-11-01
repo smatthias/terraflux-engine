@@ -3,6 +3,7 @@
 #include <terraflux/graphics/terrain_upload.hpp>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -21,6 +22,13 @@ struct Playback {
   double cell_size_meters = 30.0;
   std::string grid_key;
   std::vector<Frame> frames;
+  std::string contract_version;
+  // Request drivers the viewer may mirror: wind (km/h; degrees the wind blows FROM under v2/v3,
+  // TOWARD under v1) and the v3 weather series (empty when absent or under v1/v2).
+  double wind_speed_kmh = 0.0, wind_direction_degrees = 0.0;
+  std::vector<compute::WeatherSample> weather;
+  // The sample that applies to a frame (the series keeps its last sample); nullopt without weather.
+  std::optional<compute::WeatherSample> weather_for_frame(std::size_t frame) const;
 };
 
 // Takes the original request and its corresponding native runner's JSON

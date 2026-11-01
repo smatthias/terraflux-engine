@@ -69,7 +69,7 @@ void test_style_layout_and_quad() {
           "billboard quad spans y 0..1");
   const auto layout = fire_shader_layout();
   validate_shader_layout(layout);
-  require(layout.vertex_stride_bytes == 16 && layout.attributes.size() == 2 && layout.bindings.size() == 3 &&
+  require(layout.vertex_stride_bytes == 16 && layout.attributes.size() == 2 && layout.bindings.size() == 5 &&
           layout.bindings[1].slot == kFireStyleSlot && layout.bindings[2].name == "InstanceData" &&
           shader_program_layout(ShaderProgramId::Fire).vertex_stride_bytes == 16, "fire layout contract");
 }
@@ -198,19 +198,20 @@ void test_renderer() {
   const auto pipeline = shared.create_pipeline({ShaderProgramId::Fire, fire_shader_layout(), true, true, false});
   rejects([&] { (void)shared.create_pipeline({ShaderProgramId::Fire, fire_shader_layout(), true, false, false}); }, "opaque fire rejected");
   rejects([&] { (void)shared.create_pipeline({ShaderProgramId::Fire, fire_shader_layout(), true, true, true}); }, "depth-writing fire rejected");
+  AtmosphereGpu atmosphere(device);
   const auto baseline = device.live_resource_bytes();
   {
     FireEffectsRenderer renderer(device, 64);
     renderer.set_emitters(build_fire_emitters(scene.field, scene.mesh.origin_grid_x, scene.mesh.origin_grid_y, 30, scene.sampler, scene.terrain, nullptr, style));
     require(!renderer.emitters().flames.empty() && renderer.emitters().flames.size() <= 64, "emitters installed within capacity");
     const auto everything = Frustum::from_view_projection(math::Mat4::identity());
-    rejects<std::logic_error>([&] { renderer.draw(pipeline, camera, style_buffer, everything, {0, 50, 0}, 6000); }, "drawing needs a pass");
+    rejects<std::logic_error>([&] { renderer.draw(pipeline, camera, style_buffer, atmosphere.binding(), everything, {0, 50, 0}, 6000); }, "drawing needs a pass");
     RenderPassScope pass(device, {{64, 64}});
-    const auto all = renderer.draw(pipeline, camera, style_buffer, everything, {0, 50, 0}, 6000, false);
+    const auto all = renderer.draw(pipeline, camera, style_buffer, atmosphere.binding(), everything, {0, 50, 0}, 6000, false);
     require(all.flames == renderer.emitters().flames.size() && all.smoke == renderer.emitters().smoke.size() && all.draws == 2, "unculled draw submits everything");
-    const auto far = renderer.draw(pipeline, camera, style_buffer, everything, {1e5, 50, 0}, 6000, false);
+    const auto far = renderer.draw(pipeline, camera, style_buffer, atmosphere.binding(), everything, {1e5, 50, 0}, 6000, false);
     require(far.flames == 0 && far.smoke == 0 && far.draws == 0, "effects beyond the draw distance are skipped");
-    const auto none = renderer.draw(pipeline, camera, style_buffer, Frustum::from_view_projection(math::Mat4::translation({100, 100, 100})), {0, 50, 0}, 6000);
+    const auto none = renderer.draw(pipeline, camera, style_buffer, atmosphere.binding(), Frustum::from_view_projection(math::Mat4::translation({100, 100, 100})), {0, 50, 0}, 6000);
     require(none.draws == 0, "frustum culling removes everything");
     FireEmitters many; many.flames.assign(200, FireInstance{});
     renderer.set_emitters(many);

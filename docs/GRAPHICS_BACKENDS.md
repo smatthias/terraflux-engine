@@ -41,7 +41,10 @@ vertex/fragment shaders, reflects active vertex inputs and uniform blocks
 through GL_PROGRAM_INPUT / GL_UNIFORM_BLOCK, and compares them with
 ShaderLayout. Vertex stride and offsets are *not* properties that OpenGL
 shader reflection exposes: they are validated from the declared layout and
-configured in the vertex array. The backend also supports object and PBR pipelines, texture sampling,
+configured in the vertex array. The backend also supports object and PBR pipelines, texture sampling
+(`TextureDesc::format` selects four 8-bit channels, the default, or four 16-bit little-endian
+channels — `TextureFormat::Rgba16`, eight bytes per texel in the byte accounting and the
+validator's pixel-size check — for fields whose interpolated values steer shading frames),
 material uniforms, storage buffers, transparency and indexed instancing.
 Shader source selection now uses explicit engine program IDs. Built-in GLSL
 remains embedded in the backend; external shader-module support is still pending.
@@ -153,24 +156,30 @@ auto pipeline = device.create_pipeline({
 
 | Identity | Contract |
 | --- | --- |
-| Terrain | Terrain vertex layout, camera and TerrainStyle uniforms |
-| Wildfire | Terrain upload stride, camera, FireState storage, LayerVisibility and TerrainStyle uniforms |
+| Terrain | Terrain vertex layout, camera, TerrainStyle and Atmosphere uniforms, OrographicField sampler |
+| Wildfire | Terrain upload stride, camera, FireState storage, LayerVisibility, TerrainStyle and Atmosphere uniforms, OrographicField sampler |
 | Object | Local untextured geometry and object uniform |
 | TexturedObject | Textured local geometry, object uniform and albedo sampler |
 | InstancedTexturedObject | Textured geometry with InstanceData storage |
 | PbrObject | Textured per-object PBR material/resources; optional sorted alpha blend |
 | PbrInstanced | Opaque instanced PBR material/resources |
 | Composite | Fullscreen POSITION/TEXCOORD geometry and SourceColor sampler; depth/blend disabled |
-| Water | POSITION/BED/BED_GRADIENT surface, camera and WaterStyle uniforms; alpha blend, depth test, no depth write |
-| Vegetation | POSITION/NORMAL/COLOR/FLEX/TINT_WEIGHT plant meshes, camera, VegetationStyle uniform, 48-byte InstanceData records and PlantFireState storage |
-| Fire | POSITION/TEXCOORD billboard quad, camera and FireStyle uniforms, 48-byte InstanceData records; alpha blend, depth test, no depth write |
+| Water | POSITION/BED/BED_GRADIENT surface, camera, WaterStyle and Atmosphere uniforms, OrographicField sampler; alpha blend, depth test, no depth write |
+| Vegetation | POSITION/NORMAL/COLOR/FLEX/TINT_WEIGHT plant meshes, camera, VegetationStyle and Atmosphere uniforms, OrographicField sampler, 48-byte InstanceData records and PlantFireState storage |
+| Fire | POSITION/TEXCOORD billboard quad, camera, FireStyle and Atmosphere uniforms, OrographicField sampler, 48-byte InstanceData records; alpha blend, depth test, no depth write |
+| Sky | Fullscreen POSITION triangle, Atmosphere uniform and OrographicField sampler; depth test at the far depth, no depth write, no blend |
+| Precipitation | CORNER/PARTICLE streak quads, camera and Atmosphere uniforms (both stages), OrographicField sampler; alpha blend, depth test, no depth write |
+| Lightning | POSITION/GLOW channel strips, camera and Atmosphere (fragment) uniforms; alpha blend, depth test, no depth write |
+| Spray | CORNER/PARTICLE/ORIGIN/FLOW/FACE/SHAPE drop quads (64-byte vertices), camera and Atmosphere uniforms (both stages), OrographicField sampler; alpha blend, depth test, no depth write |
 | ContractOnly | CPU validation of custom layouts; rejected by GPU creation |
 
 Unspecified and unknown IDs reject. A declared built-in must match its full
 layout (stride, attribute format/offset/location and binding name/kind/slot/
 stages), independent of declaration order. Transparent blending requires
-PbrObject or Water with depth testing enabled and depth writes disabled (Water
-additionally requires blending); transparent instancing remains unsupported. Both devices use the shared descriptor validator
+PbrObject, Water, Fire, Precipitation, Lightning or Spray with depth testing enabled
+and depth writes disabled (Water, Fire, Precipitation, Lightning and Spray additionally
+require blending; Sky must neither blend nor write depth); transparent
+instancing remains unsupported. Both devices use the shared descriptor validator
 before allocating a pipeline handle; OpenGL also rejects ContractOnly before
 compilation. Existing callers must supply an identity when constructing a
 PipelineDesc; there is deliberately no automatic layout-based fallback.
@@ -854,6 +863,363 @@ of their column (flames have height), at least a fifth of the changed region
 moves between the two times, and the final frame equals the first. Fire
 lighting of the surroundings, ember particles, heat distortion and wind-driven
 flame lean beyond the lean term remain future work.
+
+
+## Weather
+
+`weather.hpp` (graphics library) models wind, daylight, cloud forms,
+thunderstorms and their interaction with the terrain, deterministically and
+without any GPU type. The viewer packs the per-frame result into the 400-byte
+std140 `Atmosphere` block (slot 15, twenty-five float4s: camera basis with
+tangent half-FOVs and the moon altitude, eye and enabled flag, light direction
+and intensity, light color and ambient intensity, ambient color and daylight,
+zenith color and sun altitude, horizon color and lightning, fog color and
+visibility, cloud base/top/coverage/density, cloud detail/drift/type,
+orographic texture origin and inverse extent, base-shift scale/thickening/
+top-lift/pattern scale, wind direction/speed/time, precipitation/snow/wetness/
+stars, true sun direction and valley floor, lightning channel midpoint and
+flash, drop diameter/ponding/rainbow/convection, lifecycle time/flood
+rise/moon diameter, moon direction and lit fraction, cloud light color and
+intensity, cloud light direction and moonlight, horizon color opposite the
+sun, freezing level/melting layer/runoff/snow cover, and the crag relief
+amplitude in the lifecycle row's fourth lane) plus the RGBA8
+`OrographicField` texture (slot 1) and, for the Terrain and Wildfire programs,
+the RGBA16 `RunoffField` texture (slot 2; `AtmosphereBinding::runoff`, bound
+by `TerrainTileRenderer::draw` and the viewer's ground draws only). Every world program —
+Terrain, Wildfire, Water, Vegetation, Fire and the Sky, Precipitation,
+Lightning and Spray identities — declares the block (Lightning without the sampler); the
+shared validator rejects a bound block shorter than 400 bytes or a missing
+field texture, and OpenGL reflects the block size (25 x 16 bytes) and forces
+the block's stages to the contract (fragment only, both stages for
+Precipitation) because Mesa's reference flags are unreliable for it. `AtmosphereGpu` owns a neutral block and a one-texel
+neutral field; `TerrainTileRenderer::draw`, `VegetationRenderer::draw` and
+`FireEffectsRenderer::draw` take the `AtmosphereBinding` as an argument and
+bind both on every draw. With `eye.w == 0` (neutral) every GLSL helper returns
+its input or the legacy formula, so the earlier CPU references
+(`terrain_surface_color`, `water_surface_sample`) remain exact.
+
+**Wind** (`wind_at`): the speed is `min + (max - min) u` and the direction
+`mean + swing (2 v - 1)` where `u`, `v` are contrast-stretched three-octave
+seeded value noise over `t / period` and `t / (1.7 period)`, clamped so the
+speed never leaves its thresholds and the direction never leaves its swing;
+equal thresholds and zero swing give a constant wind. `WeatherSimulation::advance`
+integrates the cloud drift with the wind sampled at the start of each step.
+`WeatherSimulation::wind` samples the *effective* configuration: `storm_wind`
+adds up to 12 m/s to the upper threshold, 25 degrees to the swing and cuts the
+period by 45 % in proportion to the layer's storm likelihood (capped at the
+configuration limits).
+
+**Daylight** (`sun_for_hour`, `sun_at`): declination `23.44 sin(2 pi (N - 81)/365)`,
+hour angle `15 (h - 12)`, altitude from `sin a = sin phi sin d + cos phi cos d cos H`,
+azimuth from the standard formula (east before noon), direction
+`(cos a sin Az, sin a, -cos a cos Az)` in the engine frame. Piecewise-linear
+ramps over the altitude give the zenith and horizon colors, daylight, stars,
+the direct light color and intensity (zero below -3 degrees, 0.1 at the
+horizon, 0.72 at 30 degrees), and the ambient color and intensity (0.035 at
+night .. 0.30 by day). Civil, nautical and astronomical twilight are the
+-6/-12/-18 degree bands. The moon follows a simplified ephemeris
+(`body_position`, the same altitude/azimuth formula): its phase is
+`frac((day - 1.5) / 29.530589)` unless overridden, its hour angle the sun's
+minus `phase x 360` degrees and its declination the sun's times `cos(2 pi
+phase)`, so a full moon stands opposite the sun and a new moon with it; the
+lit fraction is `(1 - cos(2 pi phase)) / 2` and the moonlight `0.11 x
+fraction^2.2`, bluish, fading in as the sun drops from -3 to -9 degrees and
+only while the moon is more than a few degrees up. The moon takes over as the
+ground's light when it outshines the sun's ramp; the light never comes from
+below the ground. The cloud layer has its own light (`cloud_light_*`): the
+true sun through a ramp that keeps 0.58 at the horizon, 0.4 at -2 degrees in
+orange-red, 0.12 at -5 in deep red and nothing at -8, then the moon; and the
+horizon opposite the sun (`horizon_away_color`) runs from the day haze through
+a cool purple band at sunset to the night colour.
+
+**Cloud forms** (`cloud_profile`): per genus the typical base above the valley
+floor, depth, sky cover, optical density, edge detail (0 smooth sheet .. 1
+towers), precipitation, storm likelihood, surface visibility and the expected
+weather. `cloud_layer_for` derives the layer: the base is the lifting
+condensation level `125 (T - Td)` above the valley floor (cirrus keeps at
+least its own altitude; an explicit base overrides), the top adds the depth,
+coverage may be overridden, precipitation scales with cover, visibility blends
+from 50 km toward the form's value with cover, and the pattern scale is 1.1 km
+for cumulus, 2.6 km for cumulonimbus, 4 km for cirrus and 2.2 km otherwise.
+`precipitation_is_snow` applies the 6.5 K/km lapse rate to the ground altitude;
+`lightning_at` is a seeded slot schedule of double pulses. Each form carries a
+rainfall intensity (drizzle 0.5, nimbostratus 8, cumulonimbus 25 mm/h at rate
+one); `WeatherConfig::precipitation_mm_h` (a replay's sample) overrides it so
+the rate (`mm / 12`, capped at one) and intensity reproduce the millimetres.
+
+**Thunderstorms.** In `WeatherSimulation::state` the rate is multiplied by
+`storm_rain_band` (three-octave noise over `t / 20 s`, stretched so a full
+storm swings between 35 % and 100 %); `surface_temperature` is the reference
+plus a diurnal swing of ±2 degrees with daylight, minus 6 degrees times the
+rain rate and 2 degrees times the storm, then lapsed to the ground altitude;
+`relative_humidity_from_dew_point` (Magnus, raised to at least 70..95 % while
+it rains) and the rainfall give `fire_weather = compute::weather_term(...)`,
+the v3 contract's own term. `lightning_strike_at` extends the schedule with
+the strike's slot, age, a seeded position across the terrain footprint and a
+seed; a strike is active for 0.6 s from its start. The viewer maps the
+position onto the field, puts the channel midpoint halfway between the cloud
+base and the ground into the block's `strike` row, and `LightningRenderer`
+rebuilds the channel once per slot (`build_lightning_bolt`: a seeded random
+walk from the cloud base to the ground with lateral jitter of 12 % of the
+height, up to two levels of branches that die out before the ground, each
+segment a camera-facing quad pair — a wide halo at glow 0 and a narrow core
+at glow 1, eight vertices and twelve indices per segment, at most 4096
+segments) and draws it while the flash lasts. In GLSL the flash adds a sheet
+term (0.35 of the flash) to every lit surface and the sky, the channel a point
+light falling off over a kilometre on the ground and 500 m inside the cloud.
+
+**Sea state and trees.** `WeatherSimulation::water_for` derives the water
+style of the moment: the wave height is scaled by `clamp(0.35 + (U / 7)^1.6,
+0.35, 4)` (capped at 5 m), the length by `factor^0.8`, the speed by
+`sqrt(factor)`, the direction is the mean wind plus 40 % of the instantaneous
+veer, the choppiness `0.3 + 0.7 gustiness`, the foam depth `0.8 + 0.5 factor`.
+The water shader dimples the normal with two fast fine noise fields scaled by
+the precipitation (not for snow). The vegetation shader's sway strength is
+`0.02 + 0.012 U + 0.0007 U^2`, a flutter term fades in between 8 and 20 m/s,
+and the crown leans downwind by `0.012 (U - 6)` of the height above 6 m/s.
+`FireStyle::vigour` (0.1 .. 3, `params.w`) scales the flame height and, at
+60 %, the smoke height; the smoke fragment stage thickens and whitens the
+plume with the precipitation (steam). The viewer sets `vigour = clamp(1 + 2.5
+fire_weather, 0.25, 1.6)`.
+
+**Terrain interaction** (`sample_height_field`, `compute_orographic_field`):
+the render mesh is binned into a height field of at most 128 texels per side
+(holes are NaN and sample as the valley floor). For each texel the field
+marches up to 96 steps up- and downwind (fetch 6 km) and records the highest
+crest crossed and its distance, the lowest upwind valley and the highest
+barrier ahead; the local slope along the flow gives the vertical velocity
+`U s`. Thickening is `0.7 smoothstep(0, 0.8 m/s, U s)` plus a cumulative-ascent
+term (which vanishes once the air has dropped below the crest it crossed) plus
+half of the blocked pile-up in front of a barrier; dissipation is the foehn
+term `smoothstep(0, 300 m, descent) exp(-crest distance / 4 km)`, or full when
+blocked air cannot cross a crest that reaches into the layer; the base shifts
+up by `0.6 descent` (capped at the layer depth) in the lee and down 60 m on
+the windward side; precipitation is `0.5 + 0.5 thickening - 0.5 dissipation`.
+Blocking uses the Froude number `U / (N H)` of the barrier, `1 - smoothstep(0.7, 1.5, Fr)`,
+only for crests within 100 m of the base or above it. Every term is scaled by
+a coupling that fades from 1 when the base is within the relief of the crests
+to 0 two and a half kilometres (or four reliefs) above them. Texels pack as
+RGBA8: thickening, dissipation, base shift (0.5 neutral over +-scale) and
+precipitation (0.5 neutral). The field is recomputed between passes when the
+wind veers more than 3 degrees or changes more than 0.75 m/s.
+
+**Runoff, cascades and the snow line.** `compute_runoff_field` (once per
+terrain, from a height field of up to 256 texels a side) routes every texel
+to its steepest lower neighbour (D8) from the highest texel down,
+accumulating the contributing area; a texel stores the log-scaled
+accumulation (`log1p(a) / log1p(max)`), the slope to that neighbour,
+`waterfall = smoothstep(40, 60, slope) smoothstep(0.3, 0.6, flow)`, the flow
+direction (the downhill gradient smoothed over a 9 x 9 gaussian, so it turns
+smoothly across a face) with its steepness (the smoothed slope / 60, zeroed
+where the texel's own descent is under 18..32 degrees so a crest stays
+level), and the cascade terms: walking the drainage from the top, every
+falling texel hands the height its water has dropped since the lip on to
+the texel it drains into (`drop_meters`; a lip is a falling texel nothing
+falls into), and the first gentle texel below a fall is its plunge pool
+(`impact = smoothstep(3, 40, drop)`). `pack_runoff_texture` writes RGBA16:
+flow, `0.5 + 0.5 direction * max(steepness, 0.08)` (x, z), and either `0.85
+sqrt(drop / 250)` on a falling texel or `0.9 + 0.1 impact` on a pool, so
+interpolation toward a crest never reads as a pool; sixteen bits because the
+shader builds its along/across frame from the direction and an 8-bit step,
+a kilometre from the origin, shifts that frame by metres.
+`waterfall_spray_emitters` turns every lip (seated 0.15 texel up the slope),
+every falling texel below it (a ledge contact, weighted by the drop) and every
+pool (0.3 texel back toward the cliff) into a `SprayEmitter` — position,
+downhill unit vector, a face normal leaning by the texel's steepest descent
+(at least 40 degrees; a pool's at most 20), kind, strength, drop and the
+texel width — strongest first and capped (96 by default).
+`freezing_level_meters` is the ground altitude
+plus `max(T, 0) / 0.0065`; the state carries it with a 300 m melting layer,
+`runoff = clamp(1.5 rate + 0.8 ponding)` (zero while it snows at the ground)
+and `snow_cover = rainfall / 15`; `WeatherSimulation::set_rainfall_mm`
+presets the rain already on the ground (`--rainfall`). In GLSL `applyRunoff`
+(terrain and wildfire) takes the liquid share `1 - smoothstep(fl - 150, fl +
+50, elevation)`, darkens and glosses the ground by the film `runoff (0.25 +
+0.75 flow)` (the gloss damped on cliffs), scrolls streaks downhill at `0.3 +
+2.5 steep` m/s, draws stream threads where `flow > 0.45` on slopes that are
+not cliffs, boils the plunge pool with two scrolling noises, and on cliff
+texels (`fall` from the lattice steepness, the rendered slope above 12..32
+degrees and the flow) paints the cascade in the lattice's along/across
+frame: `waterfallRope` (shared with the Spray program) mixes two noises
+across the flow (periods 11 m and 5 m, blended by `smoothstep(0, 120, drop)`
+so the ropes divide lower down) with a slow meander and a surge, the crags
+(`ridgedFbm`, the field that displaces the rock) deflect the ropes by up to
++-2 m and favour the creases, `strands` fray the edges, the rope's core is
+opaque water shaded by streaks that scroll at the fall's speed
+(`sqrt(2 g drop)`, 2.5..18 m/s, stretched and whitened as it accelerates)
+and bursts white where a rock crest stands in the rope, and a thin mist
+veil with a forward glint and `bowWeight` hangs over the pour;
+`applySnowCover` whitens the ground above `fl - 120 .. fl + 80` by the
+cover.
+
+**Spray.** `SprayRenderer` holds `particles_per_emitter` (224) quads for up
+to `max_emitters` (96) emitters; `set_emitters` (between passes) writes one
+vertex record per corner — CORNER, the particle index within the emitter,
+ORIGIN, FLOW (downhill x, z and the launch speed: `1.5 + 2.5 strength` over
+a lip, `min(0.35 sqrt(2 g drop), 9)` off a ledge, `min(0.3 sqrt(2 g drop),
+8)` out of a pool), FACE and SHAPE (kind, strength, drop, width) — and
+`draw` submits every loaded emitter's particles while `runoff > 0`. The
+vertex stage lifts the emitter by the crag relief (`atmoLife.w`, on rock by
+slope, never sinking it more than a metre), picks the drop's across position
+from three candidates by the same `waterfallRope` (a rope near the texel's
+middle wins), draws its diameter (75 % fine drizzle off a lip, 45 % below;
+0.06..0.35 mm fine, 0.35..2 mm coarse; puffs 0.16 mm), terminal velocity
+(Atlas et al.) and a relaxation time — `terminal / g` for a ballistic drop,
+0.7..1.2 s for a fine one riding the parcel of air it left with — and
+integrates the closed form `p0 + carried t + (v0 - carried) tau (1 -
+exp(-t / tau))` with the wind (big drops lag it), the fall's own wind
+(fine drops sink 0.6..0.8 m/s faster off a lip or ledge, rise 0.4 m/s over a
+pool, and the sheet drags them down with `1.5 t^2` capped at 4 m/s), eddies,
+and a lifetime of 1..2.8 s (longer over a pool, shorter for big drops);
+drops that fall below a pool or behind a face vanish. Lighting per drop:
+`lit = exp(-2.4 density depth) clump rock atmoSun.w cloudShadow` where
+`depth` is the share of the plume (radius 2.5 + 2.5 strength + 0.04 drop)
+the light crosses to reach the drop, `clump` a drifting noise (0.3..1) and
+`rock = mix(smoothstep(-0.35, 0.15, face . light), 1, escape)` with `escape
+= smoothstep(0.5, 6, distance off the face) smoothstep(0.05, 0.45,
+light.y)` (a lip escapes at least 0.6); the colour is `0.86 (skyLight +
+sunColor lit (0.9 + 2.6 cos^5))` dimmed by 65 % of the bow amount plus
+`bow sunColor lit 2.4`, where the bow is the primary (40.6..42.4 degrees
+from the anti-light point) and secondary (50..53.5) spectra widened up to
+2.2 x and paled toward white for drops under 0.35 mm, offset +-0.45 degrees
+per drop and present on about half of them. A drop is a camera-facing streak
+(`0.025 speed` long, at least two pixels wide); the first 14 particles of
+every emitter are puffs — gaussian discs of `2.5 + 4 h + 0.05 drop` metres
+swelling with age, pushed `1.5 + 0.5 size` off the face, alpha 0.5 weight
+fading as `(1 - age / life)^0.7` — with the pale bow. The viewer draws the
+spray after the lightning and before the precipitation and, on a smoke
+frame with running water, reports `WEATHER_SPRAY_JSON` (emitters,
+particles, the pixels the spray changed, lit by more than 30 levels and
+tinted — brightened with channels spread more than 10 levels apart). The Precipitation program judges the
+phase at the camera altitude: `snowiness = smoothstep(fl - melt, fl, eye.y)`
+mixes the drop's terminal velocity with a flake's 0.8..1.3 m/s (halved when
+the wind lofts it above 6..15 m/s), the wind coupling (flakes follow fully
+and are carried 30 % faster in a gale), a sway and a vertical bob, the streak
+length and width, the shape (streak to soft disc) and the brightness, so
+sleet sits between rain and snow.
+
+**Cell lifecycle, volume and the rest of the surface weather.** The state
+carries `convection` (`convective x clamp(0.1 + 0.9 smoothstep(0.15, 0.7,
+daylight) smoothstep(4, 22, T))`), `cloud_time_seconds` (`time x
+clock_acceleration`, the solar time scale capped at 60x), the form's
+`drop_diameter_mm`, the accumulated `rainfall_mm` (`advance` integrates
+`rate x intensity / 3600` on the accelerated clock and decays it with a
+21600 s constant), `ponding = rainfall / 25` and `flood_rise = min(3, 0.02
+rainfall)`, and `rainbow = (sun intensity / 0.74) smoothstep(0.05, 0.4, rate)
+(1 - smoothstep(0.5, 0.95, cover)) smoothstep(0.5, 3, altitude)` when the sun
+is the light.
+
+**GLSL.** `atmosphereSkyColor` blends the horizon between the colour toward
+the sun and the colour opposite it by `(0.5 + 0.5 cos(azimuth difference))^1.5`
+before the zenith gradient; `cloudAlong` lights the layer along `cloudLight`
+(the true sun below the horizon reaches undersides) with the cloud light
+colour, the moon's share lifted 2.6x, and a Henyey-Greenstein forward lobe
+(g = 0.6, clamped to 3) for silver linings and moonlit rims. The Sky program
+draws the moon (`moonDisc`): a sphere of the configured apparent diameter
+around `moon`, its normal shaded by the true sun direction so the terminator
+follows the phase, `moonSurface` adding maria (dark two-octave noise patches)
+and craters on two cell scales (bowls darkening the sun-facing wall, rims lit
+on the far side), 2.5 % earthshine at night, a halo of 12 % of the lit
+fraction, and the disc occluding the stars (by day it blends into the bright
+sky). `cloudDensityAt(p, oro, detailed)` (0..1) shifts the base and
+lifts the top by the orographic texel, grows the coverage with thickening and
+thins it with dissipation, advects a four-octave contrast-stretched noise by
+the drift (each octave rotated so no lattice direction survives; cirrus
+streaks are drawn out 4.5:1 along the wind) and raises the threshold with
+height for cumuliform towers. `cloudDecayAt` samples a 3D lifecycle noise over
+the column and `cloud_time / 1800 s` against the feed `convection + 0.6
+thickening - 0.5 dissipation`: decayed cells (scaled by the form's detail)
+raise the threshold by 0.18, widen the edge transition by 0.5 (fuzzy
+remnants) and lose 70 % of their density. With `detailed` set, two octaves of
+3D noise (260 m) erode the shell — strongly at the edges, little in the core —
+for cauliflower volume. `cloudAlong` marches the layer along a ray segment
+with a fixed step of a twenty-fourth of the layer depth — so neighbouring
+pixels sample the same pattern and no seams or bands appear — stretched only
+when a path would need more than 96 samples (at most three visibility lengths
+or 16 km), with a full-step white-noise jitter per pixel, accumulating ambient
+(with a darker base: `1.1 + 1.1 h`) and sun-lit scattering — the optical depth
+toward the light from three cone samples at 60/170/360 m, Beer extinction
+`exp(-2.6 od)` times a powder term `0.55 + 0.45 (1 - exp(-4 d))` that darkens
+thin edges — with a forward lobe, lightning and the strike's point light,
+hazed with distance, and returns premultiplied in-scatter and transmittance; `cloudShadow` samples the layer above a ground point along the
+light; `atmosphereLit` is ambient + direct (with shadow, wet darkening and
+lightning) or the legacy `ambient + (1 - ambient) diffuse`; `applyAtmosphere`
+composes the clouds between eye and surface and the haze `1 - exp(-d / visibility)`;
+`atmosphereSkyColor` is the gradient, aerial perspective through a 1.5 km
+boundary layer, sun glow/disc and lightning. The Sky program pins one triangle
+to depth 0.9999 and adds stars and the moon; Precipitation derives each streak
+from its index, the time and the wind in a world-anchored box around the eye
+(each drop's diameter scatters exponentially around the form's mean,
+`D = mean (0.45 + 1.1 (-ln(1 - u))^0.7)` clamped to 0.15..6 mm; its terminal
+velocity is `9.65 - 10.3 exp(-0.6 D)` m/s; the wind carries it with
+`1 - 0.25 smoothstep(1, 4, D)` of its speed; snow falls at 0.8..1.3 m/s and
+sways; streaks are `0.033 x speed` long and `0.0012 D` wide, brighter for
+bigger drops), keeps a minimum screen size, exists only inside and below the
+local layer, and thins in the rain shadow (`particles x rate^0.6`).
+`applyPuddles` (terrain and wildfire programs) collects water in the hollows
+of a two-scale noise on ground below 8..16 degrees, growing with the ponding,
+and blends a darkened soil with the Fresnel-weighted reflected sky. The Sky
+program adds `rainbowAt` (primary bow at 40.6..42.4 degrees from the
+anti-solar point with a spectral ramp, secondary reversed at 50.1..53.5 at
+30 %, Alexander's band darkening 8 % between) and a gaussian glow around the
+channel of an active strike. The water shader builds `rainRings` from a
+jittered grid of impact points on two scales (0.35 and 0.8 m cells, each
+repeating every 0.4..1 s, spreading at 0.35 m/s with crests of 0.04 + 0.012 D
+m that decay as `exp(-3.5 age)`) and uses a Beckmann lobe for the sun
+(roughness `0.03 + 0.07 H/5 + 0.05 chop + 0.12 rain`, normalised so the peak
+falls as the lobe widens) and dulls the reflected sky by 40 % of the rain.
+The Lightning program draws halo strips whose width is the larger of 14 x the
+core and 1.2 % of the distance to the eye, with a signed across coordinate:
+the core is `exp(-60 x^2)`, the halo `0.45 exp(-2.2 x^2)`; the flash pulses
+with the leader and two return strokes (0.12 s and 0.3 s later).
+
+**CPU twins**: `atmosphere_shade` (albedo x (ambient + light x diffuse) with
+wetness and lightning), `atmosphere_haze` and `atmosphere_sky_color` mirror
+the GLSL for the cloud-free case; the cloud march, shadows, the strike's point
+light and precipitation are GPU-only. The Mesa `--weather-test` (demo smoke
+mode, default weather and wind options, no assets or other scripted test)
+renders ten frames with a low camera and plain materials: (0) weather off, whose clear-color pixels
+define the sky mask; (1) clear noon — the dome must cover 99 % of the mask,
+60 % of it brighter than 0.4 luminance and bluer than red, and the lit terrain
+must match the CPU twin at 60 % of at least 100 visible interior vertices
+(12/255); (2) clear midnight — night phase, ground below 30 % of the noon
+brightness, sky below 0.12, at least ten star pixels, twin match; (3) civil
+twilight at -3 degrees (bisected) — brightness between night x 1.25 and
+day x 0.8, the 24 rows above the silhouette redder than blue by 15 %, twin
+match; (4) stratus at noon — 80 % of the sky within 28 levels of grey, ground
+below 95 % of the clear noon, summit texels inside the cloud and windward
+texels thickened, and the drizzle pass must change at least 200 pixels; (5)
+cumulus at t = 0 and (6) 120 s later — at least a twentieth of the sky changes and
+the wind speed differs while staying inside its thresholds; (7) a
+cumulonimbus at the first bright strike over the middle of the terrain — the
+storm must widen the upper wind threshold by more than 6 m/s, the flash
+exceed 0.5, the channel draw and change at least 40 pixels, the rain exceed
+5 mm/h, the fire weather fall below -0.1, the surface air cool by more than 3
+degrees and the waves rise above the authored height; (8) four weather hours
+of nimbostratus rain (the solar clock at ten seconds per hour) — at least
+8 mm on the ground, ponding above 0.3, a flood rise above 0.15 m, the water
+rebuilt above its base level, runoff above 0.5 below a freezing level above
+the scene, channels, waterfalls, lips and plunge pools in the demo's field and
+the spray drawn over at least 100 pixels; (9) the same rain
+in air at -3 C — snow at the ground, a freezing level at the ground, a snow
+cover above 0.3, no runoff, no spray and flakes drawn; (10) weather off must restore
+frame 0 exactly, including the water rebuilt at its base level. Smoke runs without `--weather` stay neutral;
+`--weather auto` enables the weather without choosing a form.
+
+The viewer builds the config from the CLI (or from a replay: a v2/v3
+request's wind seeds the direction and 0.6..1.3 x its speed, and a v3
+weather series sets, per shown frame, the temperature, the dew point from the
+humidity, the rainfall and — unless `--weather` names a form — the implied
+cloud form at its typical base), samples the height field once, advances the
+simulation with the engine clock (frozen in smoke runs; `--weather-time`
+starts it at a moment), feeds the storm-widened gusting wind to the
+vegetation and fire styles and the sea state to the water style, recomputes
+and re-uploads the field between passes, updates the block after the camera,
+draws the sky after the opaque terrain and before the water, the lightning
+after the fire effects and the precipitation last. Imported OBJ/glTF assets
+keep their fixed light and are not fogged; asset fog and cloud shadows,
+thunder, hail, wet specular ground, lee-wave (lenticular) clouds, temporal
+filtering of the cloud march and a physically based sky remain future work.
 
 
 ## Fixed-tick replay clock

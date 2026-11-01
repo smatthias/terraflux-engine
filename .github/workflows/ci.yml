@@ -233,6 +233,147 @@ jobs:
             echo "tree spacing below four meters was accepted" && exit 1
           fi
 
+      - name: Verify weather wind, twilight, cloud forms and orographic lift
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --weather-test --smoke-test | tee /tmp/terraflux-weather.log
+          grep -q "Weather passed" /tmp/terraflux-weather.log
+          grep -q '"phase":"civil_twilight"' /tmp/terraflux-weather.log
+          grep -q "WEATHER_RAIN_JSON" /tmp/terraflux-weather.log
+          grep -q "WEATHER_STORM_JSON" /tmp/terraflux-weather.log
+          grep -q "WEATHER_FLOOD_JSON" /tmp/terraflux-weather.log
+          grep -q "FLOOD_JSON" /tmp/terraflux-weather.log
+          grep -q "WEATHER_SNOW_JSON" /tmp/terraflux-weather.log
+          grep -q "WEATHER_SPRAY_JSON" /tmp/terraflux-weather.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --weather-test --smoke-test \
+            --offscreen --terrain-retain-frames 2 --terrain-tile-quads 8 --vegetation low
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --weather nimbostratus --temperature 2 \
+            --wind-direction 250 --wind-min 6 --wind-max 14 --hour 7.5 --view-zoom 0.1 --view-pitch 12 \
+            | tee /tmp/terraflux-weathered.log
+          grep -q '"clouds":"nimbostratus"' /tmp/terraflux-weathered.log
+          grep -q '"event":"field"' /tmp/terraflux-weathered.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --weather cirrus --hour 0.5 --latitude -34 \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json | tee /tmp/terraflux-night-fire.log
+          grep -q '"phase":"night"' /tmp/terraflux-night-fire.log
+          grep -q "Visible fire pixels" /tmp/terraflux-night-fire.log
+          # The v3 replay carries its own weather: fair and warm while the fire runs, a storm that slows it.
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --weather auto --time-scale 0 --hour 15 --replay-frame 20 \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json | tee /tmp/terraflux-replay-fair.log
+          grep -q '"event":"replay"' /tmp/terraflux-replay-fair.log
+          grep -q '"clouds":"cumulus"' /tmp/terraflux-replay-fair.log
+          grep -q '"rain_mm_h":0,' /tmp/terraflux-replay-fair.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --weather auto --time-scale 0 --hour 15 --replay-frame 34 \
+            --view-zoom 0.45 --view-pitch 35 --view-yaw 30 \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json | tee /tmp/terraflux-replay-storm.log
+          grep -q '"clouds":"nimbostratus"' /tmp/terraflux-replay-storm.log
+          grep -q '"rain_mm_h":6,' /tmp/terraflux-replay-storm.log
+          grep -q '"fire_weather":-0' /tmp/terraflux-replay-storm.log
+          grep -q "Visible fire pixels" /tmp/terraflux-replay-storm.log
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          def weather(path):
+              return [json.loads(s.split("=",1)[1]) for s in Path(path).read_text().splitlines() if s.startswith("WEATHER_JSON={\"event\":\"replay\"")][-1]
+          fair=weather("/tmp/terraflux-replay-fair.log"); storm=weather("/tmp/terraflux-replay-storm.log")
+          assert fair["fire_vigour"]>1.0 and storm["fire_vigour"]<0.6, (fair["fire_vigour"], storm["fire_vigour"])
+          assert storm["surface_temperature_c"]<fair["surface_temperature_c"]-5
+          print("Replay weather mirrored:", fair["fire_vigour"], storm["fire_vigour"])
+          PY
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --weather cumulonimbus --hour 15 --time-scale 0 --weather-time 132.6 \
+            --view-zoom 0.3 --view-pitch 24 --view-yaw 60 | tee /tmp/terraflux-strike.log
+          grep -q '"clouds":"cumulonimbus"' /tmp/terraflux-strike.log
+          # Sunset over the lake and a gibbous moon with craters over the water.
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --weather cumulus --cloud-cover 0.5 --hour 20.05 --time-scale 0 \
+            --view-zoom 0.06 --view-pitch 9 --view-yaw 85 --view-x -45 --view-z -375 | tee /tmp/terraflux-sunset.log
+          grep -q '"phase":"civil_twilight"' /tmp/terraflux-sunset.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --weather clear --hour 0 --time-scale 0 --moon-phase 0.3 --moon-size 6 \
+            --view-zoom 0.06 --view-pitch 7 --view-yaw 108 --view-x -45 --view-z -375 | tee /tmp/terraflux-moon.log
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          w=[json.loads(s.split("=",1)[1]) for s in Path("/tmp/terraflux-moon.log").read_text().splitlines() if s.startswith("WEATHER_JSON=")][-1]
+          assert w["phase"]=="night" and abs(w["moon_phase"]-0.3)<1e-9 and w["moon_altitude_deg"]>0 and 0<w["moonlight"]<0.11, w
+          print("Moon:", w["moon_illumination"], w["moonlight"])
+          PY
+          if ./build-gl/terraflux-terrain-viewer --moon-phase 2 > /tmp/terraflux-bad-moon.log 2>&1; then
+            echo "moon phase above one was accepted" && exit 1
+          fi
+          # Five weather hours of steady rain: puddles, a flooded lake, and a rainbow when the sun comes out behind a shower.
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --weather nimbostratus --hour 8 --time-scale 10 --weather-time 300 \
+            --view-zoom 0.04 --view-pitch 12 --view-yaw 330 --view-x 200 --view-z -200 | tee /tmp/terraflux-flood.log
+          grep -q "FLOOD_JSON" /tmp/terraflux-flood.log
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          w=[json.loads(s.split("=",1)[1]) for s in Path("/tmp/terraflux-flood.log").read_text().splitlines() if s.startswith("WEATHER_JSON=")][-1]
+          assert w["rainfall_mm"]>8 and w["ponding"]>0.3 and w["flood_rise_m"]>0.15, w
+          print("Flooded:", w["rainfall_mm"], w["flood_rise_m"])
+          PY
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --weather cumulonimbus --cloud-cover 0.4 --hour 17 --time-scale 0 \
+            --weather-time 100 --view-zoom 0.3 --view-pitch 15 --view-yaw 260 | tee /tmp/terraflux-rainbow.log
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          w=[json.loads(s.split("=",1)[1]) for s in Path("/tmp/terraflux-rainbow.log").read_text().splitlines() if s.startswith("WEATHER_JSON=")][-1]
+          assert w["rainbow"]>0.1 and w["convection"]>0.5, w
+          print("Rainbow:", w["rainbow"])
+          PY
+          # A sunny afternoon after forty millimetres of rain: the escarpment's cascades run, their
+          # lips, ledges and plunge pools spray lit drops, and the bow angle tints some of them.
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --weather cumulus --cloud-cover 0.1 --rainfall 40 --hour 16 \
+            --time-scale 0 --view-zoom 0.03 --view-pitch 8 --view-yaw 270 --view-x 405 --view-z -234 | tee /tmp/terraflux-spray.log
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          lines=Path("/tmp/terraflux-spray.log").read_text().splitlines()
+          w=[json.loads(s.split("=",1)[1]) for s in lines if s.startswith("WEATHER_JSON=")][-1]
+          spray=[json.loads(s.split("=",1)[1]) for s in lines if s.startswith("WEATHER_SPRAY_JSON=")][-1]
+          assert w["runoff"]>0.5 and not w["snow"] and w["lip_texels"]>0 and w["plunge_texels"]>0 and w["spray_emitters"]>0, w
+          assert spray["draws"]==1 and spray["emitters"]>0 and spray["changed"]>5000 and spray["lit"]>1000 and spray["tinted"]>50, spray
+          print("Spray:", spray["emitters"], "emitters,", spray["lit"], "lit pixels,", spray["tinted"], "bow-tinted")
+          PY
+          # The same ground frozen: the rain is snow, nothing runs, nothing sprays.
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --weather nimbostratus --temperature -3 --rainfall 40 --hour 12 \
+            --time-scale 0 --view-zoom 0.03 --view-pitch 8 --view-yaw 270 --view-x 405 --view-z -234 | tee /tmp/terraflux-frozen.log
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          lines=Path("/tmp/terraflux-frozen.log").read_text().splitlines()
+          w=[json.loads(s.split("=",1)[1]) for s in lines if s.startswith("WEATHER_JSON=")][-1]
+          assert w["snow"] and w["runoff"]==0 and w["snow_cover"]>0.5, w
+          assert not any(s.startswith("WEATHER_SPRAY_JSON=") for s in lines), "frozen ground sprayed"
+          print("Frozen:", w["freezing_level_m"], w["snow_cover"])
+          PY
+          if ./build-gl/terraflux-terrain-viewer --rainfall -1 > /tmp/terraflux-bad-rainfall.log 2>&1; then
+            echo "negative rainfall was accepted" && exit 1
+          fi
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test | tee /tmp/terraflux-neutral.log
+          grep -q '"enabled":false' /tmp/terraflux-neutral.log
+          if ./build-gl/terraflux-terrain-viewer --weather fog > /tmp/terraflux-bad-cloud.log 2>&1; then
+            echo "unknown cloud form was accepted" && exit 1
+          fi
+          if ./build-gl/terraflux-terrain-viewer --wind-min 9 --wind-max 3 > /tmp/terraflux-bad-wind.log 2>&1; then
+            echo "inverted wind thresholds were accepted" && exit 1
+          fi
+          if ./build-gl/terraflux-terrain-viewer --weather-test --smoke-test --weather stratus > /tmp/terraflux-bad-weather-test.log 2>&1; then
+            echo "weather test accepted an explicit weather option" && exit 1
+          fi
+
       - name: Verify water depth, reflection, waves and foam against the CPU reference
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"

@@ -3,6 +3,7 @@
 #include <terraflux/graphics/resource_owner.hpp>
 #include <terraflux/graphics/terrain_upload.hpp>
 #include <terraflux/graphics/visibility.hpp>
+#include <terraflux/graphics/weather.hpp>
 #include <memory>
 
 namespace terraflux::graphics {
@@ -44,9 +45,10 @@ class TerrainTileRenderer {
   std::size_t resident_tile_count() const;
   std::uint64_t resident_bytes() const;
   BufferHandle resident_vertex_buffer(std::size_t id) const;
-  // Binds camera (slot 0), optional fire field (storage 1), optional layer
-  // flags (slot 10) and optional terrain style (slot 11) on every tile draw.
-  TerrainTileDrawStats draw(PipelineHandle pipeline,BufferHandle camera,
+  // Binds camera (slot 0), the atmosphere block (slot 15) and field texture
+  // (slot 1), optional fire field (storage 1), optional layer flags (slot 10)
+  // and optional terrain style (slot 11) on every tile draw.
+  TerrainTileDrawStats draw(PipelineHandle pipeline,BufferHandle camera,const AtmosphereBinding& atmosphere,
       std::optional<BufferHandle> fire,const Frustum& frustum,bool cull=true,
       std::optional<BufferHandle> layers={},std::optional<BufferHandle> style={});
   std::size_t tile_count() const {return tiles_.size();}
