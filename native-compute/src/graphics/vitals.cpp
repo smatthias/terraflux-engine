@@ -21,6 +21,7 @@ const char* damage_cause_name(DamageCause cause) {
     case DamageCause::Drowning: return "drowning";
     case DamageCause::Cold: return "cold";
     case DamageCause::Crushed: return "crushed";
+    case DamageCause::Collapse: return "collapse";
     case DamageCause::Count: break;
   }
   throw std::invalid_argument("unknown damage cause");
@@ -64,7 +65,7 @@ VitalsReport advance_vitals(Vitals& v, const Exposure& e, double dt, const Vital
   if (!std::isfinite(dt) || dt < 0) throw std::invalid_argument("vitals step must be finite and non-negative");
   if (!std::isfinite(e.temperature_celsius) || !within(e.wind_mps, 0, 200) || !within(e.rain_mm_h, 0, 1e4) ||
       !within(e.water_depth_meters, 0, 1e4) || !within(e.fire_heat, 0, 1) || !within(e.smoke, 0, 1) || !within(e.fall_impact_mps, 0, 1e3) ||
-      !within(e.crushed, 0, 1))
+      !within(e.crushed, 0, 1) || !within(e.collapse, 0, 1))
     throw std::invalid_argument("exposure out of range");
   VitalsReport report;
   if (!v.alive) { report.collapsed = true; return report; }
@@ -106,6 +107,7 @@ VitalsReport advance_vitals(Vitals& v, const Exposure& e, double dt, const Vital
   if (e.wind_mps > s.debris_wind_mps) hurt(DamageCause::Wind, s.debris_per_second * (e.wind_mps - s.debris_wind_mps) / 10.0 * dt);
   if (e.swimming && e.exhausted) hurt(DamageCause::Drowning, s.drowning_per_second * dt);
   if (e.crushed > 0) hurt(DamageCause::Crushed, e.crushed);
+  if (e.collapse > 0) hurt(DamageCause::Collapse, e.collapse);
   if (v.heat < s.hypothermia_heat) hurt(DamageCause::Cold, s.hypothermia_per_second * (1.0 - v.heat / s.hypothermia_heat) * dt);
   if (v.health <= 0) { v.health = 0; v.alive = false; report.collapsed = true; }
   return report;

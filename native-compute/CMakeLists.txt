@@ -49,6 +49,10 @@ add_library(terraflux_graphics STATIC
   src/graphics/body_view.cpp
   src/graphics/items.cpp
   src/graphics/tools.cpp
+  src/graphics/mesh_parts.cpp
+  src/graphics/roads.cpp
+  src/graphics/buildings.cpp
+  src/graphics/city.cpp
   src/graphics/terrain_tiles.cpp
   src/graphics/mesh_upload.cpp
   src/graphics/visibility.cpp
@@ -155,6 +159,18 @@ if(BUILD_TESTING)
   add_executable(terraflux-tools-tests tests/tools_tests.cpp)
   target_link_libraries(terraflux-tools-tests PRIVATE terraflux_graphics)
   add_test(NAME terraflux-tools-tests COMMAND terraflux-tools-tests)
+
+  add_executable(terraflux-roads-tests tests/roads_tests.cpp)
+  target_link_libraries(terraflux-roads-tests PRIVATE terraflux_graphics)
+  add_test(NAME terraflux-roads-tests COMMAND terraflux-roads-tests)
+
+  add_executable(terraflux-buildings-tests tests/buildings_tests.cpp)
+  target_link_libraries(terraflux-buildings-tests PRIVATE terraflux_graphics)
+  add_test(NAME terraflux-buildings-tests COMMAND terraflux-buildings-tests)
+
+  add_executable(terraflux-city-tests tests/city_tests.cpp)
+  target_link_libraries(terraflux-city-tests PRIVATE terraflux_graphics)
+  add_test(NAME terraflux-city-tests COMMAND terraflux-city-tests)
 
   add_executable(terraflux-collision-tests tests/collision_tests.cpp)
   target_link_libraries(terraflux-collision-tests PRIVATE terraflux_graphics)

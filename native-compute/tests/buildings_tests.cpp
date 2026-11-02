@@ -1,0 +1,416 @@
+#include <terraflux/graphics/buildings.hpp>
+#include <terraflux/graphics/camera_rig.hpp>
+#include <terraflux/graphics/collision.hpp>
+#include <terraflux/graphics/render_pass.hpp>
+#include <terraflux/graphics/roads.hpp>
+
+#include <algorithm>
+#include <cmath>
+#include <iostream>
+#include <map>
+#include <optional>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+using namespace terraflux;
+using namespace terraflux::graphics;
+using terraflux::math::Vec2;
+using terraflux::math::Vec3;
+
+namespace {
+void require(bool ok, const char* message) { if (!ok) throw std::runtime_error(message); }
+template <class E = std::invalid_argument, class F> void rejects(F&& f, const char* message) {
+  bool caught = false;
+  try { f(); } catch (const E&) { caught = true; }
+  require(caught, message);
+}
+bool near(double a, double b, double tolerance = 1e-9) { return std::abs(a - b) < tolerance; }
+
+// A plain at 50 m with a valley between x = 110 and x = 190 (as in the roads suite).
+double ground_profile(double x) {
+  if (x >= 110 && x <= 190) {
+    if (x < 130) return 50.0 - (x - 110) * 1.5;
+    if (x > 170) return 50.0 - (190 - x) * 1.5;
+    return 20.0;
+  }
+  return 50.0;
+}
+const StandingHeightFn plain_ground = [](double x, double z) -> std::optional<double> {
+  if (x < -100 || x > 1100 || z < -500 || z > 500) return std::nullopt;
+  return ground_profile(x);
+};
+// The same plain, but a lake basin south of z = 8 (bed at 40 m under water at 45 m).
+const StandingHeightFn lakeside_ground = [](double x, double z) -> std::optional<double> {
+  if (x < -100 || x > 1100 || z < -500 || z > 500) return std::nullopt;
+  return z > 8 ? 40.0 : ground_profile(x);
+};
+// Steep 1:1 ground north of z = -5, flat south of it.
+const StandingHeightFn hillside_ground = [](double x, double z) -> std::optional<double> {
+  if (x < -100 || x > 1100 || z < -500 || z > 500) return std::nullopt;
+  return z < -5 ? 50.0 + (-5 - z) : 50.0;
+};
+// A gentle 8 % slope rising to the north across the road.
+const StandingHeightFn sloping_ground = [](double x, double z) -> std::optional<double> {
+  if (x < -100 || x > 1100 || z < -500 || z > 500) return std::nullopt;
+  return 50.0 - 0.08 * z;
+};
+
+// A long road along x from 0 to 1000 with a bridge over the valley.
+RoadNetworkDef road_def() {
+  RoadNetworkDef def;
+  def.nodes = {{{0, 0}}, {{100, 0}}, {{200, 0}}, {{1000, 0}}};
+  def.segments = {{0, 1, RoadKind::Road}, {1, 2, RoadKind::Bridge}, {2, 3, RoadKind::Road}};
+  return def;
+}
+std::vector<BuildingRequest> all_kinds() {
+  return {{BuildingKind::Skyscraper, std::nullopt}, {BuildingKind::Hospital, std::nullopt}, {BuildingKind::House, std::nullopt}, {BuildingKind::Bungalow, std::nullopt}};
+}
+
+void test_specs() {
+  for (const auto kind : {BuildingKind::Bungalow, BuildingKind::House, BuildingKind::Hospital, BuildingKind::Skyscraper}) {
+    const auto spec = building_spec(kind);
+    validate_building_spec(spec);
+    require(spec.kind == kind && *building_kind_from_name(building_kind_name(kind)) == kind, "kinds round-trip by name");
+  }
+  require(building_spec(BuildingKind::Bungalow).storeys == 1 && building_spec(BuildingKind::House).storeys == 2, "a bungalow has one storey, a house two");
+  require(building_spec(BuildingKind::Hospital).storeys >= 5, "a hospital has at least five storeys");
+  const auto tower = building_spec(BuildingKind::Skyscraper);
+  require(tower.storeys >= 20 && tower.storeys * tower.storey_height_meters >= 70, "a skyscraper has at least twenty storeys, seventy metres and more");
+  require(!building_kind_from_name("castle"), "an unknown kind has no value");
+  rejects([] { auto s = building_spec(BuildingKind::Hospital); s.storeys = 3; validate_building_spec(s); }, "a three-storey hospital is rejected");
+  rejects([] { auto s = building_spec(BuildingKind::Skyscraper); s.storeys = 12; validate_building_spec(s); }, "a twelve-storey skyscraper is rejected");
+  rejects([] { auto s = building_spec(BuildingKind::Bungalow); s.storeys = 2; validate_building_spec(s); }, "a two-storey bungalow is rejected");
+  rejects([] { auto s = building_spec(BuildingKind::House); s.width_meters = 1; validate_building_spec(s); }, "a one-metre house is rejected");
+  rejects([] { auto s = building_spec(BuildingKind::House); s.storey_height_meters = 9; validate_building_spec(s); }, "nine-metre storeys are rejected");
+  validate_building_placement_style(BuildingPlacementStyle{});
+  rejects([] { BuildingPlacementStyle s; s.candidate_spacing_meters = 0.1; validate_building_placement_style(s); }, "a tiny candidate spacing is rejected");
+  rejects([] { BuildingPlacementStyle s; s.path_speed_factor = 0.5; validate_building_placement_style(s); }, "a slow footpath is rejected");
+}
+
+void test_placement() {
+  RoadStyle road_style;
+  RoadNetwork roads(road_def(), road_style, plain_ground);
+  BuildingPlacementStyle style;
+  const auto requests = all_kinds();
+  const auto placed = place_buildings(roads, requests, plain_ground, std::nullopt, {50, 0}, style);
+  require(placed.size() == 4, "all four buildings find a site along the roads");
+  const double half_road = 0.5 * road_width(road_style);
+  for (std::size_t i = 0; i < placed.size(); ++i) {
+    const auto& b = placed[i];
+    require(b.kind == requests[i].kind, "buildings come in request order");
+    require(roads.def().segments[b.site.segment].kind == RoadKind::Road, "every building stands beside a road, never a bridge");
+    // The door faces the road: the footpath runs from the door to the carriageway edge, straight toward the centre line.
+    const auto seg = roads.def().segments[b.site.segment];
+    const auto a = roads.def().nodes[seg.a].position;
+    const auto on_road = a + roads.direction(b.site.segment) * b.site.along_meters;
+    require(near((b.path_end - on_road).length(), half_road, 1e-6) && roads.sample(b.path_end.x + b.facing.x * 0.1, b.path_end.y + b.facing.y * 0.1).on,
+            "the footpath ends at the edge of the carriageway");
+    require(near((b.door - on_road).length(), half_road + b.spec.setback_meters, 1e-6) && !roads.sample(b.door.x, b.door.y).on, "the door stands the setback from the road");
+    require((b.door - b.centre).dot(b.facing) > 0 && near(b.facing.dot(b.along), 0) && near(b.along.dot(roads.direction(b.site.segment)), 1.0),
+            "the front wall is parallel to the road and the building faces it");
+    require(near(b.ground_min_meters, 50) && near(b.ground_max_meters, 50) && near(b.floor_meters, 50.15), "on the plain the floor is a slab's height over the ground");
+    require(b.storeys == building_spec(b.kind).storeys && b.height_meters > b.storeys * b.spec.storey_height_meters, "the roof rises over the storeys");
+    for (const double sa : {-0.5, 0.5})
+      for (const double sb : {-0.5, 0.5}) {
+        const auto corner = b.centre + b.along * (sa * b.spec.width_meters) + b.facing * (sb * b.spec.depth_meters);
+        require(!roads.sample(corner.x, corner.y).on, "no corner lies on a carriageway");
+      }
+    for (std::size_t j = 0; j < i; ++j)
+      require((placed[j].centre - b.centre).length() > 0.5 * std::hypot(placed[j].spec.width_meters, placed[j].spec.depth_meters) + 0.5 * std::hypot(b.spec.width_meters, b.spec.depth_meters),
+              "buildings do not overlap");
+  }
+  require(placed[0].kind == BuildingKind::Skyscraper && placed[0].storeys >= 20 && placed[0].height_meters >= 70, "the tower stands twenty storeys and more");
+  // Nearest to the preferred point first: the tower takes the best spot, the others move along.
+  const auto again = place_buildings(roads, requests, plain_ground, std::nullopt, {50, 0}, style);
+  for (std::size_t i = 0; i < placed.size(); ++i) require(near(again[i].centre.x, placed[i].centre.x) && near(again[i].centre.y, placed[i].centre.y), "placement is deterministic");
+  const auto far = place_buildings(roads, requests, plain_ground, std::nullopt, {900, 0}, style);
+  require(far[0].centre.x > 600, "a preferred point further along puts the buildings there");
+  // Water keeps the buildings on the dry side; steep ground keeps them on the flat side.
+  RoadNetwork lakeside(road_def(), road_style, lakeside_ground);
+  const auto dry = place_buildings(lakeside, requests, lakeside_ground, 45.0, {50, 0}, style);
+  require(dry.size() == 4, "the dry side has room for all four");
+  for (const auto& b : dry) require(b.site.side == -1 && b.centre.y < 0, "every building stands on the dry (northern) side of the road");
+  RoadNetwork hillside(road_def(), road_style, hillside_ground);
+  const auto flat = place_buildings(hillside, requests, hillside_ground, std::nullopt, {50, 0}, style);
+  require(flat.size() == 4, "the flat side has room for all four");
+  for (const auto& b : flat) require(b.site.side == 1 && b.ground_max_meters - b.ground_min_meters <= b.spec.max_site_step_meters, "every building stands on the flat (southern) side");
+  // On a slope the entrance stays at grade: the floor sits on the ground at the door, the
+  // buildings take the downhill side of the road (with the door uphill of the house an
+  // uphill back wall would be buried) and the foundation takes up the fall behind.
+  RoadNetwork sloping(road_def(), road_style, sloping_ground);
+  const auto terraced = place_buildings(sloping, requests, sloping_ground, std::nullopt, {50, 0}, style);
+  require(terraced.size() == 4, "a gentle slope has room for all four");
+  for (const auto& b : terraced) {
+    if (b.kind == BuildingKind::Skyscraper) require(b.site.side == 1, "on the slope the deepest building stands downhill of the road, its door at the top");
+    require(near(b.floor_meters, *sloping_ground(b.door.x, b.door.y) + 0.15, 1e-9) && b.ground_max_meters <= b.floor_meters + b.spec.max_buried_meters && b.ground_min_meters < b.floor_meters,
+            "the floor is at the door's grade, the ground behind rises little over it and the fall in front is foundation");
+  }
+  // A plain that is all under water has no site at all.
+  const auto none = place_buildings(roads, requests, plain_ground, 49.9, {50, 0}, style);
+  require(none.empty(), "with every site on the shore nothing is built");
+  // Given sites are taken as they are — when they are suitable.
+  std::vector<BuildingRequest> explicit_site{{BuildingKind::House, BuildingSite{2, 300.0, -1}}};
+  const auto given = place_buildings(roads, explicit_site, plain_ground, std::nullopt, {0, 0}, style);
+  require(given.size() == 1 && given[0].site.segment == 2 && near(given[0].site.along_meters, 300) && given[0].centre.y < 0, "a given site is used");
+  rejects([&] { std::vector<BuildingRequest> r{{BuildingKind::House, BuildingSite{1, 50.0, 1}}}; place_buildings(roads, r, plain_ground, std::nullopt, {0, 0}, style); }, "a site on a bridge is rejected");
+  rejects([&] { std::vector<BuildingRequest> r{{BuildingKind::House, BuildingSite{7, 50.0, 1}}}; place_buildings(roads, r, plain_ground, std::nullopt, {0, 0}, style); }, "a site on a missing segment is rejected");
+  rejects([&] { std::vector<BuildingRequest> r{{BuildingKind::House, BuildingSite{2, 5000.0, 1}}}; place_buildings(roads, r, plain_ground, std::nullopt, {0, 0}, style); }, "a site beyond the segment is rejected");
+  rejects([&] { std::vector<BuildingRequest> r{{BuildingKind::House, BuildingSite{0, 50.0, 2}}}; place_buildings(roads, r, plain_ground, std::nullopt, {0, 0}, style); }, "a side other than left or right is rejected");
+  rejects([&] { std::vector<BuildingRequest> r{{BuildingKind::Hospital, BuildingSite{0, 50.0, 1}}, {BuildingKind::House, BuildingSite{0, 52.0, 1}}}; place_buildings(roads, r, plain_ground, std::nullopt, {0, 0}, style); },
+          "a site inside another building is rejected");
+  rejects([&] { std::vector<BuildingRequest> r{{BuildingKind::House, BuildingSite{0, 50.0, -1}}}; place_buildings(hillside, r, hillside_ground, std::nullopt, {0, 0}, style); }, "a site on the steep hillside is rejected");
+  rejects([&] { std::vector<BuildingRequest> r{{BuildingKind::House, BuildingSite{0, 50.0, 1}}}; place_buildings(lakeside, r, lakeside_ground, 45.0, {0, 0}, style); }, "a site in the lake is rejected");
+  rejects([&] { place_buildings(roads, requests, {}, std::nullopt, {0, 0}, style); }, "placing needs a ground function");
+}
+
+void test_json() {
+  const auto requests = parse_building_requests(R"({"version": 1, "routes": [], "buildings": ["bungalow", "house", {"kind": "hospital", "segment": 2, "along": 120, "side": "left"},
+    {"kind": "skyscraper", "segment": 0, "along": 40, "side": -1}, {"kind": "house"}]})");
+  require(requests.size() == 5 && requests[0].kind == BuildingKind::Bungalow && !requests[0].site && requests[1].kind == BuildingKind::House, "names are automatic requests");
+  require(requests[2].kind == BuildingKind::Hospital && requests[2].site && requests[2].site->segment == 2 && near(requests[2].site->along_meters, 120) && requests[2].site->side == -1, "an object gives a site");
+  require(requests[3].site && requests[3].site->side == -1 && requests[4].kind == BuildingKind::House && !requests[4].site, "numeric sides and siteless objects");
+  require(parse_building_requests(R"({"version": 1})").empty(), "no buildings key, no requests");
+  rejects([] { parse_building_requests(R"({"version": 1, "buildings": ["castle"]})"); }, "an unknown kind is rejected");
+  rejects([] { parse_building_requests(R"({"version": 1, "buildings": [{"kind": "house", "segment": 1}]})"); }, "a site without along is rejected");
+  rejects([] { parse_building_requests(R"({"version": 1, "buildings": [{"kind": "house", "segment": 1, "along": 5, "side": "north"}]})"); }, "an unknown side is rejected");
+  rejects([] { parse_building_requests(R"({"version": 1, "buildings": [{"kind": "house", "segment": 1.5, "along": 5}]})"); }, "a fractional segment is rejected");
+  rejects([] { parse_building_requests(R"({"version": 1, "buildings": 7})"); }, "a non-array is rejected");
+  rejects([] { parse_building_requests(R"([])"); }, "a non-object is rejected");
+}
+
+void test_set_and_walker() {
+  RoadStyle road_style;
+  RoadNetwork roads(road_def(), road_style, plain_ground);
+  BuildingPlacementStyle style;
+  BuildingSet set(place_buildings(roads, all_kinds(), plain_ground, std::nullopt, {50, 0}, style), plain_ground, style);
+  require(set.size() == 4 && !set.empty(), "four buildings in the set");
+  const auto stats = set.stats();
+  require(stats.buildings == 4 && stats.bungalows == 1 && stats.houses == 1 && stats.hospitals == 1 && stats.skyscrapers == 1 && stats.most_storeys >= 20 && stats.tallest_meters >= 70,
+          "the stats count the kinds, the storeys and the height");
+  const auto& house = set.buildings()[2];
+  // The footpath is a surface to walk on at the road's pace; the plot itself is not.
+  const auto mid_path = house.door + (house.path_end - house.door) * 0.5;
+  require(set.platform_height(mid_path.x, mid_path.y) && near(*set.platform_height(mid_path.x, mid_path.y), 50 + style.surface_lift_meters) &&
+          near(set.speed_factor(mid_path.x, mid_path.y), style.path_speed_factor), "the footpath carries the feet and hurries the walker");
+  require(!set.platform_height(house.centre.x, house.centre.y) && near(set.speed_factor(house.centre.x, house.centre.y), 1.0) && !set.platform_height(500, 400),
+          "off the paths there is no surface");
+  require(set.building_at(house.centre.x, house.centre.y) == 2 && !set.building_at(mid_path.x, mid_path.y) && set.building_at(house.door.x, house.door.y, 1.0) == 2, "building_at finds the plot");
+  require(set.entrance_near(house.door.x + 1, house.door.y, 3.0) == 2 && !set.entrance_near(house.door.x + 10, house.door.y + 10, 3.0), "entrance_near finds the door");
+  rejects([&] { (void)set.platform_height(std::nan(""), 0); }, "non-finite queries are rejected");
+  rejects([&] { BuildingSet bad(set.buildings(), {}, style); }, "a set needs a ground function");
+  // Walls are solid: the walker coming up the footpath is stopped at the front wall.
+  ObstacleField walls(set.obstacles());
+  require(walls.size() > 100, "the walls are chains of posts");
+  for (const auto& o : walls.obstacles()) require(o.top - o.bottom > 3.0 && o.radius > 0.2, "posts reach from the foundation to the roof");
+  WalkEnvironment env;
+  env.standing_height = plain_ground;
+  env.lower = {-100, 0, -500}; env.upper = {1100, 0, 500};
+  env.obstacles = {&walls};
+  env.platforms = [&](double x, double z, double) { return set.platform_height(x, z); };
+  env.surface_speed = [&](double x, double z) { return set.speed_factor(x, z); };
+  env.gait.enabled = false;
+  FirstPersonCamera walker;
+  walker.feet = {house.path_end.x - house.facing.x * 2.0, 50, house.path_end.y - house.facing.y * 2.0}; walker.grounded = true;  // on the road, two metres from the path
+  walker.yaw = std::atan2(house.facing.x, house.facing.y);  // forward (-sin, -cos) = -facing: toward the building
+  require(near(horizontal_forward(walker.yaw).x, -house.facing.x, 1e-9) && near(horizontal_forward(walker.yaw).z, -house.facing.y, 1e-9), "looking at the door");
+  double on_path = 0;
+  for (int i = 0; i < 60 * 10; ++i) {
+    walk(walker, WalkInput{1, 0, false}, 1.0 / 60.0, env);
+    if (walker.on_platform) on_path = std::max(on_path, walker.surface_speed_factor);
+  }
+  const Vec2 feet{walker.feet.x, walker.feet.z};
+  const auto [a, b] = std::pair{(feet - house.centre).dot(house.along), (feet - house.centre).dot(house.facing)};
+  require(near(on_path, style.path_speed_factor), "the footpath hurried the walker");
+  require(b > 0.5 * house.spec.depth_meters && b < 0.5 * house.spec.depth_meters + 1.5 && std::abs(a) < 1.0, "the front wall stopped the walker at the door");
+  require(!set.building_at(feet.x, feet.y), "the walker is not inside the house");
+}
+
+void test_meshes() {
+  RoadStyle road_style;
+  RoadNetwork roads(road_def(), road_style, plain_ground);
+  BuildingPlacementStyle style;
+  BuildingSet set(place_buildings(roads, all_kinds(), plain_ground, std::nullopt, {50, 0}, style), plain_ground, style);
+  const auto parts = set.build_meshes();
+  std::map<std::string, std::size_t> count;
+  for (const auto& p : parts) {
+    require(p.indices.size() % 3 == 0 && !p.vertices.empty(), "whole triangles");
+    for (const auto i : p.indices) require(i < p.vertices.size(), "indices in range");
+    for (const auto& v : p.vertices) {
+      require(std::isfinite(v.position[0]) && std::isfinite(v.position[1]) && std::isfinite(v.position[2]), "finite positions");
+      require(near(std::hypot(v.normal[0], v.normal[1], v.normal[2]), 1.0, 1e-4), "unit normals");
+    }
+    ++count[p.what];
+  }
+  require(count["wall"] == 3 && count["glass"] == 1 && count["roof"] == 4 && count["door"] == 4 && count["window"] == 2 && count["opening"] == 1 &&
+          count["cross"] == 1 && count["chimney"] == 2 && count["masonry"] == 1 && count["trim"] == 2 && count["path"] == 1 && count["foundation"] == 1,
+          "stone and concrete walls, a glass facade, four roofs and doors, glass windows on the house and the hospital, open holes on the bungalow, the hospital's cross, two chimneys, the bungalow's masonry plinth, footpaths and foundations");
+  // Materials: thatch and planks on the bungalow over a stone plinth and a brick chimney, stone and tiles on the house, concrete and glass on the rest.
+  std::map<std::string, SurfaceMaterial> materials;
+  for (const auto& p : parts) {
+    double sx = 0, sz = 0;
+    for (const auto& v : p.vertices) { sx += v.position[0]; sz += v.position[2]; }
+    const auto who = set.building_at(sx / p.vertices.size(), sz / p.vertices.size(), 6.0);
+    if (who) materials[std::string(p.what) + "@" + building_kind_name(set.buildings()[*who].kind)] = p.material;
+  }
+  require(materials["roof@bungalow"] == SurfaceMaterial::Thatch && materials["wall@bungalow"] == SurfaceMaterial::Planks && materials["masonry@bungalow"] == SurfaceMaterial::Stone &&
+          materials["chimney@bungalow"] == SurfaceMaterial::Brick, "the bungalow is thatch over planks on a stone plinth with a brick chimney");
+  require(materials["wall@house"] == SurfaceMaterial::Stone && materials["roof@house"] == SurfaceMaterial::Tiles && materials["chimney@house"] == SurfaceMaterial::Brick && materials["door@house"] == SurfaceMaterial::Timber,
+          "the house is stone under tiles with a timber door");
+  require(materials["wall@hospital"] == SurfaceMaterial::Concrete && materials["glass@skyscraper"] == SurfaceMaterial::Glass && materials["window@house"] == SurfaceMaterial::Window,
+          "concrete and glass where they belong");
+  require(std::string(surface_material_name(SurfaceMaterial::Thatch)) == "thatch", "material names");
+  require(part_triangles(parts) > 400, "enough triangles for the windows");
+  // Colours: the hospital white with a dark grey roof and a red cross, the tower glass with a white roof, the house's roof red, the bungalow's thatch.
+  const auto& tower = set.buildings()[0];
+  const auto& hospital = set.buildings()[1];
+  const auto& house = set.buildings()[2];
+  const auto& bungalow = set.buildings()[3];
+  const auto owner = [&](const MeshPart& p) -> std::optional<std::size_t> {
+    double sx = 0, sz = 0;
+    for (const auto& v : p.vertices) { sx += v.position[0]; sz += v.position[2]; }
+    return set.building_at(sx / p.vertices.size(), sz / p.vertices.size(), 6.0);
+  };
+  double tower_top = 0, hospital_top = 0, bungalow_top = 0, house_top = 0;
+  for (const auto& p : parts) {
+    const std::string what = p.what;
+    const auto who = owner(p);
+    if (!who) continue;
+    double top = 0;
+    for (const auto& v : p.vertices) top = std::max(top, static_cast<double>(v.position[1]));
+    if (*who == 0) tower_top = std::max(tower_top, top);
+    if (*who == 1) hospital_top = std::max(hospital_top, top);
+    if (*who == 2) house_top = std::max(house_top, top);
+    if (*who == 3) bungalow_top = std::max(bungalow_top, top);
+    if (what == "wall" && *who == 1) require(p.color.x > 0.9 && p.color.y > 0.9 && p.color.z > 0.88, "the hospital's walls are white concrete");
+    if (what == "roof" && *who == 1) require(p.color.x < 0.3 && p.color.y < 0.3 && p.color.z < 0.3 && near(p.color.x, p.color.y, 0.03), "the hospital's roof is dark grey");
+    if (what == "cross") require(p.color.x > 0.8 && p.color.y < 0.15 && p.color.z < 0.15 && *who == 1, "the red cross is red and on the hospital");
+    if (what == "glass") require(*who == 0 && p.color.z > p.color.x, "the tower's facade is glass");
+    if (what == "roof" && *who == 0) require(p.color.x > 0.9 && p.color.y > 0.9 && p.color.z > 0.9, "the tower's roof is white");
+    if (what == "roof" && *who == 2) require(p.color.x > 0.5 && p.color.y < 0.3, "the house's roof is red tile");
+    if (what == "wall" && *who == 2) require(near(p.color.x, p.color.y, 0.05) && p.color.x > 0.45 && p.color.x < 0.65, "the house's walls are grey stone");
+    if (what == "roof" && *who == 3) require(p.color.x > 0.6 && p.color.y > 0.5 && p.color.z < 0.45, "the bungalow's roof is straw");
+    if (what == "wall" && *who == 3) require(p.color.x > p.color.y && p.color.y > p.color.z, "the bungalow's walls are wood");
+    if (what == "opening") require(p.color.x < 0.15 && *who == 3, "the bungalow's windows are open holes");
+    if (what == "window") require(p.color.z > 0.8 && p.color.z > p.color.x, "glass windows are blue-grey glass");
+  }
+  require(tower_top - tower.floor_meters >= 70 && tower_top - tower.floor_meters <= 90, "the tower rises at least seventy metres over its floor");
+  require(hospital_top - hospital.floor_meters >= 5 * 3.6 && hospital_top - hospital.floor_meters < 5 * 3.6 + 2, "the hospital stands five storeys under a flat roof");
+  require(house_top - house.floor_meters > 2 * 3.0 + 2.0 && bungalow_top - bungalow.floor_meters > 2.8 + 1.5, "the gable roofs rise over the walls");
+  // Every door stands on the front wall facing the road, every path reaches the carriageway.
+  for (const auto& p : parts) {
+    if (std::string(p.what) != "door") continue;
+    const auto who = owner(p);
+    require(who.has_value(), "a door belongs to a building");
+    const auto& b = set.buildings()[*who];
+    double sx = 0, sz = 0;
+    for (const auto& v : p.vertices) { sx += v.position[0]; sz += v.position[2]; }
+    const Vec2 door_centre{sx / p.vertices.size(), sz / p.vertices.size()};
+    require((door_centre - b.door).length() < 0.2, "the door is drawn at the entrance, on the road side");
+  }
+  // The renderer takes them.
+  ValidatingRenderDevice device;
+  RenderResourceOwner shared(device);
+  const std::array<float, 16> identity{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+  const auto camera = shared.create_buffer({BufferUsage::Uniform, sizeof(identity)}, std::as_bytes(std::span(identity)));
+  MeshPartRenderer renderer(device);
+  renderer.set_parts(parts);
+  require(renderer.parts() == parts.size() && renderer.triangles() == part_triangles(parts), "the parts are uploaded");
+  RenderPassScope pass(device, {{64, 64}});
+  require(renderer.draw(camera) == parts.size(), "one draw per part");
+}
+
+void test_vegetation() {
+  RoadStyle road_style;
+  RoadNetwork roads(road_def(), road_style, plain_ground);
+  BuildingPlacementStyle style;
+  std::vector<BuildingRequest> one{{BuildingKind::House, BuildingSite{0, 50.0, 1}}};
+  BuildingSet set(place_buildings(roads, one, plain_ground, std::nullopt, {50, 0}, style), plain_ground, style);
+  const auto& house = set.buildings()[0];
+  VegetationPlacement placement;
+  const auto plant = [&](Vec2 p, float kind) { VegetationInstance t{}; t.position[0] = static_cast<float>(p.x); t.position[2] = static_cast<float>(p.y); t.kind = kind; t.scale = 10; return t; };
+  const auto mid_path = house.door + (house.path_end - house.door) * 0.5;
+  placement.trees = {plant(house.centre, 0), plant(house.centre + house.along * (0.5 * house.spec.width_meters + 2.0), 1), plant(house.centre + house.along * 40.0, 1)};
+  placement.grass = {plant(mid_path, 0), plant({500, -300}, 0)};
+  placement.chunks = {{{0, 0, -500}, {1100, 10, 500}, 0, 3, 0, 2}};
+  placement.trees_per_kind = {1, 2};
+  const auto removed = clear_vegetation_for_buildings(placement, set);
+  require(removed == 3 && placement.trees.size() == 1 && placement.grass.size() == 1 && placement.chunks.size() == 1, "the plants on the plot and the footpath are cleared");
+  require(placement.chunks[0].tree_count == 1 && placement.chunks[0].grass_count == 1 && placement.trees_per_kind[1] == 1 && placement.trees_per_kind[0] == 0, "the chunk is rebuilt");
+  rejects([&] { clear_vegetation_for_buildings(placement, set, -1); }, "a negative margin is rejected");
+}
+
+void test_civic_and_airport_kinds() {
+  for (const auto kind : {BuildingKind::PoliceStation, BuildingKind::Terminal, BuildingKind::ControlTower, BuildingKind::Hangar}) {
+    validate_building_spec(building_spec(kind));
+    require(*building_kind_from_name(building_kind_name(kind)) == kind, "the civic and airport kinds round-trip by name");
+  }
+  require(*building_kind_from_name("police station") == BuildingKind::PoliceStation && *building_kind_from_name("control tower") == BuildingKind::ControlTower, "long names too");
+  rejects([] { auto s = building_spec(BuildingKind::Hangar); s.storeys = 2; validate_building_spec(s); }, "a two-storey hangar is rejected");
+  rejects([] { auto s = building_spec(BuildingKind::ControlTower); s.storeys = 3; validate_building_spec(s); }, "a squat control tower is rejected");
+  RoadStyle road_style;
+  RoadNetwork roads(road_def(), road_style, plain_ground);
+  BuildingPlacementStyle style;
+  // Explicit lots along the long road, including ones that cannot stand (over the valley, on each other): skipped, not thrown.
+  std::vector<BuildingRequest> lots{{BuildingKind::PoliceStation, BuildingSite{2, 60.0, 1}}, {BuildingKind::Terminal, BuildingSite{2, 200.0, 1}},
+                                    {BuildingKind::ControlTower, BuildingSite{2, 300.0, 1}}, {BuildingKind::Hangar, BuildingSite{2, 400.0, 1}},
+                                    {BuildingKind::Hangar, BuildingSite{2, 410.0, 1}}, {BuildingKind::House, BuildingSite{0, 40.0, 1}}, {BuildingKind::House, BuildingSite{0, 58.0, 1}},
+                                    {BuildingKind::House, BuildingSite{0, 76.0, 1}}};
+  rejects([&] { place_buildings(roads, lots, plain_ground, std::nullopt, {0, 0}, style); }, "a lot inside another is rejected when asked to be strict");
+  const auto placed = place_buildings(roads, lots, plain_ground, std::nullopt, {0, 0}, style, true);
+  require(placed.size() == 7, "the second hangar on the first is skipped; the rest stand");
+  BuildingSet set(placed, plain_ground, style);
+  const auto st = set.stats();
+  require(st.police_stations == 1 && st.terminals == 1 && st.towers == 1 && st.hangars == 1 && st.houses == 3, "the stats count the new kinds");
+  // Three houses eighteen metres apart (seven metres between their walls): rectangles, not circles, decide the overlap, so a row fits.
+  require(near(placed[4].centre.x - placed[5].centre.x, -18.0) && near(placed[5].centre.x - placed[6].centre.x, -18.0), "houses stand in a row seven metres apart");
+  const auto parts = set.build_meshes();
+  std::map<std::string, std::size_t> count;
+  for (const auto& p : parts) ++count[p.what];
+  require(count["band"] == 1 && count["beacon"] == 1 && count["cab"] == 1 && count["metal"] == 1, "the police station's blue band and beacon, the tower's cab, the hangar's metal walls");
+  const auto owner = [&](const MeshPart& p) -> std::optional<std::size_t> {
+    double sx = 0, sz = 0;
+    for (const auto& v : p.vertices) { sx += v.position[0]; sz += v.position[2]; }
+    return set.building_at(sx / p.vertices.size(), sz / p.vertices.size(), 8.0);
+  };
+  for (const auto& p : parts) {
+    const std::string what = p.what;
+    if (what == "band") require(p.color.z > 0.6 && p.color.x < 0.2 && owner(p) == 0, "the band is blue and on the police station");
+    if (what == "door") {
+      const auto who = owner(p);
+      if (who && *who == 3) {
+        double lo = 1e9, hi = -1e9;
+        for (const auto& v : p.vertices) { lo = std::min(lo, static_cast<double>(v.position[1])); hi = std::max(hi, static_cast<double>(v.position[1])); }
+        require(hi - lo > 8.5, "the hangar's door is nine metres tall");
+      }
+    }
+    if (what == "cab") require(owner(p) == 2, "the cab is on the tower");
+  }
+  double tower_top = 0, terminal_windows = 0;
+  for (const auto& p : parts) {
+    const auto who = owner(p);
+    if (who && *who == 2) for (const auto& v : p.vertices) tower_top = std::max(tower_top, static_cast<double>(v.position[1]));
+    if (who && *who == 1 && std::string(p.what) == "window") terminal_windows = p.indices.size() / 12.0;
+  }
+  require(tower_top - placed[2].floor_meters > 7 * 3.5 + 3.0, "the cab rises over the shaft");
+  require(terminal_windows >= 8, "the terminal's glass bands run along every face and storey");
+}
+
+}  // namespace
+
+int main() {
+  try {
+    test_specs();
+    test_placement();
+    test_json();
+    test_set_and_walker();
+    test_meshes();
+    test_vegetation();
+    test_civic_and_airport_kinds();
+    std::cout << "TerraFlux buildings: 7 tests passed\n";
+  } catch (const std::exception& error) {
+    std::cerr << "TerraFlux buildings test failed: " << error.what() << '\n';
+    return 1;
+  }
+  return 0;
+}

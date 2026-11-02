@@ -56,6 +56,31 @@ void push_band(VegetationMesh& mesh, std::uint32_t lower, std::uint32_t upper, s
     push_triangle(mesh, lower + j, upper + i, upper + j);
   }
 }
+// A tapered tube along an arbitrary axis (a branch): rings perpendicular to
+// the axis at both ends, a band between them and a closed tip.
+void push_tube(VegetationMesh& mesh, math::Vec3 from, math::Vec3 to, double r0, double r1, std::uint32_t segments,
+               math::Vec3 color, double flex0, double flex1) {
+  const math::Vec3 axis = to - from;
+  const double length = axis.length();
+  if (length < 1e-9) return;
+  const math::Vec3 a = axis / length;
+  const math::Vec3 helper = std::abs(a.y) < 0.9 ? math::Vec3{0, 1, 0} : math::Vec3{1, 0, 0};
+  const math::Vec3 u = a.cross(helper).normalized(), v = a.cross(u);
+  const auto ring = [&](math::Vec3 centre, double r, double flex) {
+    const auto first = static_cast<std::uint32_t>(mesh.vertices.size());
+    for (std::uint32_t i = 0; i < segments; ++i) {
+      const double angle = 2.0 * kPi * i / segments;
+      const math::Vec3 radial = u * std::cos(angle) + v * std::sin(angle);
+      push_vertex(mesh, centre + radial * r, radial, color, flex, 0.0);
+    }
+    return first;
+  };
+  const auto base = ring(from, r0, flex0), tip = ring(to, r1, flex1);
+  push_band(mesh, base, tip, segments);
+  const auto apex = static_cast<std::uint32_t>(mesh.vertices.size());
+  push_vertex(mesh, to + a * (r1 * 1.5), a, color, flex1, 0.0);
+  for (std::uint32_t i = 0; i < segments; ++i) push_triangle(mesh, tip + i, apex, tip + (i + 1) % segments);
+}
 // Cone from a ring to an apex vertex.
 void push_cone(VegetationMesh& mesh, std::uint32_t ring, std::uint32_t segments, double apex_y, math::Vec3 color,
                double flex, double ring_y, double radius) {
@@ -126,6 +151,41 @@ VegetationMesh make_tree_mesh(const TreeMeshOptions& o) {
   const auto base = push_ring(mesh, n, 0.0, trunk_radius, 0.0, o.trunk_color, 0.0, 0.0);
   const auto top = push_ring(mesh, n, trunk_top + 0.02, trunk_radius * 0.7, 0.0, o.trunk_color, trunk_top, 0.0);
   push_band(mesh, base, top, n);
+  // Branches: wood that shows among the foliage. A broadleaf tree forks into
+  // limbs that reach up and out through its crown; a conifer carries whorls
+  // of branches whose tips show under each tier, and a few dead stubs below.
+  const std::uint32_t branch_segments = std::max(3U, std::min(6U, n / 2));
+  if (o.shape == TreeShape::Broadleaf) {
+    const double crown_base = trunk_top * 0.8, crown_height = 1.0 - crown_base;
+    const std::uint32_t limbs = 5 + (o.layers > 3 ? 2 : 0);
+    for (std::uint32_t i = 0; i < limbs; ++i) {
+      const double angle = 2.0 * kPi * i / limbs + 0.4, reach = o.crown_width * 0.5 * (0.55 + 0.25 * std::fmod(i * 0.37, 1.0));
+      const double y_end = crown_base + crown_height * (0.35 + 0.35 * std::fmod(i * 0.61 + 0.2, 1.0));
+      const math::Vec3 from{0.0, trunk_top * 0.92, 0.0};
+      const math::Vec3 to{std::cos(angle) * reach, y_end, std::sin(angle) * reach};
+      push_tube(mesh, from, to, trunk_radius * 0.42, trunk_radius * 0.12, branch_segments, o.trunk_color * 0.95, std::pow(trunk_top, 1.5), std::pow(y_end, 1.5));
+    }
+  } else if (o.shape == TreeShape::Conifer) {
+    const double span = 1.0 - trunk_top;
+    for (std::uint32_t layer = 0; layer < o.layers; ++layer) {
+      const double t0 = static_cast<double>(layer) / o.layers;
+      const double y0 = trunk_top + span * t0 * 0.85;
+      const double radius = o.crown_width * 0.5 * (1.0 - 0.75 * t0);
+      const std::uint32_t whorl = 5;
+      for (std::uint32_t i = 0; i < whorl; ++i) {
+        const double angle = 2.0 * kPi * i / whorl + 0.7 * layer;
+        const math::Vec3 from{0.0, y0 + 0.02, 0.0};
+        const math::Vec3 to{std::cos(angle) * radius * 1.04, y0 - 0.03 * radius, std::sin(angle) * radius * 1.04};
+        push_tube(mesh, from, to, trunk_radius * 0.3 * (1.0 - 0.5 * t0), trunk_radius * 0.08, branch_segments, o.trunk_color * 0.9, std::pow(y0, 1.5), std::pow(y0, 1.5));
+      }
+    }
+    for (std::uint32_t i = 0; i < 3; ++i) {
+      // Dead stubs on the bare trunk below the crown.
+      const double angle = 2.0 * kPi * i / 3 + 1.1, y = trunk_top * (0.55 + 0.15 * i);
+      push_tube(mesh, {0.0, y, 0.0}, {std::cos(angle) * trunk_radius * 3.0, y - 0.01, std::sin(angle) * trunk_radius * 3.0}, trunk_radius * 0.25, trunk_radius * 0.06,
+                branch_segments, o.trunk_color * 0.8, std::pow(y, 1.5), std::pow(y, 1.5));
+    }
+  }
   if (o.shape == TreeShape::Conifer) {
     // Stacked cones, each tier overlapping the one below, narrowing upward.
     const double span = 1.0 - trunk_top;

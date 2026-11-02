@@ -170,6 +170,7 @@ auto pipeline = device.create_pipeline({
 | Vegetation | POSITION/NORMAL/COLOR/FLEX/TINT_WEIGHT plant meshes, camera, VegetationStyle and Atmosphere uniforms, OrographicField sampler, 80-byte InstanceData records and PlantFireState storage |
 | Fire | POSITION/TEXCOORD billboard quad, camera, FireStyle and Atmosphere uniforms, OrographicField sampler, 48-byte InstanceData records; alpha blend, depth test, no depth write |
 | Hud | POSITION (NDC float2)/COLOR (float4) 24-byte vertices, no uniforms; alpha blend, no depth test or write |
+| Structure | The Object layout and uniform for built things (roads, bridges, buildings); the tint's alpha is a `SurfaceMaterial` textured procedurally in world space; lit with a hemisphere ambient so shaded walls stay light |
 | Sky | Fullscreen POSITION triangle, Atmosphere uniform and OrographicField sampler; depth test at the far depth, no depth write, no blend |
 | Precipitation | CORNER/PARTICLE streak quads, camera and Atmosphere uniforms (both stages), OrographicField sampler; alpha blend, depth test, no depth write |
 | Lightning | POSITION/GLOW channel strips, camera and Atmosphere (fragment) uniforms; alpha blend, depth test, no depth write |
@@ -1839,6 +1840,272 @@ the chainsaw runs while E is held, `saw_step`), 1 pulls a rope in,
 `--tool`, `--rope-length`, `--chainsaw-fuel`, `--tools-test`
 (`TOOLS_TEST_JSON` per frame), `TERRAFLUX_SCREENSHOT_EVERY_FRAME=1` with
 `--screenshot` writes every frame of a scripted run.
+
+### Roads and bridges
+
+`roads.hpp`. `RoadStyle` (lane width 3 m, shoulders 0.5 m — `road_width` is
+7 m — sample spacing 2.5 m, surface lift 0.12 m, marking width/dash/gap,
+deck thickness 0.6 m, railing height 1.1 m with posts every 4 m, pier
+spacing 20 m and width 1.2 m, 6 m stubs of a destroyed span; speed factors
+road 1.3, bridge 1.25, rubble 0.7; blockage reach 6 m; fire damage per
+second of a burning trunk 0.02 on a road and 0.05 on a deck; washout
+current 3 m/s, depth 1 m, 45 s; collapse damage 0.35; seed) is validated.
+`RoadNetworkDef` is nodes (plan positions) and segments (`a`, `b`,
+`RoadKind::Road | Bridge`); `validate_road_network` rejects bad indices,
+self-loops, duplicates, zero length, nodes joined to nothing, a bridge
+without a road at either end and a disconnected graph. `RoadPlanStyle`
+(road grade 0.18, bridge grade 0.06, span 400 m, dip 2 m, freeboard 1.5 m)
+drives `plan_road_network(routes, ground, water_level, style, plan)`: each
+leg is sampled; a sample is *good* when dry and with no interval steeper
+than the road grade on either side; at the first bad sample ahead a deck is
+tried from the last good sample (moved back to the last one standing the
+freeboard above the water when water lies ahead, never nearer the previous
+node than four samples) to the first landing sample beyond with four good
+samples after it, a chord within the bridge grade, the ground nowhere more
+than 0.3 m above the chord and a dip of at least `min_dip` or water under
+it (landing the freeboard above the water when it crosses water); no
+landing within the span limit leaves the road on the ground. Waypoints
+within a centimetre are one node. `parse_road_network` reads the JSON forms
+(positions as `{x, z}` or `[x, z]`, an origin added) and validates.
+
+`RoadNetwork(def, style, ground)` founds the node surfaces at ground + lift
+(a node off the terrain is rejected) and keeps per-segment `RoadSegmentState`
+(damage, destroyed, destroyed_by, washout_seconds, blockages) and
+`RoadBlockage` (segment, tree, along, burning). `sample(x, z)` finds the
+segment whose carriageway covers the point (nearest centre line): `along`,
+signed `offset`, `surface` (a road: ground there + lift; a bridge: the deck
+plane between its end surfaces), `speed_factor` (rubble when a road is
+destroyed; 1 within the blockage reach of a trunk; else the kind's factor
+less its excess times the damage), `blocked`, `destroyed`, `deck_missing`
+(a destroyed bridge between its stubs). `platform_height` is the surface
+where it stands (nullopt off the network or over a missing span);
+`obstacles()` is the piers (cylinders from the ground to the slab bottom,
+at least 0.5 m tall) of every bridge and, on standing deck, chains of
+0.15 m posts along both railings. `log_landed(tree, base, direction,
+length, burning)` registers a trunk lying within the half width of a
+centre line (segment–segment approach) — on a bridge only where the deck
+is within 1.5 m of the ground — once per tree and segment (event
+`Blocked`). `advance(dt, log_intensity, water)` clears the events, lets
+every burning trunk damage its segment at the kind's rate (the first
+damage raises `Damaged` on a road, `Alight` on a bridge; full damage
+destroys by "fire"), and counts running water at any pier (current and
+depth over the thresholds, from `water(x, z, ground)`) toward the washout
+(recovering when it ebbs; full, destroyed by "flood"). `destroy(segment,
+cause)` raises `Destroyed` and, for a bridge, `Collapsed` or (cause
+"flood") `WashedOut`. `reset()` restores everything; `version()` changes
+with the blockages and the destruction. `stats()` counts and measures.
+
+`build_meshes()` gives `MeshPart`s (`mesh_parts.hpp`: position/normal
+vertices, indices, a colour, `what`; `add_box`, `add_quad`, `add_triangle`
+build them, `MeshPartRenderer` uploads and draws them with the `Structure`
+program; `RoadMeshPart` and `RoadRenderer` are aliases): a surface ribbon per segment (left, centre and right
+samples following the ground, tinted toward char by the damage, rubble when
+a road is destroyed), the markings (edge lines and centre dashes where the
+deck stands), the deck slab, railings (rails at full and half height and
+posts) on the standing deck or the stubs, tilted slabs of rubble on the
+ground under a destroyed span, and the piers. `emit` adds flames along a
+deck alight and a plume, and smouldering plumes at the stubs of a span
+burned through (and at the trunks on a road burned through). `RoadRenderer`
+uploads the parts (replacing the previous ones; an index out of range is
+rejected) and draws one Object-program draw per part, identity model and
+the part's colour; it needs an active pass. `clear_vegetation_along`
+removes the trees within the half width + 2 m and the grass within + 0.3 m
+of a centre line and rebuilds the chunk ranges.
+
+The walker: `WalkEnvironment` gained `platforms` (`PlatformFn`) and
+`surface_speed` (`SurfaceSpeedFn`). `support_at` takes a platform above the
+ground and no higher than the step height above the feet as the support
+(`on_obstacle` — never a wall — when it stands more than the step height
+over the ground, so a deck is reached however steep the ground under it
+while a surface on the ground keeps the slope rule); swimming overrides it.
+`walk` multiplies the wanted speed by the surface factor (must be finite
+and positive; clamped 0.05..5; reported as `surface_speed_factor`, and
+`on_platform` says what the feet rest on), and — new for any support that
+has gone — a grounded walker more than the step height above its support
+(a collapsed deck) leaves the ground and falls; `swimming` is only set once
+the feet have reached the water, not while falling toward it. Vitals:
+`DamageCause::Collapse`, `Exposure::collapse` (a fraction of health at
+once). The viewer builds the network before the vegetation (demo routes,
+replay routes or `--roads file.json`; `--roads off`; smoke runs only with
+`--roads demo`/a file or `--roads-test`), clears the plants on it, adds the
+railings and piers as an obstacle field, hooks the platform and speed
+functions, advances the network on the engine clock with the tree model's
+intensities and the flood's water, registers every `Grounded` trunk,
+handles the events (messages; a `Collapsed`/`WashedOut` segment with the
+walker standing on its missing span: knocked down 2 s, shaken, `collapse`
+damage), draws the parts in the terrain pass before the water and rebuilds
+them when the version changes, emits the fire with the trees', and reports
+`ROADS_JSON`. `--roads-test` (README) and `terraflux-roads-tests`.
+
+### Buildings
+
+`buildings.hpp`. `BuildingKind` (Bungalow, House, Hospital, Skyscraper;
+named and parsed), `BuildingSpec` per kind (`building_spec`: footprint
+9×7/11×9/40×20/30×30 m, storeys 1/2/5/20 of 2.8/3.0/3.6/3.8 m, setback
+6/7/12/14 m, path width, the ground step the site may have 2.5/3/5/6 m;
+`validate_building_spec` also holds a hospital to at least five storeys, a
+skyscraper to at least twenty, a bungalow to one). `BuildingSite` is a road
+segment, a distance along it and a side; `BuildingRequest` a kind with an
+optional site. `place_buildings(roads, requests, ground, water_level,
+preferred, BuildingPlacementStyle)` lays each request out (`lay_out`: the
+footpath's end at the carriageway edge, the door the setback beyond it, the
+centre half the depth further, the front wall along the road, the ground
+sampled on a 3×3 over the footprint and along the path; the floor is the
+ground at the door + 0.15 m) and accepts it when `suitable`: ground span
+within the spec's step, ground behind no more than 1.2 m over the floor,
+every sample above the water plus the margin, a 5×5 of samples off every
+carriageway (by `sample` and by distance to the centre lines), clear of the
+placed buildings (circumscribed circles plus the gap) and of their paths.
+Automatic requests take the suitable candidate nearest `preferred` over
+every road segment (never a bridge), `candidate_spacing` apart, `end_margin`
+clear of the ends, both sides; a request without a site is left out; a given
+unsuitable site throws. `parse_building_requests` reads the `"buildings"`
+list of a network file.
+
+`BuildingSet(buildings, ground, style)`: `platform_height` (the footpath:
+ground + lift within its corridor from the door to the carriageway),
+`speed_factor` (the path's, 1 elsewhere), `building_at` (footprint plus
+margin), `entrance_near`, `obstacles()` (posts of 0.35 m touching along the
+four walls from 0.5 m under the lowest ground corner to the roof top),
+`stats()`, and `build_meshes()`: a foundation box from below the lowest
+corner to the floor, the body box in the wall material (plank brown, stone
+grey, white concrete, glass blue), a gable roof (two slab boxes up the pitch
+with the overhang, gable triangles in the wall material, a chimney on the
+house) or a flat slab with a parapet (dark grey; white with a plant room on
+the tower), windows as thin boxes proud of every face per storey (glass
+blue-grey, open holes near black on the bungalow; none where the door is),
+the tower's floor bands and mullions, the door on the front wall, a canopy
+on posts over the hospital's and the tower's doors, the hospital's red
+cross on the front above the entrance and flat on the roof, the footpath
+ribbon following the ground and a step where the floor stands above it.
+`clear_vegetation_for_buildings` removes the plants on the plots and paths
+(plus a margin) and rebuilds the chunk ranges.
+
+The walker: `attempt_step` now treats a step up onto a platform within the
+step height from ground (or from under the platform) as a kerb rather than
+a wall, so a road edge or a footpath is stepped onto whatever the sub-step
+length. The viewer places the buildings after the roads (the four kinds
+for the demo and replay networks, a file's list otherwise; `--buildings
+off`), clears the plants on them, adds the walls to the obstacle fields,
+combines road and building surfaces in the platform and speed hooks, names
+the entrance in the title, draws the parts after the roads and reports
+`BUILDINGS_JSON`. `--buildings-test` (README) and
+`terraflux-buildings-tests`.
+
+### The city
+
+`roads.hpp` grew classes and lifts: `RoadClass` (Street 2 lanes, Avenue 4,
+Highway 6 + `highway_median_meters`, Ramp 2, Runway/Taxiway/Apron of
+`runway_width_meters` 45 / `taxiway_width_meters` 20 / `apron_width_meters`
+60; `road_class_lanes`, `road_class_width`), `RoadSegment::cls`,
+`RoadNode::lift_meters` (0..60; a road reaching a lifted node is rejected),
+and the bridge rule as chains (union-find over bridge segments: every chain
+touches roads at two nodes). `RoadRoute` (points, class, lifts) plans a
+viaduct leg as one bridge between lifted waypoints without sampling;
+`plan_road_network(vector<Vec2>)` remains the street form. The network
+keeps a 64 m plan index of segment corridors (`for_each_segment_near`,
+`distance_to_centreline`, `max_width`), per-segment `width`, and mitres:
+at a node where exactly two segments of one width meet, the ribbon's end
+section follows the bisector scaled by 1/cos of the half angle (skipped past
+90°). `sample(x, z, feet_y)` prefers the highest covering surface within a
+metre above the feet (else the nearest centre line); `platform_height` and
+`speed_factor` have the same overloads and `PlatformFn` now takes the feet's
+height. Piers are skipped where they would stand on another carriageway.
+Meshes: sound surfaces merge per class colour (asphalt, highway, runway,
+pavement), damaged ones stay separate; markings per class (street: edge
+lines and centre dashes; avenue: lane dashes and a double yellow; highway:
+yellow inner lines, lane dashes and a raised median part; ramp: edge lines;
+runway: centreline dashes, edge lines, threshold stripes; taxiway: a yellow
+centreline). `RoadStats` counts classes, `highway_meters`, `runway_meters`
+and `curve_joints` (degree-2 nodes turning more than 2°). JSON: node
+`"lift"`, segment `"class"`, route objects `{"points", "class", "lifts"}`.
+
+`buildings.hpp`: kinds PoliceStation ("police"), Terminal, ControlTower
+("tower"), Hangar with specs (24×16 two storeys; 90×30 two of 4.5 m; 8×8
+seven of 3.5 m; 45×40 one of 5 m), materials and parts (a blue `band` and
+`beacon`, a glazed `cab`, `metal` walls, a 20×9 m door, canopies for the
+police station and the whole terminal front). `BuildingRequest` gained
+`preferred` and `search_radius_meters` for automatic placement near a
+point; `place_buildings` gained `skip_unsuitable_sites` and a
+`PlacementReport` (placed / no_site / uneven / buried / wet / on_road /
+no_ground / taken). Suitability uses the network's index and per-segment
+widths, and judges overlap by oriented rectangles plus the gap (paths
+crossing footprints either way are rejected). `kMaxBuried` is 1.8 m.
+
+`city.hpp`: `CityZone` (Cbd / Suburb / Airport, name, centre, radius,
+rotation), `CityPlan` (zones, highway corner polylines, bounds and margin,
+CBD/suburb block sizes, warp amplitude and wavelength, fillet radius,
+interchange lift, runway length, seed; validated — one airport, warps that
+cannot make lines meet). `plan_city` builds each lattice (indices i, j on a
+block grid, positions warped by `amp·sin(j·b/λ + φ)` per line, clipped to
+the disc and the bounds, half-block points between nodes for the curve,
+avenues every third line of a CBD, a smaller block in a small zone), the
+airport (runway, parallel taxiway linked at both ends, an apron off the
+taxiway's middle, wanted buildings on the far side, a clearing), fillets
+the highway corners into arcs (radius limited to 45 % of the legs; a closed
+loop is filleted at its closing corner too), snaps highway ends onto other
+highways (T-junctions, or the nearest arc vertex within 60 m), and for each
+zone chooses an interchange site: candidates every 50 m along straight runs
+(140 m clear of the run's ends), off the zone's disc, within 450 m of a
+lattice node, on dry ground within the bounds on the viaduct's run and the
+zone's quadrant, clear of other junctions (ramp reach + extents), not inside
+another zone, with an access avenue that crosses no other highway or zone.
+The diamond inserts waypoints at ±110 (ramps), ±80 (lift 0), ±40 (0.62
+lift) and 0 (lift) into the run, an avenue from the zone's nearest node to
+the near ramp junction (60 m out) and on under the crest to the far one (or
+a 15 m stub when the far side is out of bounds or wet: a half diamond), and
+the ramps as 8-point quadratic Béziers bending round the quadrant corners.
+Otherwise the shortest link from a zone node to a dry highway waypoint, an
+interchange avenue end or a connected zone's node is an avenue at grade.
+Routes are planned into the network; lots are then parcelled along every
+Street/Avenue segment whose midpoint lies in a zone (both sides, from 8 m
+in, pitch = kind width + 8 m in the CBD / 6 m in suburbs; CBD lots are
+skyscrapers, suburb lots houses (60 %) or bungalows by hash), after the
+civic requests (hospital and police station near the CBD centre, a police
+station near every other suburb) and the airport's (sites projected onto
+the apron segment, the side away from the runway). `CityLayout` is the
+network definition, the requests, the junctions (`CityInterchange`: zone,
+position, diamond or not), the clearings and `CityStats`.
+`clear_vegetation_in` empties the clearings. `demo_city_plan` and
+`generic_city_plan` (hexagonal ring at half the extent, suburbs and the
+airport on an orbit outside it) are the built-in plans.
+
+The viewer: `--roads city` (the default of interactive runs; `auto` means
+the demo network for the roads and buildings tests and nothing in other
+smoke runs), `--city-test`, `CITY_JSON`, the zone name in the title, the
+class and lanes of the road underfoot, `RoadNetwork::sample` by the feet's
+height for the title, the speed and the collapse check.
+
+### Procedural materials
+
+`mesh_parts.hpp`: `SurfaceMaterial` (Plain, Asphalt, Concrete, Thatch,
+Planks, Stone, Tiles, Glass, Metal, Paint, Brick, Timber, Pavement, Window;
+named) on every `MeshPart`; `MeshPartRenderer` writes it into the Object
+uniform's `tint.a`. The `Structure` vertex stage passes the world position;
+its fragment stage fits a frame to the face (u = horizontal across the face,
+v = up the slope; along z on a flat surface), takes `uv` in metres and the
+pixel footprint from `fwidth`, and evaluates `materialShade(material, uv,
+pixel)`: a colour factor and a relief slope per material (value noise and
+ridged noise from the shared GLSL, a `masonry(course, unit, joint, jitter)`
+helper for stone and brick, sines for tiles and corrugation, hashes per
+board, stone, pane or slab). The relief bends the normal before the
+hemisphere-and-sun lighting; fine terms are scaled by
+`terrainDetailFade(pixel, frequency)`. Roads assign asphalt (carriageways
+and runways), pavement (taxiways and aprons), paint, concrete (decks, piers,
+medians, rubble) and metal (railings); buildings assign by kind (thatch over
+planks on a stone plinth with a brick chimney for the bungalow; stone under
+tiles with a timber door for the house; concrete, glass facades, single
+window panes, metal hangars).
+
+Vegetation: `make_tree_mesh` adds `push_tube` branches (broadleaf limbs
+from the trunk top into the crown; conifer whorls of five under each tier
+and three dead stubs) as untinted wood; the vertex stage passes
+`plantFoliage`, `plantGrass` and `plantSeed`; the fragment stage shades bark
+(ridged fissures along y, grain, a tangent tilt of the normal) and foliage
+(triplanar `leafNoise`/`leafFbm` weighted by the normal: clusters, leaves,
+flecks toward the light, a discard where the gap noise is low on foliage
+above the trunk, and a normal tilted by the cluster slope). Grass keeps the
+plain shading. Both fade with the pixel footprint.
 
 ## Fixed-tick replay clock
 

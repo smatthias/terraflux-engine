@@ -530,6 +530,85 @@ jobs:
             echo "a one-metre rope was accepted" && exit 1
           fi
 
+      - name: Verify roads and bridges
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --roads-test --smoke-test | tee /tmp/terraflux-roads.log
+          grep -q "Roads passed" /tmp/terraflux-roads.log
+          grep -q '"bridges":1' /tmp/terraflux-roads.log
+          grep -q "A tree fell across the road" /tmp/terraflux-roads.log
+          grep -q "THE BRIDGE COLLAPSED UNDER YOU" /tmp/terraflux-roads.log
+          grep -q '"cause":"collapse"' /tmp/terraflux-roads.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --roads-test --smoke-test --offscreen --terrain-tile-quads 8 --vegetation high
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --roads examples/roads/demo_routes.json | tee /tmp/terraflux-roads-routes.log
+          grep -q '"bridges":1' /tmp/terraflux-roads-routes.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --roads examples/roads/lake_bridge.json --view first-person --view-x -600 --view-z 60 | tee /tmp/terraflux-roads-authored.log
+          grep -q '"roads":3,"bridges":1' /tmp/terraflux-roads-authored.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --roads demo \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json | tee /tmp/terraflux-roads-replay.log
+          grep -q "ROADS_JSON" /tmp/terraflux-roads-replay.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --roads off | tee /tmp/terraflux-roads-off.log
+          if grep -q "ROADS_JSON" /tmp/terraflux-roads-off.log; then
+            echo "--roads off still built a network" && exit 1
+          fi
+          if ./build-gl/terraflux-terrain-viewer --roads-test --smoke-test --roads off > /tmp/terraflux-bad-roads-test.log 2>&1; then
+            echo "the roads test ran without roads" && exit 1
+          fi
+          if ./build-gl/terraflux-terrain-viewer --smoke-test --roads /tmp/does-not-exist.json > /tmp/terraflux-bad-roads-file.log 2>&1; then
+            echo "a missing road network file was accepted" && exit 1
+          fi
+
+      - name: Verify buildings beside the roads
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --buildings-test --smoke-test | tee /tmp/terraflux-buildings.log
+          grep -q "Buildings passed" /tmp/terraflux-buildings.log
+          grep -q '"bungalows":1,"houses":1,"hospitals":1,"skyscrapers":1' /tmp/terraflux-buildings.log
+          grep -q '"at":"hospital"' /tmp/terraflux-buildings.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --buildings-test --smoke-test --offscreen --terrain-tile-quads 8 --vegetation high
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --roads examples/roads/lake_bridge.json | tee /tmp/terraflux-buildings-authored.log
+          grep -q '"buildings":3' /tmp/terraflux-buildings-authored.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --roads demo --buildings off | tee /tmp/terraflux-buildings-off.log
+          if grep -q "BUILDINGS_JSON" /tmp/terraflux-buildings-off.log; then
+            echo "--buildings off still placed buildings" && exit 1
+          fi
+          if ./build-gl/terraflux-terrain-viewer --buildings-test --smoke-test --buildings off > /tmp/terraflux-bad-buildings-test.log 2>&1; then
+            echo "the buildings test ran without buildings" && exit 1
+          fi
+
+      - name: Verify the city
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --city-test --smoke-test | tee /tmp/terraflux-city.log
+          grep -q "City passed" /tmp/terraflux-city.log
+          grep -q '"suburbs":6' /tmp/terraflux-city.log
+          grep -q '"on_deck":true' /tmp/terraflux-city.log
+          grep -q '"on_runway":true' /tmp/terraflux-city.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --city-test --smoke-test \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json | tee /tmp/terraflux-city-replay.log
+          grep -q "City passed" /tmp/terraflux-city-replay.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --roads city --view first-person --view-x -740 --view-z -600 | tee /tmp/terraflux-city-fp.log
+          grep -q "CITY_JSON" /tmp/terraflux-city-fp.log
+          if ./build-gl/terraflux-terrain-viewer --city-test --smoke-test --roads demo > /tmp/terraflux-bad-city-test.log 2>&1; then
+            echo "the city test ran on the demo network" && exit 1
+          fi
+
       - name: Verify weather wind, twilight, cloud forms and orographic lift
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"

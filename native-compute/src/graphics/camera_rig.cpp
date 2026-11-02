@@ -59,7 +59,7 @@ void adjust_walk_speed(FirstPersonCamera& camera, double octaves) {
 
 namespace {
 
-struct Support { double height = 0.0; bool on_obstacle = false; double water_depth = 0.0; bool swimming = false; FloodSample water; };
+struct Support { double height = 0.0; bool on_obstacle = false; bool on_platform = false; double water_depth = 0.0; bool swimming = false; FloodSample water; };
 
 std::optional<Support> support_at(const WalkEnvironment& env, double x, double z, double feet_y) {
   if (!env.standing_height) throw std::invalid_argument("support needs a standing height function");
@@ -75,6 +75,16 @@ std::optional<Support> support_at(const WalkEnvironment& env, double x, double z
       if (std::hypot(x - o.x, z - o.z) <= o.radius + reach) { support.height = o.top; support.on_obstacle = true; }
     });
   }
+  if (env.platforms) {
+    // A road surface or a bridge deck within reach of the feet carries them;
+    // a deck high over the ground is never a wall, a surface on the ground keeps the slope rule.
+    const auto built = env.platforms(x, z, feet_y);
+    if (built && std::isfinite(*built) && *built > support.height && *built <= feet_y + env.body.step_height + 1e-9) {
+      if (*built - support.height > env.body.step_height) support.on_obstacle = true;
+      support.height = *built;
+      support.on_platform = true;
+    }
+  }
   if (env.water) {
     support.water = env.water(x, z, support.height);
     support.water_depth = std::max(0.0, support.water.surface_meters - support.height);
@@ -83,6 +93,7 @@ std::optional<Support> support_at(const WalkEnvironment& env, double x, double z
       support.swimming = true;
       support.height = support.water.surface_meters - env.water_rules.swim_depth_meters;
       support.on_obstacle = true;  // never a wall: the surface is reached however steep the bed
+      support.on_platform = false;
     }
   }
   return support;
@@ -127,7 +138,14 @@ std::optional<SubStep> attempt_step(const WalkEnvironment& env, math::Vec2 from,
   if (!h) return std::nullopt;  // a hole or outside the terrain
   // Ground rising faster than the slope limit is a wall; the top of a rock or
   // ledge within the step height is a step up, however abrupt.
-  if (!h->on_obstacle && h->height - height > run * max_slope_tangent + 1e-9) {
+  // Stepping up onto a built surface (a road's edge, a footpath) from the
+  // ground beside it is a kerb within the step height, not a wall.
+  const auto is_kerb = [&] {
+    if (!h->on_platform || h->height - height > env.body.step_height) return false;
+    const auto here = support_at(env, from.x, from.y, height);
+    return here && (!here->on_platform || here->height > height + 1e-6);  // from the ground, or from below the surface (not yet settled onto it)
+  };
+  if (!h->on_obstacle && h->height - height > run * max_slope_tangent + 1e-9 && !is_kerb()) {
     if (!env.climb || step_seconds <= 0) return std::nullopt;
     const auto surface = env.climb(q.x, q.y);
     const double slope = std::atan2(h->height - height, run) * 180.0 / kPi;
@@ -339,9 +357,16 @@ double walk(FirstPersonCamera& camera, const WalkInput& given, double dt, const 
   }
   const math::Vec3 direction = horizontal_forward(camera.yaw) * input.forward + horizontal_right(camera.yaw) * input.strafe;
   const double length = direction.length();
+  // The surface underfoot: a road hurries the walker, rubble slows it.
+  camera.surface_speed_factor = 1.0;
+  if (env.surface_speed) {
+    const double factor = env.surface_speed(camera.feet.x, camera.feet.z);
+    if (!std::isfinite(factor) || factor <= 0) throw std::invalid_argument("surface speed factor must be finite and positive");
+    camera.surface_speed_factor = std::clamp(factor, 0.05, 5.0);
+  }
   const double speed = std::clamp(camera.walk_speed_mps, kMinWalkSpeed, kMaxWalkSpeed) *
                        (input.run && !camera.crouched ? std::max(1.0, camera.run_multiplier) : 1.0) *
-                       (1.0 - camera.crouch_blend * (1.0 - env.crouch.speed_factor));
+                       (1.0 - camera.crouch_blend * (1.0 - env.crouch.speed_factor)) * camera.surface_speed_factor;
   math::Vec2 drift = wind_drift(env.wind, env.wind_velocity_mps);
   // The ground's grip: on ice the walker slides down any slope and accelerates slowly.
   camera.grip = env.grip ? std::clamp(env.grip(camera.feet.x, camera.feet.z), 0.0, 1.0) : 1.0;
@@ -371,7 +396,8 @@ double walk(FirstPersonCamera& camera, const WalkInput& given, double dt, const 
   {
     const auto here = support_at(env_here, camera.feet.x, camera.feet.z, camera.feet.y);
     camera.water_depth_meters = here ? here->water_depth : 0.0;
-    camera.swimming = here && here->swimming;
+    camera.swimming = here && here->swimming && camera.grounded;  // afloat once the feet have reached the water, not while falling toward it
+    camera.on_platform = here && here->on_platform && camera.grounded;
     camera.current_mps = here ? here->water.current_mps : 0.0;
     if (here && here->water_depth > 0) {
       const auto& r = env.water_rules;
@@ -453,6 +479,20 @@ double walk(FirstPersonCamera& camera, const WalkInput& given, double dt, const 
   const bool may_climb = !camera.exhausted && !camera.crouched;
   if (camera.swimming && camera.grounded)  // swimming tires, crawling more so
     camera.stamina = std::max(0.0, camera.stamina - dt * (camera.crawling ? env.water_rules.crawl_factor : 1.0) / env.swim_stamina_seconds);
+  // Whatever held the feet has gone (a deck that collapsed, an obstacle that
+  // moved): more than the step height above the support — the ground, a
+  // deck, or the float height over deep water — the walker falls.
+  if (camera.grounded) {
+    const auto under = support_height(env_here, camera.feet.x, camera.feet.z, camera.feet.y);
+    if (under && camera.feet.y - *under > env_here.body.step_height) {
+      camera.grounded = false;
+      camera.swimming = false;
+      camera.vertical_velocity_mps = 0.0;
+      camera.velocity_mps = gait.enabled ? camera.gait_direction * camera.gait_speed_mps : math::Vec2{};
+      camera.air_time_seconds = 0.0;
+      rest_gait();
+    }
+  }
   if (camera.grounded && input.jump && env.physics.jump_height_meters > 0 && !camera.swimming && !camera.crouched) {
     camera.grounded = false;
     camera.vertical_velocity_mps = jump_takeoff_speed(env.physics);

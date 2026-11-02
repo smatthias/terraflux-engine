@@ -14,6 +14,9 @@
 #include <terraflux/graphics/body_view.hpp>
 #include <terraflux/graphics/items.hpp>
 #include <terraflux/graphics/tools.hpp>
+#include <terraflux/graphics/roads.hpp>
+#include <terraflux/graphics/buildings.hpp>
+#include <terraflux/graphics/city.hpp>
 #include <terraflux/graphics/weather.hpp>
 #include <terraflux/terrain_water.hpp>
 #include <terraflux/graphics/terrain_tiles.hpp>
@@ -173,6 +176,11 @@ struct Options {
   std::string tool; // rope|axe|chainsaw: start with this tool in hand
   double rope_length=20.0, chainsaw_fuel=300.0;
   bool tools_test=false;
+  std::string roads="auto"; // auto (the city interactively, none in smoke runs) | city | demo (two routes and four buildings) | off | a network JSON file
+  bool roads_test=false;
+  bool city_test=false;
+  std::string buildings="auto"; // auto (the four kinds beside the demo/replay roads, a file's own list) | off
+  bool buildings_test=false;
   std::string load_state,save_state,screenshot_file;
   std::string request_file, response_file, obj_file, gltf_file, texture_file, scene_file;
 };
@@ -411,6 +419,14 @@ Options parse_args(int argc, char** argv) {
       if(options.tool!="rope" && options.tool!="axe" && options.tool!="chainsaw")throw std::invalid_argument("--tool must be rope, axe or chainsaw");
     }
     else if(arg=="--tools-test")options.tools_test=true;
+    else if(arg=="--roads" && i+1<argc)options.roads=argv[++i];
+    else if(arg=="--roads-test")options.roads_test=true;
+    else if(arg=="--city-test")options.city_test=true;
+    else if(arg=="--buildings" && i+1<argc) {
+      options.buildings=argv[++i];
+      if(options.buildings!="auto" && options.buildings!="off")throw std::invalid_argument("--buildings must be auto or off");
+    }
+    else if(arg=="--buildings-test")options.buildings_test=true;
     else if((arg=="--rope-length" || arg=="--chainsaw-fuel") && i+1<argc) {
       const std::string text=argv[++i];double value=0;
       const auto parsed=std::from_chars(text.data(),text.data()+text.size(),value);
@@ -519,7 +535,7 @@ Options parse_args(int argc, char** argv) {
     else if (arg == "--screenshot" && i+1<argc)options.screenshot_file=argv[++i];
     else if (arg == "--scene" && i + 1 < argc) options.scene_file = argv[++i];
     else throw std::invalid_argument(
-        "usage: terraflux-terrain-viewer [--request request.json --response response.json] [--obj model.obj | --gltf model.gltf] [--texture texture.ppm] [--scene scene.json (legacy scenes require --obj)] [--replay-speed 1] [--replay-frame 0] [--replay-controls-test with replay --smoke-test] [--hide-terrain] [--hide-fire] [--layers-test with replay --smoke-test] [--terrain-contours 50] [--render-cell 5] [--max-render-vertices 4000000] [--terrain-detail 1] [--rock-relief 5] [--snow-line 0.72] [--terrain-shading-test with --smoke-test] [--water-level 35] [--wave-height 0.6] [--wave-length 24] [--wave-speed 3] [--wave-direction 90] [--water-clarity 4] [--water-floor sand|vegetation|mud|stones|mixed|random] [--floor-seed 7] [--floor-patch-size 45] [--water-test with --smoke-test] [--vegetation off|low|medium|high] [--tree-style conifer|broadleaf|mixed|custom] [--tree-obj model.obj] [--tree-spacing 12] [--grass-spacing 2.5] [--grass-distance 300] [--tree-height 16] [--vegetation-seed 0] [--vegetation-test with --smoke-test] [--flame-scale 1] [--smoke-scale 1] [--fire-test with replay --smoke-test] [--weather off|auto|clear|cirrus|cumulus|stratocumulus|stratus|nimbostratus|cumulonimbus] [--cloud-cover 0.35] [--cloud-base 1200] [--temperature 18] [--dew-point 8] [--stability 0.01] [--wind-direction 90] [--wind-min 2] [--wind-max 6] [--wind-swing 20] [--wind-period 12] [--hour 10] [--latitude 47] [--day-of-year 172] [--time-scale 10] [--weather-time 0] [--moon-phase 0.5] [--moon-size 2] [--rainfall 0] [--weather-test with --smoke-test] [--view-yaw 26] [--view-pitch 43] [--view-zoom 1] [--view-x 0] [--view-z 0] [--view world|first-person] [--walk-speed 2.5] [--max-slope 45] [--no-collision] [--jump-height 1] [--gravity 9.81] [--no-gait] [--tree-fire model|grid|off] [--tree-fire-test with replay --smoke-test] [--storm-test with --smoke-test] [--flash-flood 0] [--flood-test with --smoke-test] [--climb-test with --smoke-test] [--vitals-test with --smoke-test] [--no-arms] [--body-pose run] [--body-test with --smoke-test] [--no-stones] [--hold torch] [--items-test with --smoke-test] [--tool rope|axe|chainsaw] [--rope-length 20] [--chainsaw-fuel 300] [--tools-test with --smoke-test] [--first-person-test with --smoke-test] [--collision-test with --smoke-test] [--jump-test with --smoke-test] [--gait-test with --smoke-test] [--terrain-tiles] [--terrain-residency] [--terrain-retain-frames 30] [--terrain-retention-test with --smoke-test --terrain-retain-frames 2] [--max-resident-terrain-tiles 4096] [--terrain-residency-test with --smoke-test --terrain-residency] [--terrain-tile-quads 32] [--terrain-tile-test with --smoke-test --terrain-tiles] [--offscreen] [--offscreen-resize-test with --offscreen --smoke-test] [--profile] [--no-culling] [--no-instancing] [--asset-preview with --gltf] [--benchmark-frames 60] [--screenshot frame.ppm] [--smoke-test] [--asset-lifecycle-test with --smoke-test]");
+        "usage: terraflux-terrain-viewer [--request request.json --response response.json] [--obj model.obj | --gltf model.gltf] [--texture texture.ppm] [--scene scene.json (legacy scenes require --obj)] [--replay-speed 1] [--replay-frame 0] [--replay-controls-test with replay --smoke-test] [--hide-terrain] [--hide-fire] [--layers-test with replay --smoke-test] [--terrain-contours 50] [--render-cell 5] [--max-render-vertices 4000000] [--terrain-detail 1] [--rock-relief 5] [--snow-line 0.72] [--terrain-shading-test with --smoke-test] [--water-level 35] [--wave-height 0.6] [--wave-length 24] [--wave-speed 3] [--wave-direction 90] [--water-clarity 4] [--water-floor sand|vegetation|mud|stones|mixed|random] [--floor-seed 7] [--floor-patch-size 45] [--water-test with --smoke-test] [--vegetation off|low|medium|high] [--tree-style conifer|broadleaf|mixed|custom] [--tree-obj model.obj] [--tree-spacing 12] [--grass-spacing 2.5] [--grass-distance 300] [--tree-height 16] [--vegetation-seed 0] [--vegetation-test with --smoke-test] [--flame-scale 1] [--smoke-scale 1] [--fire-test with replay --smoke-test] [--weather off|auto|clear|cirrus|cumulus|stratocumulus|stratus|nimbostratus|cumulonimbus] [--cloud-cover 0.35] [--cloud-base 1200] [--temperature 18] [--dew-point 8] [--stability 0.01] [--wind-direction 90] [--wind-min 2] [--wind-max 6] [--wind-swing 20] [--wind-period 12] [--hour 10] [--latitude 47] [--day-of-year 172] [--time-scale 10] [--weather-time 0] [--moon-phase 0.5] [--moon-size 2] [--rainfall 0] [--weather-test with --smoke-test] [--view-yaw 26] [--view-pitch 43] [--view-zoom 1] [--view-x 0] [--view-z 0] [--view world|first-person] [--walk-speed 2.5] [--max-slope 45] [--no-collision] [--jump-height 1] [--gravity 9.81] [--no-gait] [--tree-fire model|grid|off] [--tree-fire-test with replay --smoke-test] [--storm-test with --smoke-test] [--flash-flood 0] [--flood-test with --smoke-test] [--climb-test with --smoke-test] [--vitals-test with --smoke-test] [--no-arms] [--body-pose run] [--body-test with --smoke-test] [--no-stones] [--hold torch] [--items-test with --smoke-test] [--tool rope|axe|chainsaw] [--rope-length 20] [--chainsaw-fuel 300] [--tools-test with --smoke-test] [--roads auto|city|demo|off|roads.json] [--roads-test with --smoke-test] [--city-test with --smoke-test] [--buildings auto|off] [--buildings-test with --smoke-test] [--first-person-test with --smoke-test] [--collision-test with --smoke-test] [--jump-test with --smoke-test] [--gait-test with --smoke-test] [--terrain-tiles] [--terrain-residency] [--terrain-retain-frames 30] [--terrain-retention-test with --smoke-test --terrain-retain-frames 2] [--max-resident-terrain-tiles 4096] [--terrain-residency-test with --smoke-test --terrain-residency] [--terrain-tile-quads 32] [--terrain-tile-test with --smoke-test --terrain-tiles] [--offscreen] [--offscreen-resize-test with --offscreen --smoke-test] [--profile] [--no-culling] [--no-instancing] [--asset-preview with --gltf] [--benchmark-frames 60] [--screenshot frame.ppm] [--smoke-test] [--asset-lifecycle-test with --smoke-test]");
   }
   if(options.replay_speed_requested && options.request_file.empty())
     throw std::invalid_argument("--replay-speed requires replay input");
@@ -660,6 +676,37 @@ Options parse_args(int argc, char** argv) {
       options.scene_detach_test || options.scene_residency_test || options.terrain_tile_test || options.terrain_residency_test ||
       options.terrain_retention_test))
     throw std::invalid_argument("--tools-test requires demo or replay smoke mode with visible terrain, trees, the tree fire model and the arms, no tool preselected, and no assets or other scripted test");
+  if(options.roads.empty())throw std::invalid_argument("--roads needs auto, demo, off or a network JSON file");
+  if(options.roads_test && (!options.smoke_test || !options.scene_file.empty() || !options.obj_file.empty() ||
+      !options.gltf_file.empty() || options.hide_terrain || options.view_mode!="world" || options.roads=="off" ||
+      options.vegetation=="off" || options.tree_fire=="off" || options.flash_flood || options.weather || options.no_collision ||
+      options.tools_test || options.items_test || options.body_test || options.vitals_test || options.climb_test || options.flood_test || options.storm_test ||
+      options.tree_fire_test || options.gait_test || options.jump_test || options.first_person_test || options.collision_test || options.layers_test ||
+      options.replay_controls_test || options.terrain_shading_test || options.water_test || options.vegetation_test || options.fire_test ||
+      options.weather_test || options.offscreen_resize_test || options.asset_lifecycle_test || options.scene_controls_test ||
+      options.scene_detach_test || options.scene_residency_test || options.terrain_tile_test || options.terrain_residency_test ||
+      options.terrain_retention_test))
+    throw std::invalid_argument("--roads-test requires demo or replay smoke mode with visible terrain, roads, trees and the tree fire model, default weather and flood options, and no assets or other scripted test");
+  if(options.city_test && (!options.smoke_test || !options.scene_file.empty() || !options.obj_file.empty() ||
+      !options.gltf_file.empty() || options.hide_terrain || options.view_mode!="world" || (options.roads!="auto" && options.roads!="city") || options.buildings=="off" ||
+      options.flash_flood || options.weather || options.no_collision || options.roads_test || options.buildings_test ||
+      options.tools_test || options.items_test || options.body_test || options.vitals_test || options.climb_test || options.flood_test || options.storm_test ||
+      options.tree_fire_test || options.gait_test || options.jump_test || options.first_person_test || options.collision_test || options.layers_test ||
+      options.replay_controls_test || options.terrain_shading_test || options.water_test || options.vegetation_test || options.fire_test ||
+      options.weather_test || options.offscreen_resize_test || options.asset_lifecycle_test || options.scene_controls_test ||
+      options.scene_detach_test || options.scene_residency_test || options.terrain_tile_test || options.terrain_residency_test ||
+      options.terrain_retention_test))
+    throw std::invalid_argument("--city-test requires demo or replay smoke mode with visible terrain, the city (--roads auto or city) and buildings, default weather and flood options, and no assets or other scripted test");
+  if(options.buildings_test && (!options.smoke_test || !options.scene_file.empty() || !options.obj_file.empty() ||
+      !options.gltf_file.empty() || options.hide_terrain || options.view_mode!="world" || options.roads=="off" || options.buildings=="off" ||
+      options.flash_flood || options.weather || options.no_collision || options.roads_test ||
+      options.tools_test || options.items_test || options.body_test || options.vitals_test || options.climb_test || options.flood_test || options.storm_test ||
+      options.tree_fire_test || options.gait_test || options.jump_test || options.first_person_test || options.collision_test || options.layers_test ||
+      options.replay_controls_test || options.terrain_shading_test || options.water_test || options.vegetation_test || options.fire_test ||
+      options.weather_test || options.offscreen_resize_test || options.asset_lifecycle_test || options.scene_controls_test ||
+      options.scene_detach_test || options.scene_residency_test || options.terrain_tile_test || options.terrain_residency_test ||
+      options.terrain_retention_test))
+    throw std::invalid_argument("--buildings-test requires demo or replay smoke mode with visible terrain, roads and buildings, default weather and flood options, and no assets or other scripted test");
   if(options.weather_test && (!options.smoke_test || !options.scene_file.empty() || !options.obj_file.empty() ||
       !options.gltf_file.empty() || options.hide_terrain || options.hide_fire || options.weather || options.cloud_cover ||
       options.cloud_base || options.wind_direction || options.wave_direction!=90.0 || options.weather_time!=0.0 || options.layers_test ||
@@ -1220,7 +1267,9 @@ int main(int argc, char** argv) {
     walk_env.body.height=person.eye_height_meters;
     walk_env.body.max_slope_degrees=options.no_collision?89.0:options.max_slope;
     terraflux::graphics::ObstacleField stone_field;  // the stones lying about (filled below)
-    if(!options.no_collision)walk_env.obstacles={&tree_field,&asset_field,&stone_field};
+    terraflux::graphics::ObstacleField road_field;   // bridge railings and piers (filled below)
+    terraflux::graphics::ObstacleField building_field;  // the buildings' walls (filled below)
+    if(!options.no_collision)walk_env.obstacles={&tree_field,&asset_field,&stone_field,&road_field,&building_field};
     terraflux::graphics::validate_walker_body(walk_env.body);
     // Earth-like gravity: Space jumps, ledges are fallen from, landings dip the eye.
     walk_env.physics.gravity_mps2=options.gravity;
@@ -1283,6 +1332,131 @@ int main(int argc, char** argv) {
       if(m.rock>=0.5)return wet?0.7:1.0;
       return wet?0.85:1.0;
     };
+    // Roads and bridges (see roads.hpp): two-way carriageways draped over the
+    // ground and decks spanning valleys and water on railings and piers, all
+    // one connected network (a bridge always joins roads). The walker rests
+    // on their surfaces (a deck carries it over whatever lies below), goes
+    // faster on a sound road or deck, loses the bonus beside a fallen trunk
+    // and over a damaged surface, and is slowed by rubble. Burning trunks
+    // that fall across them damage them, a deck alight collapses, a flash
+    // flood at the piers washes a bridge out — under the walker, too.
+    // Interactive runs get the demo network (two routes that cross west of
+    // the lake, one of them over the lake on a long bridge); smoke runs leave
+    // it out unless --roads asks, so reference images stay as they were.
+    std::unique_ptr<terraflux::graphics::RoadNetwork> roads;
+    terraflux::graphics::RoadStyle road_style;
+    road_style.seed=options.vegetation_seed;
+    terraflux::graphics::RoadPlanStyle road_plan;
+    road_plan.max_span_meters=1000.0;  // the demo lake is 870 m across where the road crosses it
+    std::size_t vegetation_cleared_for_roads=0;
+    // "auto" is the city in interactive runs, the simple demo network for the roads and
+    // buildings tests, and nothing in other smoke runs.
+    const std::string roads_choice=options.roads!="auto"?options.roads:options.city_test?"city":(options.roads_test || options.buildings_test)?"demo":options.smoke_test?"off":"city";
+    std::optional<terraflux::graphics::CityPlan> city_plan;
+    std::optional<terraflux::graphics::CityLayout> city;
+    std::vector<terraflux::graphics::BuildingRequest> city_requests;
+    {
+      const bool wanted=roads_choice!="off";
+      if(wanted) {
+        const terraflux::math::Vec2 centre{framing_camera.target.x,framing_camera.target.z};  // positions are offsets from the terrain centre, as --view-x/--view-z
+        const std::optional<double> lake=water_style?std::optional<double>(water_style->level_meters):std::nullopt;
+        terraflux::graphics::RoadNetworkDef def;
+        if(roads_choice=="city") {
+          // The city: zones of curved streets, a CBD of towers, suburbs, an airport, and highways with interchanges.
+          const auto lo=ground_sampler.lower_bound(),hi=ground_sampler.upper_bound();
+          city_plan=playback?terraflux::graphics::generic_city_plan(centre,{lo.x,lo.z},{hi.x,hi.z}):terraflux::graphics::demo_city_plan(centre,{lo.x,lo.z},{hi.x,hi.z});
+          try { city=terraflux::graphics::plan_city(*city_plan,ground_height,lake,road_style,road_plan); def=city->roads; city_requests=city->buildings; }
+          catch(const std::exception& error) {
+            if(options.roads!="auto" || options.city_test)throw;
+            std::cerr<<"City left out: "<<error.what()<<" (give --roads demo or a network file for this terrain)\n";
+            city.reset();
+          }
+        } else if(roads_choice=="demo") {
+          std::vector<std::vector<terraflux::math::Vec2>> routes;
+          if(!playback) {
+            // The demo's two routes: west to east across the lowland and over the lake
+            // to the foot of the escarpment, and north to south along the western
+            // lowland; they cross at (-825, -100).
+            routes={{{centre.x-1000,centre.y-100},{centre.x-825,centre.y-100},{centre.x+200,centre.y-100}},
+                    {{centre.x-825,centre.y-1005},{centre.x-825,centre.y-100},{centre.x-825,centre.y+1035}}};
+          } else {
+            // Replay terrain: two routes through the centre over the middle three fifths of the extent.
+            const auto lo=ground_sampler.lower_bound(),hi=ground_sampler.upper_bound();
+            routes={{{lo.x+(hi.x-lo.x)*0.2,centre.y},{centre.x,centre.y},{lo.x+(hi.x-lo.x)*0.8,centre.y}},
+                    {{centre.x,lo.z+(hi.z-lo.z)*0.2},{centre.x,centre.y},{centre.x,lo.z+(hi.z-lo.z)*0.8}}};
+          }
+          try { def=terraflux::graphics::plan_road_network(routes,ground_height,lake,road_style,road_plan); }
+          catch(const std::exception& error) {
+            if(options.roads!="auto" || options.roads_test)throw;
+            std::cerr<<"Roads left out: "<<error.what()<<" (give --roads with a network file for this terrain)\n";
+          }
+        } else def=terraflux::graphics::parse_road_network(read_file(roads_choice),ground_height,lake,road_style,road_plan,centre);
+        if(!def.segments.empty())roads=std::make_unique<terraflux::graphics::RoadNetwork>(std::move(def),road_style,ground_height);
+      }
+    }
+    std::uint64_t road_obstacles_version=0;
+    const auto rebuild_road_obstacles=[&] {
+      road_field=(roads && !options.no_collision)?terraflux::graphics::ObstacleField(roads->obstacles()):terraflux::graphics::ObstacleField{};
+      if(roads)road_obstacles_version=roads->version();
+    };
+    rebuild_road_obstacles();
+    // Buildings (see buildings.hpp): a bungalow, a two-storey house, a
+    // hospital and a skyscraper, each beside a road with its door facing it
+    // and a footpath to the carriageway. The demo and replay networks get the
+    // four automatically (nearest to where the routes cross); a network file
+    // lists its own under "buildings"; --buildings off leaves them out.
+    std::unique_ptr<terraflux::graphics::BuildingSet> buildings;
+    terraflux::graphics::BuildingPlacementStyle building_style;
+    building_style.seed=options.vegetation_seed;
+    building_style.path_speed_factor=road_style.road_speed_factor;
+    if(roads && options.buildings!="off") {
+      const terraflux::math::Vec2 centre{framing_camera.target.x,framing_camera.target.z};
+      const std::optional<double> lake=water_style?std::optional<double>(water_style->level_meters):std::nullopt;
+      std::vector<terraflux::graphics::BuildingRequest> requests;
+      terraflux::math::Vec2 preferred=centre;
+      terraflux::graphics::PlacementReport placement_report;
+      if(city)requests=city_requests;
+      else if(roads_choice=="demo") {
+        for(const auto kind:{terraflux::graphics::BuildingKind::Skyscraper,terraflux::graphics::BuildingKind::Hospital,terraflux::graphics::BuildingKind::House,terraflux::graphics::BuildingKind::Bungalow})
+          requests.push_back({kind,std::nullopt});
+        preferred=playback?centre:terraflux::math::Vec2{centre.x-825,centre.y-100};  // the demo routes cross here
+      } else requests=terraflux::graphics::parse_building_requests(read_file(roads_choice));
+      // A city's lots are offered; the unsuitable ones stay empty. Authored sites must stand.
+      auto placed=terraflux::graphics::place_buildings(*roads,requests,ground_height,lake,preferred,building_style,city.has_value(),&placement_report);
+      if(!city && placed.size()<requests.size())std::cerr<<"Buildings: "<<(requests.size()-placed.size())<<" of "<<requests.size()<<" found no suitable site beside the roads\n";
+      if(city && (options.smoke_test || options.profile || options.residency_report)) {
+        const auto& st=city->stats;
+        std::cout<<"CITY_JSON={\"zones\":"<<st.zones<<",\"cbds\":"<<st.cbds<<",\"suburbs\":"<<st.suburbs<<",\"airports\":"<<st.airports<<",\"interchanges\":"<<st.interchanges
+                 <<",\"at_grade_junctions\":"<<st.at_grade_junctions<<",\"lots\":"<<st.lots<<",\"requests\":"<<requests.size()<<",\"placed\":"<<placement_report.placed
+                 <<",\"empty_lots\":{\"uneven\":"<<placement_report.uneven<<",\"buried\":"<<placement_report.buried<<",\"wet\":"<<placement_report.wet<<",\"on_road\":"<<placement_report.on_road
+                 <<",\"no_ground\":"<<placement_report.no_ground<<",\"taken\":"<<placement_report.taken<<"},\"zone_names\":[";
+        for(std::size_t i=0;i<city_plan->zones.size();++i)std::cout<<(i?",":"")<<"{\"name\":\""<<city_plan->zones[i].name<<"\",\"kind\":\""<<terraflux::graphics::zone_kind_name(city_plan->zones[i].kind)<<"\"}";
+        std::cout<<"],\"junctions\":[";
+        for(std::size_t i=0;i<city->interchanges.size();++i){const auto& ic=city->interchanges[i];std::cout<<(i?",":"")<<"{\"zone\":\""<<ic.zone<<"\",\"diamond\":"<<(ic.diamond?"true":"false")<<",\"at\":["<<ic.at.x<<","<<ic.at.y<<"]}";}
+        std::cout<<"]}\n";
+      }
+      if(!placed.empty())buildings=std::make_unique<terraflux::graphics::BuildingSet>(std::move(placed),ground_height,building_style);
+    }
+    // The zone a plan position lies in (for the title).
+    const auto zone_at=[&](double x,double z)->const terraflux::graphics::CityZone* {
+      if(!city_plan)return nullptr;
+      for(const auto& zone:city_plan->zones)if(std::hypot(x-zone.centre.x,z-zone.centre.y)<=zone.radius_meters+20.0)return &zone;
+      return nullptr;
+    };
+    building_field=(buildings && !options.no_collision)?terraflux::graphics::ObstacleField(buildings->obstacles()):terraflux::graphics::ObstacleField{};
+    // What is built over the ground at a plan position: a road surface, a deck or a footpath.
+    const auto built_surface=[&](double x,double z,double feet_y)->std::optional<double> {
+      std::optional<double> best;
+      if(roads)best=roads->platform_height(x,z,feet_y);
+      if(buildings){const auto path=buildings->platform_height(x,z);if(path && (!best || *path>*best))best=path;}
+      return best;
+    };
+    walk_env.platforms=built_surface;
+    walk_env.surface_speed=[&](double x,double z) {
+      if(roads){const auto at=roads->sample(x,z,person.feet.y);if(at.on)return at.speed_factor;}
+      return buildings?buildings->speed_factor(x,z):1.0;
+    };
+    double pending_collapse=0.0;          // a deck gave way under the walker this frame (fraction of health)
     // The walker's body: health, body heat, wetness; what the world does to it
     // every frame in first person (see vitals.hpp).
     terraflux::graphics::Vitals vitals;
@@ -1394,6 +1568,24 @@ int main(int argc, char** argv) {
       if(!interact_hint.empty())text<<" | "<<interact_hint;
       if(person.crouched)text<<" | crouched";
       if(person.grip<0.6)text<<(person.grip<0.3?" | ICE":" | snow");
+      if(buildings && person.grounded) {
+        if(const auto door=buildings->entrance_near(person.feet.x,person.feet.z,4.0))
+          text<<" | at the "<<terraflux::graphics::building_kind_name(buildings->buildings()[*door].kind)<<"'s door";
+        else if(buildings->platform_height(person.feet.x,person.feet.z) && !(roads && roads->sample(person.feet.x,person.feet.z).on))text<<" | on a footpath";
+      }
+      if(const auto* zone=zone_at(person.feet.x,person.feet.z))text<<" | "<<zone->name<<" ("<<terraflux::graphics::zone_kind_name(zone->kind)<<")";
+      if(roads && person.grounded) {
+        const auto at=roads->sample(person.feet.x,person.feet.z,person.feet.y);
+        if(at.on) {
+          const auto& st=roads->states()[at.segment];
+          text<<" | on the "<<(at.kind==terraflux::graphics::RoadKind::Bridge?"bridge (":"")<<terraflux::graphics::road_class_name(at.cls)<<(at.kind==terraflux::graphics::RoadKind::Bridge?")":"");
+          if(terraflux::graphics::road_class_lanes(at.cls)>0)text<<", "<<terraflux::graphics::road_class_lanes(at.cls)<<" lanes";
+          if(at.destroyed)text<<(at.kind==terraflux::graphics::RoadKind::Bridge?" (COLLAPSED)":" (destroyed: rubble)");
+          else if(at.blocked)text<<" (blocked by a fallen tree)";
+          else if(st.damage>0)text<<(at.kind==terraflux::graphics::RoadKind::Bridge?" (ALIGHT ":" (damaged ")<<static_cast<int>(std::lround(st.damage*100))<<"%)";
+          if(std::abs(at.speed_factor-1.0)>0.005)text<<" x"<<std::fixed<<std::setprecision(2)<<at.speed_factor<<std::defaultfloat;
+        }
+      }
       text<<" | health "<<static_cast<int>(std::lround(vitals.health*100))<<"% heat "<<static_cast<int>(std::lround(vitals.heat*100))<<"%";
       if(vitals.wetness>0.3)text<<" wet";
       if(vitals.last_loss>0 && vitals.last_cause!=terraflux::graphics::DamageCause::None)text<<" ("<<terraflux::graphics::damage_cause_name(vitals.last_cause)<<")";
@@ -1566,6 +1758,7 @@ int main(int argc, char** argv) {
                <<",\"chunks\":"<<placement.chunks.size()<<",\"tree_spacing_m\":"<<vegetation_style.tree_spacing_meters
                <<",\"grass_distance_m\":"<<vegetation_style.grass_distance_meters
                <<",\"grass_capacity\":"<<(vegetation?vegetation->grass_capacity():0)
+               <<",\"cleared_for_roads\":"<<vegetation_cleared_for_roads
                <<",\"geometry_bytes\":"<<(vegetation?vegetation->geometry_bytes():0)<<"}\n";
     };
     std::unique_ptr<TreeFireModel> tree_fire;  // created after the fire effects below
@@ -1591,6 +1784,10 @@ int main(int argc, char** argv) {
       fire_emitters_dirty=true;
       if(!vegetation_style.trees && !vegetation_style.grass){vegetation.reset();rebuild_tree_obstacles();return;}
       auto placement=place_vegetation(mesh,terrain_style,vegetation_style);
+      // Nothing grows on the carriageways: the plants standing on them are cleared.
+      vegetation_cleared_for_roads=roads?terraflux::graphics::clear_vegetation_along(placement,*roads):0;
+      if(buildings)vegetation_cleared_for_roads+=terraflux::graphics::clear_vegetation_for_buildings(placement,*buildings);
+      if(city)vegetation_cleared_for_roads+=terraflux::graphics::clear_vegetation_in(placement,city->clearings);
       if(vegetation)vegetation->set_placement(std::move(placement),vegetation_style.grass_distance_meters,vegetation_style.grass_spacing_meters);
       else vegetation=std::make_unique<VegetationRenderer>(device,std::move(placement),tree_meshes_for(tree_style),make_grass_mesh(3),
                                                            vegetation_style.grass_distance_meters,vegetation_style.grass_spacing_meters);
@@ -1696,6 +1893,103 @@ int main(int argc, char** argv) {
     std::vector<terraflux::graphics::Projectile> projectiles;
     terraflux::graphics::PropRenderer props(device,192);
     std::size_t prop_draws=0;
+    // The roads drawn: rebuilt whenever the network's geometry changes (a
+    // trunk across a road, a damaged surface, a collapsed span).
+    std::unique_ptr<terraflux::graphics::RoadRenderer> road_renderer;
+    std::uint64_t roads_uploaded_version=0;
+    std::size_t road_draws=0;
+    bool roads_visible=true;
+    const auto report_roads=[&](const char* event) {
+      if(!roads || !(options.smoke_test || options.profile || options.residency_report))return;
+      const auto st=roads->stats();
+      std::cout<<"ROADS_JSON={\"event\":\""<<event<<"\",\"source\":\""<<roads_choice<<"\",\"nodes\":"<<st.nodes<<",\"roads\":"<<st.roads<<",\"bridges\":"<<st.bridges
+               <<",\"road_m\":"<<st.road_meters<<",\"bridge_m\":"<<st.bridge_meters<<",\"longest_bridge_m\":"<<st.longest_bridge_meters
+               <<",\"highest_deck_m\":"<<st.highest_deck_meters<<",\"streets\":"<<st.streets<<",\"avenues\":"<<st.avenues<<",\"highways\":"<<st.highways<<",\"ramps\":"<<st.ramps
+               <<",\"runways\":"<<st.runways<<",\"taxiways\":"<<st.taxiways<<",\"aprons\":"<<st.aprons<<",\"highway_m\":"<<st.highway_meters<<",\"runway_m\":"<<st.runway_meters
+               <<",\"curve_joints\":"<<st.curve_joints<<",\"blocked\":"<<st.blocked<<",\"blockages\":"<<st.blockages<<",\"damaged\":"<<st.damaged
+               <<",\"destroyed\":"<<st.destroyed<<",\"parts\":"<<(road_renderer?road_renderer->parts():0)<<",\"triangles\":"<<(road_renderer?road_renderer->triangles():0)
+               <<",\"obstacles\":"<<road_field.size()<<",\"road_speed_factor\":"<<road_style.road_speed_factor<<",\"bridge_speed_factor\":"<<road_style.bridge_speed_factor
+               <<",\"cleared_plants\":"<<vegetation_cleared_for_roads<<"}\n";
+    };
+    const auto upload_roads=[&] {
+      if(!roads || !road_renderer)return;
+      road_renderer->set_parts(roads->build_meshes());
+      roads_uploaded_version=roads->version();
+    };
+    if(roads){road_renderer=std::make_unique<terraflux::graphics::RoadRenderer>(device);upload_roads();report_roads("initial");}
+    std::unique_ptr<terraflux::graphics::MeshPartRenderer> building_renderer;
+    std::size_t building_draws=0;
+    bool buildings_visible=true;
+    if(buildings) {
+      building_renderer=std::make_unique<terraflux::graphics::MeshPartRenderer>(device);
+      building_renderer->set_parts(buildings->build_meshes());
+      if(options.smoke_test || options.profile || options.residency_report) {
+        const auto st=buildings->stats();
+        std::cout<<"BUILDINGS_JSON={\"buildings\":"<<st.buildings<<",\"bungalows\":"<<st.bungalows<<",\"houses\":"<<st.houses<<",\"hospitals\":"<<st.hospitals
+                 <<",\"skyscrapers\":"<<st.skyscrapers<<",\"tallest_m\":"<<st.tallest_meters<<",\"most_storeys\":"<<st.most_storeys<<",\"floor_area_m2\":"<<st.floor_area_m2
+                 <<",\"parts\":"<<building_renderer->parts()<<",\"triangles\":"<<building_renderer->triangles()<<",\"obstacles\":"<<building_field.size()<<",\"sites\":[";
+        for(std::size_t i=0;i<buildings->size();++i) {
+          const auto& b=buildings->buildings()[i];
+          std::cout<<(i?",":"")<<"{\"kind\":\""<<terraflux::graphics::building_kind_name(b.kind)<<"\",\"segment\":"<<b.site.segment<<",\"along_m\":"<<b.site.along_meters<<",\"side\":"<<b.site.side
+                   <<",\"storeys\":"<<b.storeys<<",\"height_m\":"<<b.height_meters<<",\"floor_m\":"<<b.floor_meters<<",\"door\":["<<b.door.x<<","<<b.door.y<<"]}";
+        }
+        std::cout<<"]}\n";
+      }
+    }
+    // What the network reports: a trunk across a road, a surface damaged, a deck
+    // alight, a span collapsed or washed out — and a deck that gives way under the
+    // walker hurts it (the fall that follows is the walker's own).
+    std::size_t road_events_handled=0;
+    const auto handle_road_events=[&] {
+      if(!roads)return;
+      const auto& events=roads->events();
+      for(;road_events_handled<events.size();++road_events_handled) {
+        const auto& e=events[road_events_handled];
+        const bool bridge=roads->def().segments[e.segment].kind==terraflux::graphics::RoadKind::Bridge;
+        std::string what;
+        using Kind=terraflux::graphics::RoadEvent::Kind;
+        switch(e.kind) {
+          case Kind::Blocked:what=std::string("A tree fell across the ")+(bridge?"bridge":"road");break;
+          case Kind::Damaged:what="A burning tree is damaging the road";break;
+          case Kind::Alight:what="THE BRIDGE IS ALIGHT";break;
+          case Kind::Destroyed:if(bridge)continue;what="The road has burned through: rubble";break;
+          case Kind::Collapsed:what="THE BRIDGE COLLAPSED";break;
+          case Kind::WashedOut:what="THE BRIDGE WAS WASHED OUT by the flood";break;
+        }
+        if((e.kind==Kind::Collapsed || e.kind==Kind::WashedOut) && view_mode==terraflux::graphics::CameraMode::FirstPerson) {
+          const auto at=roads->sample(person.feet.x,person.feet.z,person.feet.y);
+          const auto ground=ground_height(person.feet.x,person.feet.z);
+          if(at.on && at.segment==e.segment && at.deck_missing && person.grounded && ground && person.feet.y-*ground>walk_env.body.step_height) {
+            pending_collapse=std::max(pending_collapse,road_style.collapse_damage);
+            terraflux::graphics::knock_down(person,2.0,0.9);
+            terraflux::graphics::shake(person,0.12);
+            what+=" UNDER YOU";
+          }
+        }
+        lightning_message=what;lightning_message_until=engine_time+6.0;
+        std::cout<<what<<'\n';
+      }
+    };
+    // The network's own time: burning trunks damage what they lie on, a
+    // flooded channel scours the piers.
+    const auto advance_roads=[&](double dt) {
+      if(!roads || dt<=0)return;
+      roads->advance(dt,[&](std::uint32_t tree)->double{ return tree_fire && tree<tree_fire->size()?tree_fire->states()[tree].intensity:0.0; },walk_env.water);
+      road_events_handled=0;  // advance() starts a new list
+      handle_road_events();
+    };
+    // Trunks the tree model has just grounded lie across whatever road they reach.
+    const auto logs_on_roads=[&] {
+      if(!roads || !tree_fire || !vegetation)return;
+      for(const auto& e:tree_fire->events()) {
+        if(e.kind!=TreeFireEvent::Kind::Grounded)continue;
+        const auto& st=tree_fire->states()[e.tree];
+        const auto& b=tree_fire->bodies()[e.tree];
+        const auto& t=vegetation->placement().trees[e.tree];
+        roads->log_landed(e.tree,{t.position[0],t.position[2]},st.fall_direction,b.height_meters,st.intensity>0);
+      }
+      handle_road_events();
+    };
     terraflux::math::Vec3 held_world_position;  // where the held thing is (the torch flame)
     const auto rebuild_stone_obstacles=[&]{ stone_field=options.no_collision?terraflux::graphics::ObstacleField{}:terraflux::graphics::ObstacleField(terraflux::graphics::stone_obstacles(stones)); };
     rebuild_stone_obstacles();
@@ -2652,6 +2946,8 @@ int main(int argc, char** argv) {
           std::cerr<<"First-person view rejected: no ground to stand on near the camera target; world view preserved\n";
           return false;
         }
+        // Entering over a bridge deck (or a road) starts on it, not in the water or on the ground under it.
+        if(const auto built=built_surface(person.feet.x,person.feet.z,person.feet.y+60.0);built && *built>person.feet.y)person.feet.y=*built;  // the highest surface here
         (void)terraflux::graphics::settle(person,walk_env); // never start inside a trunk
         terraflux::graphics::reset_vitals(vitals);person.stamina=1.0;person.exhausted=false;person.stunned_seconds=0;person.stun_crouch_meters=0;
         collapse_message.clear();if(lightning_message_until>engine_time+100.0)lightning_message_until=0.0;
@@ -2716,6 +3012,19 @@ int main(int argc, char** argv) {
     struct FloodProbe { double x=0,z=0,depth=0,current=0,carried=0,flash=0; bool swept=false,swimming=false; std::size_t triangles=0; };
     FloodProbe flood_probe;
     std::vector<std::uint8_t> flood_reference;
+    struct RoadsProbe {
+      std::uint32_t bridge=0,road=0; int tree=-1; double on_road_m=0,off_road_m=0,deck_y=0,ground_under_deck=0,offset_after_strafe=0,feet_after_collapse=0,health_before=1;
+      std::size_t blockages=0; double damage=0; bool blocked_sample=false,on_platform=false,collapsed_under=false,fell=false,swimming=false;
+    };
+    RoadsProbe roads_probe;
+    std::vector<std::uint8_t> roads_reference;
+    terraflux::graphics::OrbitCamera roads_orbit;
+    struct CityProbe { std::string zone; int lanes=0; std::size_t towers_near=0; double deck_over_ground=0; bool on_deck=false,avenue_below=false,on_runway=false,runway_wide=false; std::size_t unconnected=0; };
+    CityProbe city_probe;
+    std::vector<std::uint8_t> city_reference;
+    struct BuildingsProbe { std::size_t target=0; double door_distance=0,path_speed=0; bool on_path=false,path_meets_road=false,inside=false,stopped=false; std::string at; };
+    BuildingsProbe buildings_probe;
+    std::vector<std::uint8_t> buildings_reference;
     struct StormProbe { double strike_x=0,strike_z=0,distance=0,stunned=0,shake=0,walked=0,drift=0; int struck_tree=-1; std::size_t windthrown=0; };
     StormProbe storm_probe;
     std::uint64_t tree_fire_obstacle_version_start=0;
@@ -2820,7 +3129,8 @@ int main(int argc, char** argv) {
           (options.benchmark_frames || options.scene_controls_test || options.layers_test ||
            options.water_test || options.terrain_shading_test || options.vegetation_test || options.fire_test ||
            options.first_person_test || options.collision_test || options.jump_test || options.gait_test || options.tree_fire_test ||
-           options.storm_test || options.flood_test || options.climb_test || options.vitals_test || options.body_test || options.items_test || options.tools_test)?
+           options.storm_test || options.flood_test || options.climb_test || options.vitals_test || options.body_test || options.items_test || options.tools_test ||
+           options.roads_test || options.buildings_test || options.city_test)?
           (1.0/60.0):std::max(0.0,now-previous_time);
       const double delta = std::clamp(elapsed, 0.0, 0.1);
       previous_time = now;
@@ -2968,8 +3278,11 @@ int main(int argc, char** argv) {
           const double wind_dir=weather.config().enabled?weather.wind().direction_degrees:fire_style.wind_direction_degrees;
           tree_fire->advance(weather_step,wind_speed,wind_dir);
           if(view_mode==terraflux::graphics::CameraMode::FirstPerson)trunks_landing();
+          logs_on_roads();
         }
       }
+      // The roads live on the engine clock too (scripted road tests drive them themselves).
+      if(!options.roads_test)advance_roads(weather_step);
       {
         // The title's clock and wind follow the simulation (once a minute of solar time).
         const auto current=weather_title();
@@ -3072,11 +3385,11 @@ int main(int argc, char** argv) {
           tree_fire_sync(wound_back);
           if(options.smoke_test || options.profile)report_tree_fire(wound_back?"seek":"frame");
         }
-        if(tree_fire && !options.tree_fire_test) {
+        if(tree_fire && !options.tree_fire_test && !options.city_test) {  // the city test holds the fire so its reference frame is restorable
           const double dt_replay=replay_seconds_seen<0 || wound_back?0.0:std::max(0.0,replay_seconds-replay_seconds_seen);
           const double wind_speed=weather.config().enabled?std::min(30.0,weather.wind().speed_mps):fire_style.wind_speed_mps;
           const double wind_dir=weather.config().enabled?weather.wind().direction_degrees:fire_style.wind_direction_degrees;
-          if(dt_replay>0){tree_fire->advance(dt_replay,wind_speed,wind_dir);if(view_mode==terraflux::graphics::CameraMode::FirstPerson)trunks_landing();}
+          if(dt_replay>0){tree_fire->advance(dt_replay,wind_speed,wind_dir);if(view_mode==terraflux::graphics::CameraMode::FirstPerson)trunks_landing();logs_on_roads();}
         }
         replay_seconds_seen=replay_seconds;
         if(frame_changed || speed_changed || options.smoke_test || weather_changed || view_changed || (space && !previous_space) ||
@@ -3372,6 +3685,7 @@ int main(int argc, char** argv) {
         e.lightning=pending_lightning;pending_lightning=terraflux::graphics::LightningHazard::None;
         e.fall_impact_mps=person.landed?person.last_impact_mps:0.0;
         e.crushed=std::clamp(pending_crush,0.0,1.0);pending_crush=0.0;
+        e.collapse=std::clamp(pending_collapse,0.0,1.0);pending_collapse=0.0;
         return e;
       };
       const auto apply_vitals=[&](const terraflux::graphics::VitalsReport& report) {
@@ -3839,6 +4153,288 @@ int main(int argc, char** argv) {
           person=view_test_person;
         }
       }
+      if(options.roads_test) {
+        // Frames: 0 the world view over the bridge, the roads hidden (reference);
+        // 1 the roads shown; 2 first person on the road west of the bridge: two
+        // seconds of walking cover the road factor more than the same walk on
+        // open ground; 3 on the deck mid-span: carried over the water at the
+        // deck's height, the railing holding against a strafe; 4 a burning tree
+        // beside a road felled onto it: the road blocked where it lies, the
+        // bonus gone, the surface damaged as it burns; 5 the deck destroyed
+        // under the walker: hurt by the collapse, knocked down and fallen into
+        // the water below; 6 everything reset and the roads hidden again: the
+        // reference exactly.
+        using terraflux::graphics::CameraMode;
+        using terraflux::graphics::WalkInput;
+        using terraflux::graphics::RoadKind;
+        if(!roads || !tree_fire || !vegetation)throw std::runtime_error("roads test needs the road network, the trees and the tree fire model");
+        const auto stand_on=[&](double x,double z,double yaw) {
+          const auto deck=roads->platform_height(x,z);
+          const auto g=ground_height(x,z);
+          if(!g)throw std::runtime_error("roads test point has no ground");
+          person.feet={x,deck?std::max(*deck,*g):*g,z};person.grounded=true;person.yaw=yaw;person.pitch=-0.2;
+          person.vertical_velocity_mps=0;person.velocity_mps={};person.stunned_seconds=0;person.stun_crouch_meters=0;person.crouch_meters=0;
+          person.gait_speed_mps=0;person.gait_phase=0;
+        };
+        if(rendered_frames==0) {
+          std::optional<std::uint32_t> bridge;
+          for(std::uint32_t i=0;i<roads->size();++i)if(roads->def().segments[i].kind==RoadKind::Bridge && (!bridge || roads->length(i)>roads->length(*bridge)))bridge=i;
+          if(!bridge)throw std::runtime_error("roads test found no bridge in the network");
+          roads_probe.bridge=*bridge;
+          // The road that meets the bridge at its first node.
+          std::optional<std::uint32_t> road;
+          for(std::uint32_t i=0;i<roads->size();++i) {
+            const auto& seg=roads->def().segments[i];
+            if(seg.kind==RoadKind::Road && (seg.a==roads->def().segments[*bridge].a || seg.b==roads->def().segments[*bridge].a))road=i;
+          }
+          if(!road)throw std::runtime_error("roads test found no road joining the bridge");
+          roads_probe.road=*road;
+          const auto& seg=roads->def().segments[*bridge];
+          const auto a=roads->def().nodes[seg.a].position,b=roads->def().nodes[seg.b].position;
+          const auto mid=(a+b)*0.5;
+          roads_orbit={scene_camera.target,yaw,pitch,distance};
+          scene_camera.target=snap_orbit_target({mid.x,0,mid.y});
+          distance=std::max(60.0,std::min(scene_camera.starting_distance*0.25,roads->length(*bridge)*1.5));yaw=0.9;pitch=0.45;
+          roads_visible=false;
+        } else if(rendered_frames==1) {
+          roads_visible=true;
+        } else if(rendered_frames==2) {
+          if(!set_view_mode(CameraMode::FirstPerson,false))throw std::runtime_error("roads test found no ground to stand on");
+          // Forty metres along the road from the bridge, walking toward it.
+          const auto& seg=roads->def().segments[roads_probe.road];
+          const auto& bseg=roads->def().segments[roads_probe.bridge];
+          const bool toward_b=seg.b==bseg.a;  // the road runs a -> b into the bridge
+          const auto dir=roads->direction(roads_probe.road)*(toward_b?1.0:-1.0);
+          const auto end=roads->def().nodes[toward_b?seg.b:seg.a].position;
+          const double back=std::min(40.0,roads->length(roads_probe.road)*0.6);
+          const auto start=end-dir*back;
+          const double heading=std::atan2(-dir.x,-dir.y);
+          stand_on(start.x,start.y,heading);
+          (void)terraflux::graphics::settle(person,walk_env);
+          roads_probe.on_platform=person.on_platform;
+          const auto feet=person.feet;
+          for(int i=0;i<120;++i)terraflux::graphics::walk(person,WalkInput{1,0,false},1.0/60.0,walk_env);
+          roads_probe.on_road_m=std::hypot(person.feet.x-feet.x,person.feet.z-feet.z);
+          roads_probe.on_platform=person.on_platform;
+          auto plain=walk_env;plain.surface_speed={};plain.platforms={};
+          terraflux::graphics::FirstPersonCamera other=person;other.feet=feet;other.gait_speed_mps=0;other.gait_phase=0;other.on_platform=false;
+          (void)terraflux::graphics::settle(other,plain);
+          for(int i=0;i<120;++i)terraflux::graphics::walk(other,WalkInput{1,0,false},1.0/60.0,plain);
+          roads_probe.off_road_m=std::hypot(other.feet.x-feet.x,other.feet.z-feet.z);
+          stand_on(start.x,start.y,heading);  // back to the start for the picture
+          person.pitch=-0.15;
+        } else if(rendered_frames==3) {
+          const auto& seg=roads->def().segments[roads_probe.bridge];
+          const auto a=roads->def().nodes[seg.a].position,b=roads->def().nodes[seg.b].position;
+          const auto mid=(a+b)*0.5;
+          const auto dir=roads->direction(roads_probe.bridge);
+          stand_on(mid.x,mid.y,std::atan2(-dir.x,-dir.y));
+          roads_probe.deck_y=person.feet.y;
+          roads_probe.ground_under_deck=ground_height(mid.x,mid.y).value_or(person.feet.y);
+          double lowest=person.feet.y;
+          for(int i=0;i<60;++i){terraflux::graphics::walk(person,WalkInput{1,0,false},1.0/60.0,walk_env);lowest=std::min(lowest,person.feet.y);}
+          roads_probe.on_platform=person.on_platform && std::abs(lowest-roads_probe.deck_y)<0.05;
+          for(int i=0;i<120;++i)terraflux::graphics::walk(person,WalkInput{0,1,false},1.0/60.0,walk_env);
+          roads_probe.offset_after_strafe=std::abs(roads->sample(person.feet.x,person.feet.z).offset_meters);
+          roads_probe.fell=!person.grounded;
+          person.pitch=-0.1;
+        } else if(rendered_frames==4) {
+          // The nearest sound tree that can reach a road when it falls.
+          const auto& trees=vegetation->placement().trees;
+          std::optional<std::size_t> pick;double best=1e300;terraflux::math::Vec2 toward{1,0};
+          const double half=0.5*terraflux::graphics::road_width(road_style);
+          for(std::size_t i=0;i<trees.size();++i) {
+            if(tree_fire->states()[i].stage!=TreeFireStage::Unburned || !tree_fire->standing(static_cast<std::uint32_t>(i)))continue;
+            const terraflux::math::Vec2 p{trees[i].position[0],trees[i].position[2]};
+            for(std::uint32_t sidx=0;sidx<roads->size();++sidx) {
+              if(roads->def().segments[sidx].kind!=RoadKind::Road)continue;
+              const auto a=roads->def().nodes[roads->def().segments[sidx].a].position,b=roads->def().nodes[roads->def().segments[sidx].b].position;
+              const auto d=b-a;const double len=d.length();
+              const double along=std::clamp((p-a).dot(d)/len,0.0,len);
+              const auto c=a+d*(along/len);
+              const double dist=(c-p).length();
+              if(dist<=half || dist>tree_fire->bodies()[i].height_meters*0.8 || along<5 || along>len-5)continue;
+              const double score=dist+0.0005*std::hypot(p.x-scene_camera.target.x,p.y-scene_camera.target.z);
+              if(score<best){best=score;pick=i;toward=(c-p)/dist;}
+            }
+          }
+          if(!pick)throw std::runtime_error("roads test found no tree that could fall across a road");
+          roads_probe.tree=static_cast<int>(*pick);
+          const auto& t=trees[*pick];
+          const terraflux::math::Vec2 side{-toward.y,toward.x};
+          const auto stand=terraflux::math::Vec2{t.position[0],t.position[2]}+side*12.0;
+          stand_on(stand.x,stand.y,std::atan2(-(t.position[0]-stand.x),-(t.position[2]-stand.y)));
+          (void)terraflux::graphics::settle(person,walk_env);
+          tree_fire->ignite(static_cast<std::uint32_t>(*pick),IgnitionSource::Cell);
+          tree_fire->advance(1.0,0.0,90.0);
+          tree_fire->cut(static_cast<std::uint32_t>(*pick),2.0*tree_fire->bodies()[*pick].trunk_radius_meters,toward);
+          for(int i=0;i<60*15 && roads->blockages().empty();++i){tree_fire->advance(1.0/60.0,0.0,90.0);logs_on_roads();}
+          rebuild_tree_obstacles();
+          advance_roads(2.0);
+          roads_probe.blockages=roads->blockages().size();
+          if(!roads->blockages().empty()) {
+            const auto& bl=roads->blockages().front();
+            roads_probe.damage=roads->states()[bl.segment].damage;
+            const auto c=roads->def().nodes[roads->def().segments[bl.segment].a].position+roads->direction(bl.segment)*bl.along_meters;
+            roads_probe.blocked_sample=roads->sample(c.x,c.y).blocked && roads->sample(c.x,c.y).speed_factor==1.0;
+          }
+        } else if(rendered_frames==5) {
+          const auto& seg=roads->def().segments[roads_probe.bridge];
+          const auto a=roads->def().nodes[seg.a].position,b=roads->def().nodes[seg.b].position;
+          const auto spot=(a+b)*0.5+roads->direction(roads_probe.bridge)*5.0;  // mid-span, between the piers rather than over one
+          const auto dir=roads->direction(roads_probe.bridge);
+          stand_on(spot.x,spot.y,std::atan2(-dir.x,-dir.y));
+          (void)terraflux::graphics::settle(person,walk_env);
+          roads_probe.deck_y=person.feet.y;roads_probe.health_before=vitals.health;
+          roads->destroy(roads_probe.bridge,"test");
+          handle_road_events();
+          rebuild_road_obstacles();
+          roads_probe.collapsed_under=pending_collapse>0 && person.stunned_seconds>0;
+          apply_vitals(terraflux::graphics::advance_vitals(vitals,gather_exposure(),1.0/60.0,vitals_style));
+          for(int i=0;i<60*6 && !(person.landed || person.swimming);++i)terraflux::graphics::walk(person,WalkInput{},1.0/60.0,walk_env);
+          roads_probe.feet_after_collapse=person.feet.y;roads_probe.fell=person.landed || person.swimming;roads_probe.swimming=person.swimming;
+          person.pitch=0.1;
+        } else if(rendered_frames==6) {
+          roads->reset();
+          tree_fire->reset();
+          rebuild_tree_obstacles();
+          if(!set_view_mode(CameraMode::World,false))throw std::runtime_error("roads test could not return to the world view");
+          scene_camera.target=roads_orbit.target;yaw=roads_orbit.yaw;pitch=roads_orbit.pitch;distance=roads_orbit.distance;
+          const auto& seg=roads->def().segments[roads_probe.bridge];
+          const auto mid=(roads->def().nodes[seg.a].position+roads->def().nodes[seg.b].position)*0.5;
+          scene_camera.target=snap_orbit_target({mid.x,0,mid.y});
+          distance=std::max(60.0,std::min(scene_camera.starting_distance*0.25,roads->length(roads_probe.bridge)*1.5));yaw=0.9;pitch=0.45;
+          roads_visible=false;
+        }
+      }
+      if(options.city_test) {
+        // Frames: 0 the world view over the CBD (reference); 1 first person on a
+        // CBD avenue among the towers; 2 on the crest of a highway interchange's
+        // viaduct, the avenue passing beneath; 3 on the airport's runway; 4 back
+        // to the world view: the reference exactly.
+        using terraflux::graphics::CameraMode;
+        using terraflux::graphics::RoadClass;
+        using terraflux::graphics::RoadKind;
+        using terraflux::graphics::ZoneKind;
+        if(!city || !city_plan || !roads || !buildings)throw std::runtime_error("city test needs the city, its roads and its buildings");
+        const auto stand_at=[&](double x,double z,double yaw,double lift) {
+          const auto g=ground_height(x,z);
+          if(!g)throw std::runtime_error("city test point has no ground");
+          const auto built=built_surface(x,z,*g+lift);
+          person.feet={x,built?std::max(*built,*g):*g,z};person.grounded=true;person.yaw=yaw;person.pitch=0.05;
+          person.vertical_velocity_mps=0;person.velocity_mps={};person.gait_speed_mps=0;person.gait_phase=0;
+          (void)terraflux::graphics::settle(person,walk_env);
+        };
+        const auto* cbd=[&]()->const terraflux::graphics::CityZone*{for(const auto& z:city_plan->zones)if(z.kind==ZoneKind::Cbd)return &z;return nullptr;}();
+        if(!cbd)throw std::runtime_error("city test needs a CBD");
+        if(rendered_frames==0) {
+          roads_orbit={scene_camera.target,yaw,pitch,distance};
+          scene_camera.target=snap_orbit_target({cbd->centre.x,0,cbd->centre.y});
+          distance=std::max(100.0,std::min(scene_camera.starting_distance*0.3,900.0));yaw=0.8;pitch=0.5;
+          city_probe=CityProbe{};
+          for(const auto& b:buildings->buildings())if(!roads->sample(b.path_end.x+b.facing.x*0.1,b.path_end.y+b.facing.y*0.1).on)++city_probe.unconnected;
+        } else if(rendered_frames==1) {
+          if(!set_view_mode(CameraMode::FirstPerson,false))throw std::runtime_error("city test found no ground to stand on");
+          // The CBD avenue nearest its centre.
+          std::optional<std::uint32_t> pick;double best=1e300;
+          for(std::uint32_t i=0;i<roads->size();++i) {
+            const auto& seg=roads->def().segments[i];
+            if(seg.cls!=RoadClass::Avenue || seg.kind!=RoadKind::Road)continue;
+            const auto mid=(roads->def().nodes[seg.a].position+roads->def().nodes[seg.b].position)*0.5;
+            const double d=(mid-cbd->centre).length();
+            if(d<best){best=d;pick=i;}
+          }
+          if(!pick)throw std::runtime_error("city test found no avenue in the CBD");
+          const auto mid=(roads->def().nodes[roads->def().segments[*pick].a].position+roads->def().nodes[roads->def().segments[*pick].b].position)*0.5;
+          const auto dir=roads->direction(*pick);
+          stand_at(mid.x,mid.y,std::atan2(-dir.x,-dir.y),0.0);
+          const auto at=roads->sample(person.feet.x,person.feet.z,person.feet.y);
+          city_probe.lanes=at.on?terraflux::graphics::road_class_lanes(at.cls):0;
+          if(const auto* z=zone_at(person.feet.x,person.feet.z))city_probe.zone=z->name;
+          for(const auto& b:buildings->buildings())if(b.kind==terraflux::graphics::BuildingKind::Skyscraper && (b.centre-mid).length()<160)++city_probe.towers_near;
+        } else if(rendered_frames==2) {
+          std::optional<terraflux::graphics::CityInterchange> diamond;
+          for(const auto& ic:city->interchanges)if(ic.diamond){diamond=ic;break;}
+          if(!diamond)throw std::runtime_error("city test found no diamond interchange");
+          const auto g=*ground_height(diamond->at.x,diamond->at.y);
+          const auto deck=roads->sample(diamond->at.x,diamond->at.y,g+city_plan->interchange_lift_meters);
+          const auto dir=roads->direction(deck.segment);
+          stand_at(diamond->at.x,diamond->at.y,std::atan2(-dir.x,-dir.y),city_plan->interchange_lift_meters);
+          city_probe.on_deck=deck.on && deck.kind==RoadKind::Bridge && deck.cls==RoadClass::Highway;
+          city_probe.deck_over_ground=person.feet.y-g;
+          const auto below=roads->sample(diamond->at.x,diamond->at.y,g);
+          city_probe.avenue_below=below.on && below.cls==RoadClass::Avenue;
+          person.pitch=-0.15;
+        } else if(rendered_frames==3) {
+          std::optional<std::uint32_t> pick;
+          for(std::uint32_t i=0;i<roads->size();++i)if(roads->def().segments[i].cls==RoadClass::Runway && roads->length(i)>100){pick=i;break;}
+          if(!pick)throw std::runtime_error("city test found no runway");
+          const auto mid=(roads->def().nodes[roads->def().segments[*pick].a].position+roads->def().nodes[roads->def().segments[*pick].b].position)*0.5;
+          const auto dir=roads->direction(*pick);
+          stand_at(mid.x,mid.y,std::atan2(-dir.x,-dir.y),0.0);
+          const auto here=roads->sample(person.feet.x,person.feet.z,person.feet.y);
+          city_probe.on_runway=here.on && here.cls==RoadClass::Runway;
+          const terraflux::math::Vec2 right{-dir.y,dir.x};
+          city_probe.runway_wide=roads->sample(mid.x+right.x*20,mid.y+right.y*20).on && roads->sample(mid.x-right.x*20,mid.y-right.y*20).on && !roads->sample(mid.x+right.x*26,mid.y+right.y*26).on;
+        } else if(rendered_frames==4) {
+          if(!set_view_mode(CameraMode::World,false))throw std::runtime_error("city test could not return to the world view");
+          scene_camera.target=snap_orbit_target({cbd->centre.x,0,cbd->centre.y});
+          distance=std::max(100.0,std::min(scene_camera.starting_distance*0.3,900.0));yaw=0.8;pitch=0.5;
+        }
+      }
+      if(options.buildings_test) {
+        // Frames: 0 the world view over the buildings, hidden (reference); 1 the
+        // buildings shown; 2 first person on the road before the hospital's
+        // footpath, walking to its door: the footpath carries and hurries the
+        // walker, the front wall stops it at the door, the path meets the
+        // carriageway; 3 hidden again: the reference exactly.
+        using terraflux::graphics::CameraMode;
+        using terraflux::graphics::WalkInput;
+        using terraflux::graphics::BuildingKind;
+        if(!roads || !buildings)throw std::runtime_error("buildings test needs the road network and the buildings");
+        if(rendered_frames==0) {
+          const auto st=buildings->stats();
+          if(st.bungalows<1 || st.houses<1 || st.hospitals<1 || st.skyscrapers<1)throw std::runtime_error("buildings test needs a bungalow, a house, a hospital and a skyscraper");
+          terraflux::math::Vec2 centroid;
+          for(const auto& b:buildings->buildings())centroid=centroid+b.centre*(1.0/buildings->size());
+          for(std::size_t i=0;i<buildings->size();++i)if(buildings->buildings()[i].kind==BuildingKind::Hospital)buildings_probe.target=i;
+          roads_orbit={scene_camera.target,yaw,pitch,distance};
+          scene_camera.target=snap_orbit_target({centroid.x,0,centroid.y});
+          distance=std::max(60.0,std::min(scene_camera.starting_distance*0.2,420.0));yaw=0.7;pitch=0.38;
+          buildings_visible=false;
+        } else if(rendered_frames==1) {
+          buildings_visible=true;
+        } else if(rendered_frames==2) {
+          if(!set_view_mode(CameraMode::FirstPerson,false))throw std::runtime_error("buildings test found no ground to stand on");
+          const auto& b=buildings->buildings()[buildings_probe.target];
+          const auto start=b.path_end-b.facing*2.0;  // on the carriageway, two metres before the footpath
+          const auto gg=ground_height(start.x,start.y);
+          if(!gg)throw std::runtime_error("buildings test start has no ground");
+          const auto g=built_surface(start.x,start.y,*gg);
+          person.feet={start.x,g?std::max(*g,*gg):*gg,start.y};person.grounded=true;person.yaw=std::atan2(b.facing.x,b.facing.y);person.pitch=0.1;
+          person.vertical_velocity_mps=0;person.velocity_mps={};person.gait_speed_mps=0;person.gait_phase=0;
+          (void)terraflux::graphics::settle(person,walk_env);
+          buildings_probe=BuildingsProbe{};
+          for(std::size_t i=0;i<buildings->size();++i)if(buildings->buildings()[i].kind==BuildingKind::Hospital)buildings_probe.target=i;
+          for(int i=0;i<60*12;++i) {
+            terraflux::graphics::walk(person,WalkInput{1,0,false},1.0/60.0,walk_env);
+            if(buildings->platform_height(person.feet.x,person.feet.z) && person.on_platform){buildings_probe.on_path=true;buildings_probe.path_speed=std::max(buildings_probe.path_speed,person.surface_speed_factor);}
+          }
+          buildings_probe.door_distance=(terraflux::math::Vec2{person.feet.x,person.feet.z}-b.door).length();
+          buildings_probe.inside=buildings->building_at(person.feet.x,person.feet.z).has_value();
+          buildings_probe.stopped=buildings_probe.door_distance<2.5;
+          buildings_probe.path_meets_road=roads->sample(b.path_end.x+b.facing.x*0.1,b.path_end.y+b.facing.y*0.1).on;
+          buildings_probe.at=buildings->entrance_near(person.feet.x,person.feet.z,4.0)?terraflux::graphics::building_kind_name(b.kind):"";
+          person.pitch=0.25;  // look up at the cross
+        } else if(rendered_frames==3) {
+          if(!set_view_mode(CameraMode::World,false))throw std::runtime_error("buildings test could not return to the world view");
+          terraflux::math::Vec2 centroid;
+          for(const auto& b:buildings->buildings())centroid=centroid+b.centre*(1.0/buildings->size());
+          scene_camera.target=snap_orbit_target({centroid.x,0,centroid.y});
+          distance=std::max(60.0,std::min(scene_camera.starting_distance*0.2,420.0));yaw=0.7;pitch=0.38;
+          buildings_visible=false;
+        }
+      }
       if(options.flood_test) {
         // Frames: 0 dry, standing in first person in the terrain's largest
         // drainage channel (reference); 1 after half an hour of thunderstorm
@@ -4239,7 +4835,7 @@ int main(int argc, char** argv) {
                     cell_size, fire_field ? fire_field->width : 1,
                     fire_field ? fire_field->height : 1,
                     (options.layers_test || options.replay_controls_test || options.terrain_shading_test || options.water_test ||
-                     options.vegetation_test || options.fire_test || options.first_person_test || options.collision_test || options.jump_test || options.gait_test || options.tree_fire_test || options.storm_test || options.flood_test || options.climb_test || options.vitals_test || options.body_test || options.items_test || options.tools_test)?0.0:engine_time);
+                     options.vegetation_test || options.fire_test || options.first_person_test || options.collision_test || options.jump_test || options.gait_test || options.tree_fire_test || options.storm_test || options.flood_test || options.climb_test || options.vitals_test || options.body_test || options.items_test || options.tools_test || options.roads_test || options.buildings_test || options.city_test)?0.0:engine_time);
       const auto& camera_vp=camera_frame.view_projection;
       const auto terrain_frustum=Frustum::from_view_projection(camera_vp);
       // Atmosphere for this frame: the camera basis for the sky rays, the sun,
@@ -4696,6 +5292,20 @@ int main(int argc, char** argv) {
         } else if(pixels!=weather_reference)throw std::runtime_error("disabling the weather did not restore the reference");
         if(rendered_frames==5)weather_cumulus_wind=weather_state.wind.speed_mps;
       }
+      // Roads and bridges lie on the ground and stand over the water: drawn with
+      // the terrain, before the water, so a deck over the lake occludes it.
+      road_draws=0;
+      if(roads && roads->version()!=road_obstacles_version)rebuild_road_obstacles();
+      if(roads && road_renderer && layer_visibility.terrain && roads_visible) {
+        if(roads->version()!=roads_uploaded_version){upload_roads();report_roads("rebuilt");}
+        road_draws=road_renderer->draw(camera);
+        frame_draws+=static_cast<std::uint32_t>(road_draws);
+      }
+      building_draws=0;
+      if(buildings && building_renderer && layer_visibility.terrain && buildings_visible) {
+        building_draws=building_renderer->draw(camera);
+        frame_draws+=static_cast<std::uint32_t>(building_draws);
+      }
       // Water belongs to the surface layer: it follows the terrain in the same
       // pass so asset diagnostics still compare against the complete ground.
       std::vector<std::uint8_t> water_before;
@@ -5023,6 +5633,7 @@ int main(int argc, char** argv) {
         if(tree_fire) {
           FireEmitters dynamic;
           tree_fire->emit(dynamic.flames,dynamic.smoke,fire_style);
+          if(roads)roads->emit(dynamic.flames,dynamic.smoke,fire_style);
           if(first_person && held.kind==terraflux::graphics::HeldKind::Torch) {
             FireInstance fl{};
             fl.position[0]=static_cast<float>(held_world_position.x);fl.position[1]=static_cast<float>(held_world_position.y);fl.position[2]=static_cast<float>(held_world_position.z);
@@ -5175,6 +5786,105 @@ int main(int argc, char** argv) {
           if(climb_probe.rise>2.0)throw std::runtime_error("the walker climbed a running waterfall"); // the dry rock beside it may be climbed up to the water
         } else {
           if(pixels!=climb_reference)throw std::runtime_error("returning below the face did not restore the reference exactly");
+        }
+      }
+      if(options.roads_test) {
+        const auto pixels=device.capture_rgba(scene_width,scene_height);
+        const auto st=roads->stats();
+        const auto& pr=roads_probe;
+        std::cout<<"ROADS_TEST_JSON={\"frame\":"<<rendered_frames<<",\"bridge\":"<<pr.bridge<<",\"road\":"<<pr.road<<",\"road_draws\":"<<road_draws
+                 <<",\"on_road_m\":"<<pr.on_road_m<<",\"off_road_m\":"<<pr.off_road_m<<",\"on_platform\":"<<(pr.on_platform?"true":"false")
+                 <<",\"deck_y\":"<<pr.deck_y<<",\"ground_under_deck\":"<<pr.ground_under_deck<<",\"offset_after_strafe_m\":"<<pr.offset_after_strafe
+                 <<",\"tree\":"<<pr.tree<<",\"blockages\":"<<pr.blockages<<",\"damage\":"<<pr.damage<<",\"blocked_sample\":"<<(pr.blocked_sample?"true":"false")
+                 <<",\"collapsed_under\":"<<(pr.collapsed_under?"true":"false")<<",\"fell\":"<<(pr.fell?"true":"false")<<",\"swimming\":"<<(pr.swimming?"true":"false")
+                 <<",\"feet_after_collapse\":"<<pr.feet_after_collapse<<",\"health\":"<<vitals.health<<",\"cause\":\""<<terraflux::graphics::damage_cause_name(vitals.last_cause)
+                 <<"\",\"destroyed\":"<<st.destroyed<<",\"blocked\":"<<st.blocked<<",\"feet\":["<<person.feet.x<<","<<person.feet.y<<","<<person.feet.z<<"]}\n";
+        const auto changed_pixels=[&](const std::vector<std::uint8_t>& a,const std::vector<std::uint8_t>& b) {
+          std::size_t n=0;for(std::size_t i=0;i<a.size() && i<b.size();i+=4)if(a[i]!=b[i] || a[i+1]!=b[i+1] || a[i+2]!=b[i+2])++n;return n;
+        };
+        if(rendered_frames==0) {
+          if(road_draws || st.bridges==0)throw std::runtime_error("the roads test did not start with the roads hidden over a bridge");
+          roads_reference=pixels;
+        } else if(rendered_frames==1) {
+          if(!road_draws)throw std::runtime_error("the roads drew nothing");
+          if(changed_pixels(pixels,roads_reference)*1000<pixels.size()/4)throw std::runtime_error("the roads and the bridge changed too few pixels");
+        } else if(rendered_frames==2) {
+          if(!pr.on_platform)throw std::runtime_error("the walker does not stand on the road surface");
+          if(pr.on_road_m<pr.off_road_m*(road_style.road_speed_factor-0.08) || pr.on_road_m>pr.off_road_m*(road_style.road_speed_factor+0.08))
+            throw std::runtime_error("walking on the road was not faster by the road factor");
+        } else if(rendered_frames==3) {
+          if(!pr.on_platform || pr.deck_y-pr.ground_under_deck<1.0)throw std::runtime_error("the deck did not carry the walker over what lies below");
+          if(pr.fell || pr.offset_after_strafe>0.5*terraflux::graphics::road_width(road_style))throw std::runtime_error("the railing did not keep the walker on the deck");
+        } else if(rendered_frames==4) {
+          if(!pr.blockages || !st.blocked)throw std::runtime_error("the felled tree did not block the road");
+          if(!(pr.damage>0) || !pr.blocked_sample)throw std::runtime_error("the burning trunk did not damage the road or take its bonus");
+        } else if(rendered_frames==5) {
+          if(!pr.collapsed_under || vitals.health>=pr.health_before || vitals.last_cause!=terraflux::graphics::DamageCause::Collapse)
+            throw std::runtime_error("the deck giving way under the walker did not hurt it");
+          if(!pr.fell || pr.feet_after_collapse>pr.deck_y-1.0)throw std::runtime_error("the walker did not fall with the collapsed deck");
+          if(!st.destroyed)throw std::runtime_error("the bridge is not destroyed");
+        } else {
+          if(road_draws || st.destroyed || st.blocked)throw std::runtime_error("reset did not restore the network");
+          if(pixels!=roads_reference)throw std::runtime_error("hiding the reset roads did not restore the reference exactly");
+        }
+      }
+      if(options.city_test) {
+        const auto pixels=device.capture_rgba(scene_width,scene_height);
+        const auto cs=city->stats;
+        const auto bs=buildings->stats();
+        const auto rs=roads->stats();
+        const auto& pr=city_probe;
+        std::cout<<"CITY_TEST_JSON={\"frame\":"<<rendered_frames<<",\"zones\":"<<cs.zones<<",\"suburbs\":"<<cs.suburbs<<",\"interchanges\":"<<cs.interchanges
+                 <<",\"skyscrapers\":"<<bs.skyscrapers<<",\"police\":"<<bs.police_stations<<",\"highway_m\":"<<rs.highway_meters<<",\"ramps\":"<<rs.ramps<<",\"runway_m\":"<<rs.runway_meters
+                 <<",\"curve_joints\":"<<rs.curve_joints<<",\"unconnected\":"<<pr.unconnected<<",\"zone\":\""<<pr.zone<<"\",\"lanes\":"<<pr.lanes<<",\"towers_near\":"<<pr.towers_near
+                 <<",\"on_deck\":"<<(pr.on_deck?"true":"false")<<",\"deck_over_ground_m\":"<<pr.deck_over_ground<<",\"avenue_below\":"<<(pr.avenue_below?"true":"false")
+                 <<",\"on_runway\":"<<(pr.on_runway?"true":"false")<<",\"runway_wide\":"<<(pr.runway_wide?"true":"false")<<",\"road_draws\":"<<road_draws<<",\"building_draws\":"<<building_draws
+                 <<",\"feet\":["<<person.feet.x<<","<<person.feet.y<<","<<person.feet.z<<"]}\n";
+        if(rendered_frames==0) {
+          if(cs.cbds<1 || cs.suburbs<5 || cs.airports<1 || cs.interchanges<1)throw std::runtime_error("the city lacks a CBD, five suburbs, an airport or an interchange");
+          if(bs.skyscrapers<8 || bs.police_stations<2 || bs.hospitals<1 || bs.terminals<1 || bs.towers<1 || bs.hangars<1)throw std::runtime_error("the city lacks its towers, police stations, hospital or airport buildings");
+          if(rs.highway_meters<1000 || rs.ramps<4 || rs.runway_meters<300 || rs.curve_joints<20)throw std::runtime_error("the city lacks highways with ramps, a runway or curved streets");
+          if(pr.unconnected)throw std::runtime_error("a building's footpath does not meet a road");
+          if(!road_draws || !building_draws)throw std::runtime_error("the city drew nothing");
+          city_reference=pixels;
+        } else if(rendered_frames==1) {
+          if(pr.lanes!=4 || pr.towers_near<3)throw std::runtime_error("the walker does not stand on a four-lane CBD avenue among the towers");
+          if(pr.zone.empty())throw std::runtime_error("the walker's zone is unknown");
+        } else if(rendered_frames==2) {
+          if(!pr.on_deck || pr.deck_over_ground<city_plan->interchange_lift_meters-0.6 || !pr.avenue_below)throw std::runtime_error("the interchange's viaduct does not carry the highway over the avenue");
+        } else if(rendered_frames==3) {
+          if(!pr.on_runway || !pr.runway_wide)throw std::runtime_error("the runway is not a 45 m pavement");
+        } else {
+          if(pixels!=city_reference) {
+            std::size_t changed=0;for(std::size_t i=0;i<pixels.size() && i<city_reference.size();i+=4)if(pixels[i]!=city_reference[i] || pixels[i+1]!=city_reference[i+1] || pixels[i+2]!=city_reference[i+2])++changed;
+            throw std::runtime_error("returning to the world view did not restore the reference exactly ("+std::to_string(changed)+" pixels differ)");
+          }
+        }
+      }
+      if(options.buildings_test) {
+        const auto pixels=device.capture_rgba(scene_width,scene_height);
+        const auto st=buildings->stats();
+        const auto& pr=buildings_probe;
+        std::cout<<"BUILDINGS_TEST_JSON={\"frame\":"<<rendered_frames<<",\"building_draws\":"<<building_draws<<",\"buildings\":"<<st.buildings<<",\"tallest_m\":"<<st.tallest_meters
+                 <<",\"most_storeys\":"<<st.most_storeys<<",\"target\":"<<pr.target<<",\"on_path\":"<<(pr.on_path?"true":"false")<<",\"path_speed\":"<<pr.path_speed
+                 <<",\"door_distance_m\":"<<pr.door_distance<<",\"inside\":"<<(pr.inside?"true":"false")<<",\"stopped\":"<<(pr.stopped?"true":"false")
+                 <<",\"path_meets_road\":"<<(pr.path_meets_road?"true":"false")<<",\"at\":\""<<pr.at<<"\",\"feet\":["<<person.feet.x<<","<<person.feet.y<<","<<person.feet.z<<"]}\n";
+        const auto changed_pixels=[&](const std::vector<std::uint8_t>& a,const std::vector<std::uint8_t>& b) {
+          std::size_t n=0;for(std::size_t i=0;i<a.size() && i<b.size();i+=4)if(a[i]!=b[i] || a[i+1]!=b[i+1] || a[i+2]!=b[i+2])++n;return n;
+        };
+        if(rendered_frames==0) {
+          if(building_draws || st.buildings<4 || st.most_storeys<20 || st.tallest_meters<70)throw std::runtime_error("the buildings test did not start with the four buildings hidden");
+          buildings_reference=pixels;
+        } else if(rendered_frames==1) {
+          if(!building_draws)throw std::runtime_error("the buildings drew nothing");
+          if(changed_pixels(pixels,buildings_reference)*200<pixels.size()/4)throw std::runtime_error("the buildings changed too few pixels");
+        } else if(rendered_frames==2) {
+          if(!pr.on_path || pr.path_speed<road_style.road_speed_factor-1e-6)throw std::runtime_error("the footpath did not carry and hurry the walker");
+          if(!pr.stopped || pr.inside)throw std::runtime_error("the hospital's front wall did not stop the walker at its door");
+          if(!pr.path_meets_road || pr.at!="hospital")throw std::runtime_error("the footpath does not join the road at the hospital's entrance");
+        } else {
+          if(building_draws)throw std::runtime_error("the buildings were not hidden again");
+          if(pixels!=buildings_reference)throw std::runtime_error("hiding the buildings did not restore the reference exactly");
         }
       }
       if(options.flood_test) {
@@ -5758,6 +6468,21 @@ int main(int argc, char** argv) {
       }else if(options.climb_test) {
         if(rendered_frames==4) {
           std::cout<<"Climb passed: a rock face too steep to walk is climbed, slowly and at a cost of strength; a running waterfall refuses the climb; returning restores the reference\n";
+          break;
+        }
+      }else if(options.city_test) {
+        if(rendered_frames==5) {
+          std::cout<<"City passed: a CBD of skyscrapers, five or more suburbs of houses with police stations, an airport with runway, taxiway, apron, terminal, tower and hangars, curved streets, and multi-lane highways with diamond interchanges whose viaducts carry the highway over the avenues; every building stands beside a road; the world view is restored exactly\n";
+          break;
+        }
+      }else if(options.buildings_test) {
+        if(rendered_frames==4) {
+          std::cout<<"Buildings passed: a bungalow, a two-storey house, a five-storey hospital with its red cross and a twenty-storey glass skyscraper stand beside the roads with their doors to the road and footpaths to the carriageway; the footpath carries the walker to the hospital's door, where the wall stops it; hiding them restores the reference\n";
+          break;
+        }
+      }else if(options.roads_test) {
+        if(rendered_frames==7) {
+          std::cout<<"Roads passed: a connected network of two-way roads and a bridge is drawn over the terrain, the walker goes faster on the road, crosses the water on the deck behind its railings, a burning tree felled across the road blocks and damages it, the deck destroyed under the walker hurts it and drops it into the water, and resetting restores the reference\n";
           break;
         }
       }else if(options.flood_test) {

@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "comment": "Routes over the demo terrain, in metres from the terrain centre (x east, z south). Bridges are planned where the ground is too steep or under water: here the lake crossing. Buildings named here are placed automatically beside the roads, nearest to the terrain centre.",
+  "routes": [
+    [
+      [
+        -1000,
+        -100
+      ],
+      [
+        -825,
+        -100
+      ],
+      [
+        200,
+        -100
+      ]
+    ],
+    [
+      [
+        -825,
+        -1005
+      ],
+      [
+        -825,
+        -100
+      ],
+      [
+        -825,
+        1035
+      ]
+    ]
+  ],
+  "buildings": [
+    "skyscraper",
+    "hospital",
+    "house",
+    "bungalow"
+  ]
+}

@@ -1,0 +1,63 @@
+{
+  "version": 1,
+  "comment": "An authored graph over the demo terrain: a road from the western lowland to the lake shore, a bridge straight across the lake, a road on to the foot of the escarpment, and a side road south along the shore. Every bridge joins a road at both ends and everything is connected. Buildings with a site stand beside that road segment, the given distance along it, on its left or right; one without a site is placed automatically.",
+  "nodes": [
+    {
+      "x": -900,
+      "z": 60
+    },
+    {
+      "x": -740,
+      "z": 60
+    },
+    {
+      "x": 60,
+      "z": 60
+    },
+    {
+      "x": 200,
+      "z": 60
+    },
+    {
+      "x": -740,
+      "z": 400
+    }
+  ],
+  "segments": [
+    {
+      "from": 0,
+      "to": 1,
+      "kind": "road"
+    },
+    {
+      "from": 1,
+      "to": 2,
+      "kind": "bridge"
+    },
+    {
+      "from": 2,
+      "to": 3,
+      "kind": "road"
+    },
+    {
+      "from": 1,
+      "to": 4,
+      "kind": "road"
+    }
+  ],
+  "buildings": [
+    {
+      "kind": "house",
+      "segment": 0,
+      "along": 60,
+      "side": "left"
+    },
+    {
+      "kind": "bungalow",
+      "segment": 3,
+      "along": 80,
+      "side": "right"
+    },
+    "hospital"
+  ]
+}

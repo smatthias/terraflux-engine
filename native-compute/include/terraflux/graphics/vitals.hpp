@@ -15,14 +15,15 @@ namespace terraflux::graphics {
 //
 //  health    1 fresh .. 0 collapsed. Lost to lightning (at once), fire (by
 //            heat), smoke (by density), falls (by impact), wind-borne debris
-//            in a storm, drowning (swimming without strength), and the cold
-//            once the body heat is below hypothermia.
+//            in a storm, drowning (swimming without strength), the cold
+//            once the body heat is below hypothermia, a trunk landing on the
+//            walker, and a bridge deck collapsing under it.
 //  heat      1 warm .. 0 frozen. Lost below the comfort temperature, faster
 //            in wind (chill), wet, and in water; regained in warm air, and
 //            beside a fire (the same heat that burns you up close warms you
 //            at a distance).
 //  wetness   0 dry .. 1 soaked: rises in rain and water, dries in the warm.
-enum class DamageCause : std::uint8_t { None, Lightning, Fire, Smoke, Fall, Wind, Drowning, Cold, Crushed, Count };
+enum class DamageCause : std::uint8_t { None, Lightning, Fire, Smoke, Fall, Wind, Drowning, Cold, Crushed, Collapse, Count };
 const char* damage_cause_name(DamageCause cause);
 
 struct VitalsStyle {
@@ -70,6 +71,7 @@ struct Exposure {
   bool crouched = false;
   bool sheltered = false;           // under a roof: no rain (unused by the viewer for now)
   double crushed = 0.0;             // 0 .. 1: a falling trunk landed on the walker this step; the fraction of health it takes
+  double collapse = 0.0;            // 0 .. 1: a bridge deck gave way under the walker this step; the fraction of health it takes (the fall is extra)
 };
 // What a trunk of this mass falling on a walker takes (a fraction of health):
 // a sapling of 100 kg a tenth, a tonne and more all of it.

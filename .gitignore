@@ -46,3 +46,12 @@ cmake-build-*/
 .venv/
 __pycache__/
 *-taiga.zip
+
+# Local build products and session outputs
+build/
+build-*/
+build_*/
+cmake-build-*/
+.venv/
+__pycache__/
+*-taiga.zip

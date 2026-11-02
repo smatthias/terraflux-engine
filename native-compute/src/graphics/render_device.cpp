@@ -294,6 +294,7 @@ ShaderLayout shader_program_layout(ShaderProgramId program) {
     case ShaderProgramId::Terrain:return terrain_shader_layout();
     case ShaderProgramId::Wildfire:return wildfire_shader_layout();
     case ShaderProgramId::Object:return object_shader_layout();
+    case ShaderProgramId::Structure:return object_shader_layout();  // the same geometry and object uniform, lit for built things
     case ShaderProgramId::TexturedObject:return textured_object_shader_layout();
     case ShaderProgramId::InstancedTexturedObject:return instanced_textured_object_shader_layout();
     case ShaderProgramId::PbrObject:return pbr_textured_object_shader_layout(false);

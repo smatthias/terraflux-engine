@@ -594,6 +594,65 @@ void test_crouch_ice_and_falls() {
   for (int i = 0; i < 60 * 20; ++i) walk(person, {}, kTick, pool);
   require(person.swimming && person.stamina < 0.4 && person.stamina > 0.3, "twenty seconds of swimming spend two thirds of the strength");
 }
+
+// Platforms built over the ground (a deck 6 m up between x = 300 and 400, a
+// road surface 0.12 m over the ground at x < 200) and the surface speed.
+void test_platforms_and_surfaces() {
+  constexpr double kTick = 1.0 / 60.0;
+  bool deck_standing = true;
+  auto env = flat_env();
+  env.platforms = [&](double x, double, double) -> std::optional<double> {
+    if (x < 200) return 10.12;
+    if (deck_standing && x >= 300 && x <= 400) return 16.0;
+    return std::nullopt;
+  };
+  env.surface_speed = [](double x, double) { return x < 200 ? 1.3 : 1.0; };
+  FirstPersonCamera person;
+  person.feet = {100, 10, 500}; person.yaw = -kPi / 2; person.grounded = true;  // looking east
+  require(settle(person, env) && near(person.feet.y, 10.12), "settling lifts the feet onto a road surface within the step height");
+  walk(person, {}, kTick, env);
+  require(person.on_platform && near(person.feet.y, 10.12), "the feet rest on it");
+  const double on_road = walk(person, {1, 0, false}, 1.0, env);
+  require(near(on_road, 2.5 * 1.3, 1e-9) && near(person.surface_speed_factor, 1.3), "the surface factor scales the walk");
+  person.feet = {250, 10, 500};
+  const double plain = walk(person, {1, 0, false}, 1.0, env);
+  require(near(plain, 2.5, 1e-9) && near(person.surface_speed_factor, 1.0) && !person.on_platform, "open ground is plain walking");
+  // Stepping from the ground onto the surface is a kerb, not a wall — even in the gait's tiny sub-steps.
+  auto stepping = env; stepping.gait.enabled = true;
+  person = FirstPersonCamera{}; person.feet = {201, 10, 500}; person.yaw = kPi / 2; person.grounded = true;  // looking west
+  for (int i = 0; i < 60 * 2; ++i) walk(person, {1, 0, false}, kTick, stepping);
+  require(person.on_platform && near(person.feet.y, 10.12) && person.feet.x < 198, "the walker stepped up the kerb onto the road surface");
+  // The deck is out of reach from the ground under it: walked under, not onto.
+  person.feet = {290, 10, 500}; person.yaw = -kPi / 2;
+  for (int i = 0; i < 60 * 6; ++i) walk(person, {1, 0, false}, kTick, env);
+  require(near(person.feet.y, 10) && !person.on_platform && person.feet.x > 300, "a deck six metres up is walked under");
+  // Standing on the deck: carried along it, and off its end into a fall.
+  person.feet = {390, 16, 500}; person.grounded = true;
+  walk(person, {}, kTick, env);
+  require(person.on_platform && near(person.feet.y, 16), "feet on the deck rest on it");
+  for (int i = 0; i < 60 * 8 && person.grounded; ++i) walk(person, {1, 0, false}, kTick, env);
+  require(!person.grounded && person.feet.x >= 400, "the end of the deck is a ledge to fall from");
+  for (int i = 0; i < 60 * 3 && !person.landed; ++i) walk(person, {}, kTick, env);
+  require(person.landed && near(person.feet.y, 10) && person.last_impact_mps > 10, "and the fall lands on the ground");
+  // The deck gone under the feet: a standing walker falls from where it stood.
+  person = FirstPersonCamera{}; person.feet = {350, 16, 500}; person.grounded = true;
+  deck_standing = false;
+  walk(person, {}, kTick, env);
+  require(!person.grounded && person.feet.y < 16 && person.feet.y > 15.9, "a support that has gone is a fall, not a step");
+  for (int i = 0; i < 60 * 3 && !person.landed; ++i) walk(person, {}, kTick, env);
+  require(person.landed && near(person.feet.y, 10), "down to the ground");
+  // Over deep water the walker is not swimming until it has reached the water.
+  auto pool = flat_env(); pool.water = [](double, double, double ground) { FloodSample w; w.depth_meters = 3; w.surface_meters = ground + 3; return w; };
+  person = FirstPersonCamera{}; person.feet = {500, 20, 500}; person.grounded = false;
+  walk(person, {}, kTick, pool);
+  require(!person.swimming && !person.grounded, "falling toward the water is not swimming");
+  for (int i = 0; i < 60 * 3 && !person.landed; ++i) walk(person, {}, kTick, pool);
+  require(person.landed && near(person.feet.y, 13 - pool.water_rules.swim_depth_meters), "the fall lands afloat");
+  walk(person, {}, kTick, pool);
+  require(person.swimming && person.grounded, "and from there the walker swims");
+  rejects([&] { auto bad = env; bad.surface_speed = [](double, double) { return 0.0; }; FirstPersonCamera w; w.feet = {100, 10.12, 500}; walk(w, {}, kTick, bad); },
+          "a zero surface factor is rejected");
+}
 }  // namespace
 
 int main() {
@@ -607,6 +666,7 @@ int main() {
     test_storms();
     test_climbing();
     test_crouch_ice_and_falls();
+    test_platforms_and_surfaces();
   } catch (const std::exception& error) {
     std::cerr << "camera tests failed: " << error.what() << '\n';
     return 1;

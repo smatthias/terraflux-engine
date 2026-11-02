@@ -108,6 +108,11 @@ struct FirstPersonCamera {
   double rope_t_meters = 0.0;      // distance below the anchor along the rope
   double rope_phase = 0.0;         // 0 .. 1 per pull (drives the arms)
   double rope_ground_meters = 0.0; // how much rope was let down with walkable ground underfoot (a ledge: stepped onto after a metre)
+  // Infrastructure (see roads.hpp and PlatformFn / SurfaceSpeedFn): whether
+  // the feet rest on a built surface this step, and what the surface
+  // underfoot does to the walking speed (1 on open ground).
+  bool on_platform = false;
+  double surface_speed_factor = 1.0;
   // Falls: the impact of the last landing (m/s downward), reported once.
   double last_impact_mps = 0.0;
   bool landed = false;
@@ -291,8 +296,23 @@ struct HeadingPush {
 };
 void validate_heading_push(const HeadingPush& push);
 
+// Surfaces built over the ground (roads.hpp): the height of the road surface
+// or bridge deck covering a plan position (of several, the one for feet at
+// feet_y: the highest within reach), or nullopt where there is none.
+// The walker rests on it when it lies above the ground and no higher than
+// the step height above the feet; a deck more than the step height over the
+// ground is reached however steep the ground under it (it is never a wall),
+// a surface lying on the ground keeps the ground's slope rule. Stepping off
+// a deck's edge is a ledge to fall from.
+using PlatformFn = std::function<std::optional<double>(double x, double z, double feet_y)>;
+// What the surface underfoot does to the walking speed at a plan position:
+// 1 on open ground, more on a road, less over rubble. Empty: 1 everywhere.
+using SurfaceSpeedFn = std::function<double(double x, double z)>;
+
 struct WalkEnvironment {
   StandingHeightFn standing_height;
+  PlatformFn platforms;            // empty: nothing built over the ground
+  SurfaceSpeedFn surface_speed;    // empty: open ground everywhere
   math::Vec3 lower, upper;
   std::vector<const ObstacleField*> obstacles;
   WalkerBody body;

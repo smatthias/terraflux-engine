@@ -85,6 +85,29 @@ or physical-GPU certification.
   perch; a fire axe chops a tree down in counted chops and a chainsaw saws it through on a tank of
   fuel, both felling it away from you (a burning tree before it falls on you); branches are cut
   in halves — and a trunk that does land on you knocks you down and can kill
+- Roads and bridges: a connected network of two-way roads draped over the ground (dashed centre
+  line, edge lines) and bridge decks on railings and piers spanning valleys and water, planned from
+  routes or authored in JSON (a bridge always joins a road at both ends); the walker goes faster on
+  a sound road or deck, loses the bonus where a fallen tree blocks the way, is slowed by rubble,
+  crosses the lake on the deck and falls from its edge; burning trees felled across a road block
+  and damage it, a deck alight collapses, a flash flood at the piers washes a bridge out — and a
+  deck that gives way under the walker hurts it and drops it
+- Buildings beside the roads: a thatched wooden bungalow, a two-storey stone house under red tiles,
+  a five-storey white hospital with glass windows and a red cross, and a twenty-storey glass
+  skyscraper with a white roof — each with its door to the road and a footpath to the
+  carriageway, placed on flat dry plots automatically or at authored sites, solid to the walker
+- A city: a central business district of skyscrapers on a warped lattice of curving avenues and
+  streets, six suburbs of houses and bungalows with police stations, a hospital, an airport with
+  runway, taxiway, apron, terminal, control tower and hangars, and six-lane highways with medians
+  that fillet round their corners and cross the suburbs' avenues on viaducts at diamond
+  interchanges with curved ramps — every building on a lot beside a road, every zone joined to the
+  highways; planned deterministically from zones and corridors for the demo or any terrain
+- Procedural materials on everything built and grown, without image assets: thatch laid in courses
+  of straw, boards with the grain, rings and knots of the tree they came from, coursed stone and
+  brick masonry with mortar joints, overlapping roof tiles, pored and streaked concrete, aggregate
+  in the asphalt, panes in the glass, corrugated sheet; bark with fissures and grain on the trunks,
+  and leaves on the crowns — clusters of lighter and darker green, sunlit leaf tips and gaps through
+  which the branches (now modelled: limbs in a broadleaf crown, whorls under a conifer's tiers) show
 - A body to keep alive: health, body heat, strength and wetness bars; damage from lightning, fire,
   smoke, falls, storm debris, drowning and cold; crouching, slipping on ice, a crosswind that turns
   the heading; collapse and a fresh attempt
@@ -795,6 +818,294 @@ only lies there) ropes down the tallest face it finds and back, chops a tree
 down in its counted chops, saws one through in its time and fuel (both falling
 away), cuts a branch into halves and refuses a quarter, ropes up into a crown
 to a perch, lets go, and has a tree felled toward the walker land on it.
+
+### Roads and bridges: infrastructure to use, and to lose
+
+Fixed infrastructure lies over the terrain now (`terraflux/graphics/roads.hpp`):
+a **road network** of plan nodes joined by segments, each a *road* (a
+two-way carriageway — one 3 m lane each way with 0.5 m shoulders, a dashed
+centre line and solid edge lines — draped over the ground at 2.5 m spacing,
+12 cm above it) or a *bridge* (a straight deck between its two ends at the
+ground height of each, 0.6 m thick, on railings 1.1 m high with posts every
+4 m and on piers every 20 m down to whatever lies below: the valley floor,
+the channel, the lake bed). Every network is validated the way road nets are
+built: **a bridge joins a road at both of its ends — there is no stand-alone
+bridge — and everything is connected**, so a network in two pieces, a bridge
+at a dead end or two bridges end to end with nothing beyond are rejected.
+
+The network comes from **routes** (plan polylines) that a planner walks at
+the sample spacing: where the ground along a route rises or falls faster
+than 18 %, or lies under the water, the road cannot go, and a **bridge is
+planned** from the last good point to the first point beyond the trouble at
+which a deck of at most 6 % grade lands on a road's worth of good ground
+with the ground nowhere above the deck — as long as the span is within the
+limit (400 m by default; the viewer allows 1000 m for the demo lake) and
+worth it (ground at least 2 m under the deck somewhere, or water, in which
+case both ends stand 1.5 m of freeboard above it). Routes that share a
+waypoint join there. Or it is **authored**: `--roads file.json` takes either
+`{"version": 1, "routes": [[[x, z], ...], ...]}` to plan or
+`{"version": 1, "nodes": [{"x":..,"z":..}, ...], "segments": [{"from": i,
+"to": j, "kind": "road"|"bridge"}, ...]}` as drawn, positions in metres from
+the terrain centre (x east, z south, like `--view-x`/`--view-z`); see
+`examples/roads/demo_routes.json` and `examples/roads/lake_bridge.json`.
+Interactive runs on the demo terrain get the demo network (`--roads auto`,
+the default; `demo` asks for it in smoke runs too, `off` leaves it out): a
+road west to east across the lowland and **over the lake on an 870 m bridge**
+to the foot of the escarpment, crossed by a road north to south through the
+western lowland; on replay data `demo` plans two routes through the centre.
+Nothing grows on the carriageways (the plants there are cleared).
+
+The walker uses them:
+
+- **Surfaces to stand on.** A road surface and a sound deck are platforms
+  the feet rest on (`PlatformFn` in the walk environment): a deck high over
+  the ground carries you across however steep the ground under it, and its
+  edge — or the broken end of a destroyed span — is a ledge you fall from.
+  Under the bridge you walk on the valley floor or swim in the lake; the
+  piers are solid and the railings keep you on the deck. Entering first
+  person over a deck starts on it.
+- **Speed.** Walking is faster on a sound road (×1.3) and a sound deck
+  (×1.25) than on open ground (`SurfaceSpeedFn`; wading in water still slows
+  you as before). Within 6 m along the road of a trunk lying across it the
+  bonus is gone (and the log itself has to be stepped, jumped or walked
+  around); a damaged surface gives less of a bonus; the rubble of a
+  destroyed road is slow (×0.7). The title says `on the road x1.30`, `on the
+  bridge (ALIGHT 40%)`, `on the road (blocked by a fallen tree)`.
+- **Damage.** Every trunk the fire, the wind, the lightning or your axe
+  brings down is checked against the network: lying across a road it
+  **blocks** it where it lies (`A tree fell across the road`); **burning**,
+  it damages the surface at 2 %/s of its intensity (`damaged`, darkening,
+  rubble at 100 %). A trunk lying on a deck — where the deck is at ground
+  level, at the abutments — sets **the bridge alight** (5 %/s, flames and a
+  plume) and at full damage **the bridge collapses**: the span between two
+  6 m stubs is gone, the slabs lie tilted below, the piers stand. A **flash
+  flood** running at a pier (3 m/s and 1 m deep for 45 s) **washes a bridge
+  out**. `RoadNetwork::destroy` does it outright. A deck that gives way
+  **under you** costs 35 % of your health at once (cause `collapse`), knocks
+  you down, and then you fall with it — into the valley (a fall's impact) or
+  the water (swimming). Clearing a log off a road and rebuilding are not
+  modelled: a blocked or destroyed segment stays so until the network is
+  reset. Nothing here feeds back into the fire simulation, the contracts or
+  the fixtures.
+
+```bash
+./build-gl/terraflux-terrain-viewer --view first-person --view-x -600 --view-z -100 --view-yaw -90   # on the road toward the lake bridge
+./build-gl/terraflux-terrain-viewer --roads examples/roads/lake_bridge.json --view first-person --view-x -300 --view-z 60
+./build-gl/terraflux-terrain-viewer --roads off
+LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a -s "-screen 0 1280x800x24" \
+  ./build-gl/terraflux-terrain-viewer --roads-test --smoke-test
+```
+
+Roads, bridges and buildings are drawn from shared `MeshPart`s
+(`mesh_parts.hpp`: boxes, quads, triangles, a `MeshPartRenderer`) with the
+`Structure` program, the Object geometry lit with a sky ambient so shaded
+walls stay light. `ROADS_JSON` reports nodes, roads, bridges, lengths, the longest span and
+highest deck, what is blocked, damaged and destroyed, the parts and triangles
+drawn and the railing and pier obstacles; `VEGETATION_JSON` counts the
+plants cleared. `terraflux-roads-tests` covers the style and the network
+rules (the stand-alone bridge, the dead-end bridge, the network in two
+pieces), the planner on a synthetic plain with a steep valley, a steep-banked
+lake and a gently banked pond (bridged for the water alone, a road when
+dry; a valley wider than the span limit crossed on the ground; routes that
+meet join, routes that do not are rejected; deterministic), the JSON forms,
+sampling and the speed factor, the railings and piers as obstacles, the
+walker (faster on the road, carried over the valley at the deck's height,
+held by the railing, walking under the bridge and round a pier, falling when
+the deck is destroyed under it and off a stub's broken end), blockages and
+fire damage (Damaged once, rubble, the deck alight and collapsing, flames
+and smoulder), the washout (counting, recovering, washed out), the meshes
+(parts, stubs and rubble, reset restoring them exactly), the renderer, the
+vegetation clearing and the collapse damage. `--roads-test` (demo) shows the
+roads over the bridge (hidden first, as the reference), walks the road
+against the same walk on open ground, crosses the deck and strafes into the
+railing, fells a burning tree across a road, destroys the bridge under the
+walker, and resets: the reference exactly.
+
+### Buildings: a bungalow, a house, a hospital and a skyscraper
+
+Settlement follows the roads (`terraflux/graphics/buildings.hpp`). Four kinds
+of building are built, every one **beside a road, its front wall parallel to
+it, its door facing it, and a paved footpath from the door to the edge of the
+carriageway** — there is no building without a road to reach it, and none
+beside a bridge:
+
+| Kind | Size | Walls | Roof | Windows | Entrance |
+| --- | --- | --- | --- | --- | --- |
+| Bungalow | 9 × 7 m, one storey | wooden planks | thatched gable (38°) | open holes | plank door |
+| House | 11 × 9 m, two storeys | grey stone | red tiled gable (40°), a chimney | glass | wooden door |
+| Hospital | 40 × 20 m, five storeys | white concrete | flat dark grey, parapet | glass | canopy over a double glass door, a **red cross** on the front and on the roof |
+| Skyscraper | 30 × 30 m, twenty storeys (80 m) | glass facade with floor bands and mullions | flat white with a plant room | — | glass lobby under a canopy |
+
+**Sites.** A building takes a plot the setback from the carriageway edge
+(6–14 m, the footpath's length). Placed automatically, each request takes the
+suitable candidate (every 5 m along every road, both sides, 20 m clear of the
+junctions) nearest to a preferred point; a site is suitable when the ground
+under the footprint varies no more than the kind allows (2.5–6 m: the
+foundation takes up the fall, the floor sits on the ground at the door so the
+entrance is at grade and the ground may rise no more than 1.2 m over the
+floor behind it), every corner is above the water, nothing lies on a
+carriageway and the other buildings and their paths are clear. The demo and
+replay networks get all four (nearest to where the demo routes cross; the
+tower and the hospital first so they find the flat land); a network file
+lists its own under `"buildings"`: a kind name is placed automatically,
+`{"kind": "hospital", "segment": 2, "along": 120, "side": "left"}` is an
+authored site (checked the same way; an unsuitable one is an error). The
+plants on the plots and paths are cleared. `--buildings off` leaves them out.
+
+**For the walker** the buildings are solid: the walls are obstacles from the
+foundation to the roof (the doors are closed — interiors are not modelled),
+so you walk along the wall or round the building; the footpath is a surface
+you walk on at the road's pace and it takes you to the door, where the title
+says `at the hospital's door`. Nothing here burns yet (a thatched roof in a
+wildfire is the obvious next step).
+
+```bash
+./build-gl/terraflux-terrain-viewer --view first-person --view-x -850 --view-z -70 --view-yaw -90 --view-pitch 12   # the hospital across the road
+./build-gl/terraflux-terrain-viewer --roads examples/roads/lake_bridge.json          # authored sites
+./build-gl/terraflux-terrain-viewer --buildings off
+LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a -s "-screen 0 1280x800x24" \
+  ./build-gl/terraflux-terrain-viewer --buildings-test --smoke-test
+```
+
+`BUILDINGS_JSON` lists the kinds, storeys, heights and sites.
+`terraflux-buildings-tests` covers the specs (a hospital of at least five
+storeys, a skyscraper of at least twenty and seventy metres), placement (all
+four along the roads, doors facing the road and paths meeting the
+carriageway, no corner on a road, no overlap, determinism, the dry side of a
+lake, the flat side of a hill, the downhill side of a slope with the door at
+grade, nothing on a shore, authored sites and their rejections), the JSON
+forms, the set (footpath surface and pace, plots, entrances, the walls as
+posts, a walker stopped at the door), the meshes (parts and materials per
+kind, the cross red and on the hospital, heights, doors at the entrances)
+and the vegetation clearing. `--buildings-test` shows the four from the
+world view (hidden first as the reference), walks the hospital's footpath to
+its door, and hides them again: the reference exactly.
+
+### The city: CBD, suburbs, highways and an airport
+
+The road network and the buildings scale up to a city (`terraflux/graphics/city.hpp`),
+planned deterministically from a `CityPlan` of zones and highway corridors:
+
+- **Road classes.** A segment now has a class: `street` (two lanes), `avenue`
+  (four lanes, a double yellow centre line), `highway` (six lanes, 21 m wide,
+  a raised median between the carriageways, yellow inner lines, dashed lane
+  lines), `ramp`, and the airport's `runway` (45 m, centreline dashes and
+  threshold stripes), `taxiway` (20 m, a yellow centreline) and `apron`
+  (60 m). Widths, markings, sampling, obstacles and the buildings' setbacks
+  all follow the class; the title says `on the highway, 6 lanes`.
+- **Curves.** Streets and highway arcs are polylines of short legs; where
+  exactly two segments of one width meet the ribbon is **mitred**, so a curve
+  reads as one road without notches. `ROADS_JSON` counts the `curve_joints`.
+- **Viaducts and interchanges.** A node may carry a **lift**: the deck of a
+  bridge chain passes that high over the ground (a road can never reach a
+  lifted node; a chain of bridges must still come down to roads at two of its
+  nodes). Where a zone's avenue meets a straight run of highway a **diamond
+  interchange** is built: the highway rises 7 m on a viaduct over the avenue
+  (no pier ever stands on the road below) and four quadratic-Bézier **ramps**
+  join the highway 110 m either side of the crossing to the avenue 60 m
+  either side of it; against the terrain's edge it is a half diamond. A
+  highway ending on another's straight run joins it at a T; one ending at an
+  arc is snapped to it. Where there is no room (near a T, another
+  interchange, a highway's end or water) the zone joins the nearest dry
+  highway waypoint, interchange or already connected zone by an avenue at
+  grade. With a height, `RoadNetwork::sample(x, z, feet_y)` and
+  `platform_height(x, z, feet_y)` give the deck to whoever stands on it and
+  the avenue to whoever walks under it.
+- **Zones.** The **CBD** is a lattice of avenues (every third line) and
+  streets on 120 m blocks, gently warped; every block edge is parcelled into
+  **skyscraper** lots on both sides, and a hospital and a police station are
+  placed near its centre. A **suburb** is a smaller lattice (100 m blocks,
+  warped by up to 14 m so the streets wander) parcelled into houses and
+  bungalows; every other suburb gets a police station. The **airport** is a
+  runway with a parallel taxiway joined at both ends, an apron off the
+  taxiway with the terminal, control tower and two hangars on its far side,
+  the airfield cleared of plants, and the apron's end as its road connection.
+  Lots that are uneven, wet, on a carriageway or on another building stay
+  empty (`CITY_JSON` counts why); every building that stands has its door
+  and footpath to the road it was parcelled from.
+- **Plans.** The demo terrain gets `demo_city_plan`: the CBD "Central" in
+  the north-western lowland, the suburbs Hillcrest (on the hill north of the
+  lake), Westfield, Lakeside, Southbank, Riverside and Eastgate, the airport
+  in the south with its runway east–west, a western ring highway north to
+  south, the lake crossing east, and a southern link that turns toward the
+  airport. Any other terrain gets `generic_city_plan`: a CBD at the centre,
+  five suburbs and an airport around it, and a hexagonal ring highway between
+  them whose sides face the suburbs. `--roads city` asks for it (the default
+  of interactive runs); `--roads demo` keeps the earlier two routes and four
+  buildings.
+
+New building kinds: a **police station** (two storeys, light walls with a
+blue band and a blue lamp at the door, a flat dark roof with a beacon mast),
+an airport **terminal** (two tall storeys, white under continuous glass bands,
+a long canopy), a **control tower** (a concrete shaft with a wider glazed
+cab) and a **hangar** (one tall storey of grey metal under a shallow gable, a
+20 m sliding door). Overlap between buildings is now judged on their
+rectangles (a terrace of houses fits), and a city's lots are offered with
+`skip_unsuitable_sites` rather than thrown.
+
+```bash
+./build-gl/terraflux-terrain-viewer                                          # the city, from the air
+./build-gl/terraflux-terrain-viewer --view first-person --view-x -740 --view-z -600 --view-yaw 0   # a CBD avenue
+./build-gl/terraflux-terrain-viewer --view-x -1000 --view-z -660 --view-zoom 0.12 --view-pitch 35 --view-yaw 300   # the Central interchange
+./build-gl/terraflux-terrain-viewer --view-x -275 --view-z 930 --view-zoom 0.18 --view-pitch 35 --view-yaw 160      # the airport
+LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a -s "-screen 0 1280x800x24" \
+  ./build-gl/terraflux-terrain-viewer --city-test --smoke-test
+```
+
+`CITY_JSON` reports the zones, the interchanges and at-grade junctions, the
+lots parcelled and placed and why the rest stayed empty. `terraflux-city-tests`
+covers the plan validation, a seven-zone city on a rolling plain with a lake
+(a CBD, five suburbs and an airport all joined, at least three diamonds with
+their crest nodes and viaduct chains, avenues under the crests, a T-junction
+onto a filleted ring, hundreds of lots, a CBD that is mostly skyscrapers, the
+hospital, police stations and airport buildings, every building beside a road
+with its path on the carriageway, the airfield clearing, determinism), a lone
+zone, two zones joined by a link road and the generic plan; the roads suite
+covers the classes, widths, lifts, viaduct validation, mitred curves,
+pier placement and the JSON forms. `--city-test` shows the CBD from the air,
+stands on a four-lane avenue among the towers, on the crest of an
+interchange's viaduct with the avenue beneath, and on the runway, and
+returns to the reference exactly.
+
+### Materials: the surfaces things are made of
+
+Nothing built or grown is a flat colour any more. Every mesh part carries a
+`SurfaceMaterial` (`mesh_parts.hpp`) that the `Structure` program textures
+**procedurally in world space** — no image assets, nothing to load, stable
+on the surface and fading out where it would shimmer at a distance — as a
+small height field over a frame fitted to the face (across it and up its
+slope) that both shades the surface and bends its normal:
+
+| Material | What you see |
+| --- | --- |
+| thatch | bundles of straw laid down the slope in 45 cm courses, each strand its own gold or grey, the course's lower edge in shadow, ragged butts |
+| planks | horizontal boards, each with the grain of the tree it came from: rings that wander as the tree grew and lie tight or wide by the board (good and lean years), a knot with its own rings every couple of metres, dark seams, grey weathering where the rain runs |
+| stone | coursed rubble with mortar joints, every stone its own tone and a rough face |
+| brick | stretcher bond, pale mortar, warm and dark bricks |
+| tiles | overlapping rows of pantiles, shadow under every lip |
+| concrete | pores, a rough grain, mottling and faint streaks running down the face |
+| asphalt | fine aggregate and patches |
+| pavement | concrete slabs with joints, stained |
+| glass / window | panes with the sky brighter toward their tops; a single pane for a window |
+| metal | corrugated sheet with rust at the laps |
+| timber | vertical boards with grain (doors) |
+| paint | worn road markings |
+
+The bungalow gained its **masonry**: a course of fieldstone the timber walls
+stand on and a brick chimney; the house's chimney is brick too.
+
+The trees have their own detail in the vegetation program: **bark** with
+fissures running up the trunk (ridged noise stretched along the height) and
+grain between them, bending the lighting; **leaves** — clusters of lighter
+and darker green about a metre across, single leaves of a hand's breadth,
+sunlit leaf tips on the lit side, and **gaps** in the canopy through which
+the branches and the sky show (the back of the canopy is lit two-sided, so
+the inside reads as leaves in shadow). The tree meshes carry **branches**
+now: a broadleaf tree forks into five to seven limbs that reach up and out
+through its crown, a conifer carries a whorl of branches under each tier
+whose tips show at the edge, and a few dead stubs on the bare trunk.
+Grass is left plain. Detail terms fade with the pixel footprint
+(`terrainDetailFade`), so distant forests and roofs stay calm.
 
 ### Water: level, depth, transparency, reflection and waves
 
@@ -1994,7 +2305,7 @@ resolution, serializable Motion,
 shared mixed-format scene assets, isolated
 GPU asset lifetimes, unload/reload with failure recovery, and independent
 scene pause/resume and single-step controls. The mixed-format example includes
-OBJ, glTF, GLB, transparent materials and repeated model references. Native testing comprises 28
+OBJ, glTF, GLB, transparent materials and repeated model references. Native testing comprises 31
 CTest suites and 71 simulation parity fixtures; CI also exercises the viewer
 under Mesa/Xvfb. See the branch's CI results for validation of each commit.
 
@@ -2102,12 +2413,19 @@ the camera rig and the collision model are pure modules
 with their own suites; a tree-level fire model makes every tree burn, drop
 burning branches, char, topple (onto the ground or a neighbour), lie as a
 burning log and light its neighbours, driven by the replay front and clock
-(28 native CTest suites) with Mesa first-person, collision, jump, gait,
-tree fire, storm, flood, climb, vitals, body, items and tools tests; the walker sees its
+(31 native CTest suites) with Mesa first-person, collision, jump, gait,
+tree fire, storm, flood, climb, vitals, body, items, tools, roads, buildings and city tests; the walker sees its
 own arms and hands and swims in strokes, crawls and dives; it picks up stones
 and branches, lights a torch and sets trees alight with it; it carries a rope
 (down a cliff, up into a crown), a fire axe and a chainsaw that fell trees
 away from it and cut branches in pieces, and a trunk that lands on it crushes it;
+a connected network of two-way roads and bridges lies over the terrain, used by
+the walker (faster on them, carried over the lake on a deck) and lost to it
+(trunks block and burn the roads, a deck alight or scoured by a flood
+collapses, under the walker too); a bungalow, a house, a hospital and a
+skyscraper stand beside the roads with their doors and footpaths to them, and
+a whole city is planned from zones: a CBD of towers, suburbs, police stations,
+an airport and multi-lane highways with diamond interchanges on viaducts;
 the walker has health, body
 heat and wetness, crouches, slips on ice and is turned by crosswinds; storms reach the walker (gust drift,
 windthrow, lightning that splits trees and strikes people down), storm
