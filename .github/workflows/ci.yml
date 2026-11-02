@@ -595,7 +595,7 @@ jobs:
           xvfb-run -a -s "-screen 0 1280x800x24" \
             ./build-gl/terraflux-terrain-viewer --interior-test --smoke-test | tee /tmp/terraflux-interior.log
           grep -q "Interior passed" /tmp/terraflux-interior.log
-          grep -q '"interiors":1' /tmp/terraflux-interior.log
+          grep -q '"interiors":3' /tmp/terraflux-interior.log
           grep -q '"hint":"E: open the door"' /tmp/terraflux-interior.log
           grep -q '"did":"opened the door"' /tmp/terraflux-interior.log
           grep -q '"did":"closed the door"' /tmp/terraflux-interior.log
