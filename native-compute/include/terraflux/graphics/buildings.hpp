@@ -22,7 +22,8 @@ namespace terraflux::graphics {
 // is no building without a road to reach it. Four kinds are built:
 //
 //  Bungalow    one storey, wooden plank walls, a thatched gable roof, open
-//              window holes and a plank door.
+//              window holes and a plank door that opens; built hollow and
+//              furnished, the one kind the walker enters.
 //  House       two storeys, stone walls, a red tiled gable roof, glass windows.
 //  Hospital    five storeys, white concrete walls, a flat dark grey roof,
 //              glass windows, a canopy over a double glass door, and a red
@@ -42,8 +43,10 @@ namespace terraflux::graphics {
 // point along the roads: flat enough, dry, off the carriageways, clear of the
 // other buildings) or given as a road segment, a distance along it and a
 // side. The buildings are solid to the walker (their walls are obstacles;
-// the doors are closed), the footpaths are surfaces it walks on at the road's
-// pace, and the plants on the plots are cleared.
+// the doors are closed) — except the bungalow, whose door opens onto a
+// furnished room (see Interiors below) — the footpaths are surfaces it
+// walks on at the road's pace (ramping up to a raised door), and the plants
+// on the plots are cleared.
 enum class BuildingKind : std::uint8_t { Bungalow, House, Hospital, Skyscraper, PoliceStation, Terminal, ControlTower, Hangar };
 const char* building_kind_name(BuildingKind kind);
 std::optional<BuildingKind> building_kind_from_name(const std::string& name);
@@ -60,7 +63,9 @@ struct BuildingSpec {
   double setback_meters = 6.0;        // from the edge of the carriageway to the front wall (the footpath's length)
   double path_width_meters = 2.0;
   double max_site_step_meters = 2.0;  // the most the ground may vary under the footprint
-  double max_buried_meters = 1.8;     // the most the ground may rise over the floor along the uphill walls
+  double max_buried_meters = 1.8;     // the most the ground may rise over the floor along the uphill walls — or, for an
+                                      // enterable kind (its floor is raised over the highest ground under it), the most
+                                      // the door may stand above the ground at it (the footpath ramps up to it)
 };
 BuildingSpec building_spec(BuildingKind kind);
 void validate_building_spec(const BuildingSpec& spec);
@@ -118,8 +123,39 @@ std::vector<Building> place_buildings(const RoadNetwork& roads, std::span<const 
 // in a road network file (see roads.hpp). An absent key gives an empty list.
 std::vector<BuildingRequest> parse_building_requests(const std::string& json_text);
 
+// Interiors. The bungalow is built hollow — four plank walls with a doorway,
+// a timber floor, a ceiling — with a door that swings open on its hinge and
+// a few pieces of furniture: a kitchen (cupboards, worktop, sink, stove and
+// a wall cupboard) along the back wall, a table with four chairs, a
+// wardrobe and a bed. The walker opens the door (E), steps in onto the floor
+// and bumps into the furniture; the other kinds stay solid.
+bool building_enterable(BuildingKind kind);
+struct DoorState {
+  double open = 0.0;      // 0 closed .. 1 swung 90 degrees inward
+  bool opening = false;   // the way it is moving (or resting)
+};
+// A piece of furniture (or a part of one) in the building's local frame:
+// a box at (along, across) of the given half sizes standing `bottom` over
+// the floor, whether the walker collides with it (a solid piece stands as
+// posts no lower than the step height, so it is never climbed) and whether
+// it is drawn (a table is drawn as its top and legs and blocks as one box).
+struct Furnishing {
+  const char* what = "";
+  math::Vec2 centre;      // local: along the front wall, toward the road
+  double half_along = 0.0, half_across = 0.0, bottom = 0.0, height = 0.0;
+  math::Vec3 color;
+  SurfaceMaterial material = SurfaceMaterial::Timber;
+  bool solid = true;
+  bool drawn = true;
+};
+// The furniture of an enterable building of this spec (local frame): the
+// pieces that fit between its walls.
+std::vector<Furnishing> furnish(const BuildingSpec& spec);
+// The wall thickness of an enterable building and the room's extent (local, plan).
+constexpr double kInteriorWallThickness = 0.25;
+
 struct BuildingStats {
-  std::size_t buildings = 0, bungalows = 0, houses = 0, hospitals = 0, skyscrapers = 0, police_stations = 0, terminals = 0, towers = 0, hangars = 0;
+  std::size_t buildings = 0, bungalows = 0, houses = 0, hospitals = 0, skyscrapers = 0, police_stations = 0, terminals = 0, towers = 0, hangars = 0, interiors = 0;
   double tallest_meters = 0.0, floor_area_m2 = 0.0;
   std::uint32_t most_storeys = 0;
 };
@@ -132,23 +168,44 @@ class BuildingSet {
   bool empty() const { return buildings_.empty(); }
   std::size_t size() const { return buildings_.size(); }
   BuildingStats stats() const;
-  // The footpath surface at a plan position (lifted ground), or nullopt.
+  // The built surface at a plan position — the footpath (the lifted ground,
+  // ramping up to the door where the floor stands higher) or the floor of
+  // an enterable building's rooms — or nullopt.
   std::optional<double> platform_height(double x, double z) const;
-  // The path's speed factor on a footpath, 1 elsewhere.
+  // The path's speed factor on a footpath or a floor, 1 elsewhere.
   double speed_factor(double x, double z) const;
   // The building whose footprint (plus margin) covers the point, if any.
   std::optional<std::size_t> building_at(double x, double z, double margin_meters = 0.0) const;
   // The building whose door is within `reach` of the point, nearest first.
   std::optional<std::size_t> entrance_near(double x, double z, double reach_meters) const;
-  // The walls as chains of posts from the ground to the roof.
+  // Whether the point lies inside an enterable building's rooms (within its walls).
+  bool inside(std::size_t building, double x, double z) const;
+  std::optional<std::size_t> inside_of(double x, double z) const;
+  // The walls as chains of posts from the ground to the roof (with the doorway
+  // left open in an enterable building) and the furniture.
   std::vector<Obstacle> obstacles() const;
-  // Geometry: foundations, walls, roofs, windows, doors, crosses, canopies and footpaths.
+  // Doors. toggle_door sets an enterable building's door swinging the other way
+  // (returns false for a solid building); advance moves the swinging doors
+  // (0.6 s for a full swing); door_version changes while any door moves.
+  const std::vector<DoorState>& doors() const { return doors_; }
+  bool toggle_door(std::size_t building);
+  void advance(double dt);
+  std::uint64_t door_version() const { return door_version_; }
+  // The door leaves as they stand this moment: posts along each leaf, and their meshes.
+  std::vector<Obstacle> door_obstacles() const;
+  std::vector<MeshPart> build_door_meshes() const;
+  // Geometry: foundations, walls, roofs, windows, painted doors, crosses, canopies,
+  // footpaths — and the rooms and furniture of the enterable buildings.
   std::vector<MeshPart> build_meshes() const;
 
  private:
+  struct Leaf { math::Vec2 hinge, along; double width, height, bottom; };  // a door leaf's plan as it stands now
+  Leaf door_leaf(std::size_t building) const;
   std::vector<Building> buildings_;
+  std::vector<DoorState> doors_;
   StandingHeightFn ground_;
   BuildingPlacementStyle style_;
+  std::uint64_t door_version_ = 0;
 };
 
 // Removes the plants standing on the plots (the footprint plus the margin) and

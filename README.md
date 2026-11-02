@@ -931,7 +931,7 @@ beside a bridge:
 
 | Kind | Size | Walls | Roof | Windows | Entrance |
 | --- | --- | --- | --- | --- | --- |
-| Bungalow | 9 × 7 m, one storey | wooden planks | thatched gable (38°) | open holes | plank door |
+| Bungalow | 9 × 7 m, one storey | wooden planks | thatched gable (38°) | open holes | plank door **that opens** (see below) |
 | House | 11 × 9 m, two storeys | grey stone | red tiled gable (40°), a chimney | glass | wooden door |
 | Hospital | 40 × 20 m, five storeys | white concrete | flat dark grey, parapet | glass | canopy over a double glass door, a **red cross** on the front and on the roof |
 | Skyscraper | 30 × 30 m, twenty storeys (80 m) | glass facade with floor bands and mullions | flat white with a plant room | — | glass lobby under a canopy |
@@ -942,8 +942,10 @@ suitable candidate (every 5 m along every road, both sides, 20 m clear of the
 junctions) nearest to a preferred point; a site is suitable when the ground
 under the footprint varies no more than the kind allows (2.5–6 m: the
 foundation takes up the fall, the floor sits on the ground at the door so the
-entrance is at grade and the ground may rise no more than 1.2 m over the
-floor behind it), every corner is above the water, nothing lies on a
+entrance is at grade and the ground may rise no more than 1.8 m (2.5–3.5 m for the big footprints) over the
+floor behind it — the bungalow, which is entered, instead raises its floor
+over the highest ground under it and its footpath ramps up to the door, at
+most 1.65 m, at 3:10), every corner is above the water, nothing lies on a
 carriageway and the other buildings and their paths are clear. The demo and
 replay networks get all four (nearest to where the demo routes cross; the
 tower and the hospital first so they find the flat land); a network file
@@ -953,11 +955,43 @@ authored site (checked the same way; an unsuitable one is an error). The
 plants on the plots and paths are cleared. `--buildings off` leaves them out.
 
 **For the walker** the buildings are solid: the walls are obstacles from the
-foundation to the roof (the doors are closed — interiors are not modelled),
-so you walk along the wall or round the building; the footpath is a surface
-you walk on at the road's pace and it takes you to the door, where the title
-says `at the hospital's door`. Nothing here burns yet (a thatched roof in a
-wildfire is the obvious next step).
+foundation to the roof (the doors are painted on, closed), so you walk along
+the wall or round the building; the footpath is a surface you walk on at the
+road's pace and it takes you to the door, where the title says `at the
+hospital's door`. Nothing here burns yet (a thatched roof in a wildfire is
+the obvious next step).
+
+**The bungalow is entered.** It is built hollow: four plank walls 0.25 m
+thick with a doorway and real window holes (you look out, and in), a timber
+plank floor, a ceiling under the thatch, a stone skirt round the foot of the
+walls. Its door is a leaf hinged on the right-hand jamb that **swings 90°
+inward in 0.6 s** — stand within 2 m of it, from either side, and the title
+offers `E: open the door` / `E: close the door`; the leaf is an obstacle
+wherever it stands, so the closed door stops you on the ramp at the
+threshold and, from inside, keeps you in. Through the open door you step
+onto the floor (the title says `inside the bungalow (door open)`), a surface
+walked at the footpath's pace, among the furniture: a kitchen along the back
+wall (a run of cupboards under a stone worktop with a steel sink, an iron
+stove beside it, a cupboard on the wall), a table with four chairs to the
+right of the door, a wardrobe against the left wall and a bed (frame,
+mattress, blanket, pillow) against the right one. The solid pieces — the
+cupboards, stove, table, chairs, wardrobe and mattress — are obstacles you
+bump into (never climbed: each stands higher than the step height); the
+worktop, sink and wall cupboard are over the counter and the blanket and
+pillow lie on the bed. The other kinds stay solid.
+
+```bash
+./build-gl/terraflux-terrain-viewer --roads demo --view first-person --view-x -805 --view-z -103 --view-yaw 0   # before the bungalow's door
+LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a -s "-screen 0 1280x800x24" \
+  ./build-gl/terraflux-terrain-viewer --interior-test --smoke-test
+```
+
+`--interior-test` walks the footpath to the closed door (the ramp carries
+the walker up to the floor's level, the leaf stops it at the threshold,
+`E: open the door` is offered), opens it with E and walks in onto the floor
+until the stove stops it, walks at the table (the chairs stop it), closes
+the door from inside and fails to leave, then opens it again and walks out
+down the ramp; `INTERIOR_TEST_JSON` reports each frame.
 
 ```bash
 ./build-gl/terraflux-terrain-viewer --view first-person --view-x -850 --view-z -70 --view-yaw -90 --view-pitch 12   # the hospital across the road
@@ -976,8 +1010,14 @@ lake, the flat side of a hill, the downhill side of a slope with the door at
 grade, nothing on a shore, authored sites and their rejections), the JSON
 forms, the set (footpath surface and pace, plots, entrances, the walls as
 posts, a walker stopped at the door), the meshes (parts and materials per
-kind, the cross red and on the hospital, heights, doors at the entrances)
-and the vegetation clearing. `--buildings-test` shows the four from the
+kind, the cross red and on the hospital, heights, doors at the entrances),
+the vegetation clearing and the interior (the furniture within the walls
+and clear of the entrance, the floor and the doorway as surfaces, the ramp
+and a walker climbing it, the doorway open in the walls and shut by the
+leaf, the door's swing and its version, the leaf's posts and meshes open
+and closed, a walker stopped by the closed door, in through the open one
+onto the floor, stopped by the chairs and held by the walls, and kept in by
+the door closed from inside). `--buildings-test` shows the four from the
 world view (hidden first as the reference), walks the hospital's footpath to
 its door, and hides them again: the reference exactly.
 
@@ -1635,7 +1675,7 @@ about the cameras feeds back into propagation or replay timing.
 | Ctrl | First person: crouch (hold) — lower, slower, under branches, a smaller target; afloat: dive |
 | Shift (afloat) | First person: swim the crawl — faster, more tiring |
 | Space | First person: jump (`--jump-height`, Earth gravity or `--gravity`), or let go of a rope; world view: pause/resume the wildfire replay |
-| E | First person: use the tool in hand (throw the rope or take hold of it, chop with the axe, hold to saw with the chainsaw), else interact — pick up the stone or branch you look at, take a burning branch at your feet, break a branch off the tree beside you, light a branch at a fire, set a tree alight with the torch, or put down what you hold (the title says which) |
+| E | First person: use the tool in hand (throw the rope or take hold of it, chop with the axe, hold to saw with the chainsaw), else interact — open or close the bungalow's door within reach, pick up the stone or branch you look at, take a burning branch at your feet, break a branch off the tree beside you, light a branch at a fire, set a tree alight with the torch, or put down what you hold (the title says which) |
 | Q | First person: throw what you hold (12 m/s along the look, lifted 12°); it lands as what it is |
 | 1 / 2 / 3 | First person: take the rope / the fire axe / the chainsaw in hand (the same key again puts it away; 1 near a rope lying or hanging out in the world pulls it in). What you held moves to the left hand |
 | W / S (on a rope) | Climb up / let yourself down; W at the top of a rope pegged at an edge steps off onto it; Space lets go |

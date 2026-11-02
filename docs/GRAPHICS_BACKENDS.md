@@ -1952,7 +1952,7 @@ footpath's end at the carriageway edge, the door the setback beyond it, the
 centre half the depth further, the front wall along the road, the ground
 sampled on a 3×3 over the footprint and along the path; the floor is the
 ground at the door + 0.15 m) and accepts it when `suitable`: ground span
-within the spec's step, ground behind no more than 1.2 m over the floor,
+within the spec's step, ground behind no more than `max_buried_meters` over the floor (1.8 m; 2.5–3.5 m for the big footprints),
 every sample above the water plus the margin, a 5×5 of samples off every
 carriageway (by `sample` and by distance to the centre lines), clear of the
 placed buildings (circumscribed circles plus the gap) and of their paths.
@@ -1963,11 +1963,18 @@ unsuitable site throws. `parse_building_requests` reads the `"buildings"`
 list of a network file.
 
 `BuildingSet(buildings, ground, style)`: `platform_height` (the footpath:
-ground + lift within its corridor from the door to the carriageway),
-`speed_factor` (the path's, 1 elsewhere), `building_at` (footprint plus
-margin), `entrance_near`, `obstacles()` (posts of 0.35 m touching along the
-four walls from 0.5 m under the lowest ground corner to the roof top),
-`stats()`, and `build_meshes()`: a foundation box from below the lowest
+ground + lift within its corridor from the door to the carriageway, never
+lower than floor − 0.3 × the distance from the door — the ramp up to a
+raised door; the floor itself inside an enterable building and in its
+doorway), `speed_factor` (the path's on the path or the floor, 1
+elsewhere), `building_at` (footprint plus margin), `entrance_near`,
+`inside(i, x, z)` / `inside_of` (within the walls of an enterable
+building), `obstacles()` (posts of 0.35 m touching along the four walls
+from 0.5 m under the lowest ground corner to the roof top — on the walls'
+centre lines with the front chains ending at the doorway's jambs in an
+enterable building, plus its solid furniture as posts along each piece's
+longer axis, as thick as its shorter one, over the piece's height),
+`stats()` (with `interiors`), and `build_meshes()`: a foundation box from below the lowest
 corner to the floor, the body box in the wall material (plank brown, stone
 grey, white concrete, glass blue), a gable roof (two slab boxes up the pitch
 with the overhang, gable triangles in the wall material, a chimney on the
@@ -1977,9 +1984,43 @@ blue-grey, open holes near black on the bungalow; none where the door is),
 the tower's floor bands and mullions, the door on the front wall, a canopy
 on posts over the hospital's and the tower's doors, the hospital's red
 cross on the front above the entrance and flat on the roof, the footpath
-ribbon following the ground and a step where the floor stands above it.
+ribbon following the ground (ramping up to a raised door, with side and
+end quads down to the ground where it stands over it).
 `clear_vegetation_for_buildings` removes the plants on the plots and paths
 (plus a margin) and rebuilds the chunk ranges.
+
+Interiors (`building_enterable`: the bungalow). `lay_out` raises an
+enterable building's floor over the highest ground sample under it (+0.15 m)
+and `suitable` holds the door to at most `max_buried_meters` + 0.15 above
+the ground at it (1.5 m for the bungalow; the ramp reaches it within the
+setback). `build_meshes` builds it hollow: the foundation stops 0.1 m under
+the floor, a timber plank floor slab lies on it between the walls, the body
+is four wall slabs `kInteriorWallThickness` (0.25 m) thick with the window
+panes' rectangles and the doorway (the leaf's width plus 0.15 m of
+clearance each side, the leaf's height plus 0.05 m) cut out as real holes
+(each wall is the full-height pieces between the openings plus a piece
+under and a piece over each opening), a plain ceiling slab 0.1 m under the
+wall top, a door frame (jambs filling the clearance and a lintel) in place
+of the painted door, a stone skirt round the walls instead of the plinth
+block, and the furniture of `furnish(spec)` — `Furnishing` boxes in the
+local frame (along the front wall, toward the road) with a name, colour,
+material, `solid` and `drawn` flags: a table is drawn as a top and four legs
+and blocks as one undrawn box; a chair as a seat, legs and a backrest
+blocking as one box; the bed frame is not solid but the mattress on it is;
+pieces that would not fit between the walls or would crowd the entrance
+are left out. The drawn pieces are merged into one part per name across
+every enterable building (a dozen draws for a whole suburb).
+
+Doors. `DoorState{open 0..1, opening}` per building (`doors()`);
+`toggle_door(i)` sets an enterable building's door swinging the other way
+(false for a solid one), `advance(dt)` moves the swinging leaves at 1/0.6 s
+and bumps `door_version()` while any moves, `door_obstacles()` gives each
+leaf as posts of 0.08 m along its current line (hinged on the right-hand
+jamb looking in, at the wall's centre plane, turning inward by open × 90°)
+and `build_door_meshes()` the timber leaf (0.04 m thick, 2 cm short of the
+doorway) with a metal handle on both faces. They are kept apart from the
+static meshes and obstacles so the viewer re-uploads and rebuilds only
+them, and only when the version changes.
 
 The walker: `attempt_step` now treats a step up onto a platform within the
 step height from ground (or from under the platform) as a kerb rather than
@@ -1989,8 +2030,15 @@ for the demo and replay networks, a file's list otherwise; `--buildings
 off`), clears the plants on them, adds the walls to the obstacle fields,
 combines road and building surfaces in the platform and speed hooks, names
 the entrance in the title, draws the parts after the roads and reports
-`BUILDINGS_JSON`. `--buildings-test` (README) and
-`terraflux-buildings-tests`.
+`BUILDINGS_JSON` (with `interiors`, `door_parts` and `door_obstacles`). The
+doors: a `door_field` `ObstacleField` of `door_obstacles()` in the walk
+environment and a second `MeshPartRenderer` of `build_door_meshes()`, both
+rebuilt when `door_version()` changes; `advance()` on the engine clock
+beside the roads; `door_in_reach()` (an enterable building's door within
+2 m of the feet) puts `E: open the door` / `E: close the door` first among
+the interaction options and E calls `toggle_door`; the title says `inside
+the bungalow (door open|closed)` from `inside_of`. `--buildings-test` and
+`--interior-test` (README) and `terraflux-buildings-tests`.
 
 ### The city
 

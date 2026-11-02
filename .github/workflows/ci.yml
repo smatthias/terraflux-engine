@@ -588,6 +588,24 @@ jobs:
             echo "the buildings test ran without buildings" && exit 1
           fi
 
+      - name: Verify the bungalow's door and interior
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --interior-test --smoke-test | tee /tmp/terraflux-interior.log
+          grep -q "Interior passed" /tmp/terraflux-interior.log
+          grep -q '"interiors":1' /tmp/terraflux-interior.log
+          grep -q '"hint":"E: open the door"' /tmp/terraflux-interior.log
+          grep -q '"did":"opened the door"' /tmp/terraflux-interior.log
+          grep -q '"did":"closed the door"' /tmp/terraflux-interior.log
+          grep -q '"inside":true,"on_floor":true' /tmp/terraflux-interior.log
+          grep -q '"kept_in":true' /tmp/terraflux-interior.log
+          grep -q '"out":true' /tmp/terraflux-interior.log
+          if ./build-gl/terraflux-terrain-viewer --interior-test --smoke-test --buildings off > /tmp/terraflux-bad-interior-test.log 2>&1; then
+            echo "the interior test ran without buildings" && exit 1
+          fi
+
       - name: Verify the city
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"

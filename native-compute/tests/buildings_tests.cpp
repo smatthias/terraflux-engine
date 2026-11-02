@@ -202,7 +202,9 @@ void test_set_and_walker() {
   // Walls are solid: the walker coming up the footpath is stopped at the front wall.
   ObstacleField walls(set.obstacles());
   require(walls.size() > 100, "the walls are chains of posts");
-  for (const auto& o : walls.obstacles()) require(o.top - o.bottom > 3.0 && o.radius > 0.2, "posts reach from the foundation to the roof");
+  for (const auto& o : walls.obstacles())
+    if (near(o.radius, 0.35)) require(o.top - o.bottom > 3.0, "wall posts reach from the foundation to the roof");
+    else require(o.top - o.bottom >= 0.2 && o.top - o.bottom <= 2.1, "the other posts are the bungalow's furniture");
   WalkEnvironment env;
   env.standing_height = plain_ground;
   env.lower = {-100, 0, -500}; env.upper = {1100, 0, 500};
@@ -242,9 +244,11 @@ void test_meshes() {
     }
     ++count[p.what];
   }
-  require(count["wall"] == 3 && count["glass"] == 1 && count["roof"] == 4 && count["door"] == 4 && count["window"] == 2 && count["opening"] == 1 &&
+  require(count["wall"] == 3 && count["glass"] == 1 && count["roof"] == 4 && count["door"] == 3 && count["doorframe"] == 1 && count["window"] == 2 && count["opening"] == 0 &&
           count["cross"] == 1 && count["chimney"] == 2 && count["masonry"] == 1 && count["trim"] == 2 && count["path"] == 1 && count["foundation"] == 1,
-          "stone and concrete walls, a glass facade, four roofs and doors, glass windows on the house and the hospital, open holes on the bungalow, the hospital's cross, two chimneys, the bungalow's masonry plinth, footpaths and foundations");
+          "stone and concrete walls, a glass facade, four roofs, three painted doors and the bungalow's door frame, glass windows on the house and the hospital, real holes in the bungalow, the hospital's cross, two chimneys, the bungalow's masonry plinth, footpaths and foundations");
+  require(count["floor"] == 1 && count["ceiling"] == 1 && count["table"] == 1 && count["chair"] == 1 && count["bed"] == 1 && count["mattress"] == 1 && count["wardrobe"] == 1 &&
+          count["cupboard"] == 1 && count["worktop"] == 1 && count["sink"] == 1 && count["stove"] == 1, "the bungalow's floor, ceiling and furniture");
   // Materials: thatch and planks on the bungalow over a stone plinth and a brick chimney, stone and tiles on the house, concrete and glass on the rest.
   std::map<std::string, SurfaceMaterial> materials;
   for (const auto& p : parts) {
@@ -291,7 +295,7 @@ void test_meshes() {
     if (what == "wall" && *who == 2) require(near(p.color.x, p.color.y, 0.05) && p.color.x > 0.45 && p.color.x < 0.65, "the house's walls are grey stone");
     if (what == "roof" && *who == 3) require(p.color.x > 0.6 && p.color.y > 0.5 && p.color.z < 0.45, "the bungalow's roof is straw");
     if (what == "wall" && *who == 3) require(p.color.x > p.color.y && p.color.y > p.color.z, "the bungalow's walls are wood");
-    if (what == "opening") require(p.color.x < 0.15 && *who == 3, "the bungalow's windows are open holes");
+    if (what == "floor" || what == "ceiling" || what == "bed") require(*who == 3, "the rooms are the bungalow's");
     if (what == "window") require(p.color.z > 0.8 && p.color.z > p.color.x, "glass windows are blue-grey glass");
   }
   require(tower_top - tower.floor_meters >= 70 && tower_top - tower.floor_meters <= 90, "the tower rises at least seventy metres over its floor");
@@ -299,7 +303,7 @@ void test_meshes() {
   require(house_top - house.floor_meters > 2 * 3.0 + 2.0 && bungalow_top - bungalow.floor_meters > 2.8 + 1.5, "the gable roofs rise over the walls");
   // Every door stands on the front wall facing the road, every path reaches the carriageway.
   for (const auto& p : parts) {
-    if (std::string(p.what) != "door") continue;
+    if (std::string(p.what) != "door" && std::string(p.what) != "doorframe") continue;
     const auto who = owner(p);
     require(who.has_value(), "a door belongs to a building");
     const auto& b = set.buildings()[*who];
@@ -396,6 +400,171 @@ void test_civic_and_airport_kinds() {
   require(terminal_windows >= 8, "the terminal's glass bands run along every face and storey");
 }
 
+// Walks `steps` frames with the given input, rebuilding the door field every frame (the door may be swinging).
+void walk_frames(FirstPersonCamera& walker, WalkEnvironment& env, BuildingSet& set, ObstacleField& door_field, WalkInput input, int steps) {
+  for (int i = 0; i < steps; ++i) {
+    set.advance(1.0 / 60.0);
+    door_field = ObstacleField(set.door_obstacles());
+    walk(walker, input, 1.0 / 60.0, env);
+  }
+}
+
+void test_interior() {
+  require(building_enterable(BuildingKind::Bungalow) && !building_enterable(BuildingKind::House) && !building_enterable(BuildingKind::Hospital), "only the bungalow is entered");
+  // The furniture fits between the walls, clear of the doorway, and stands on the floor.
+  const auto spec = building_spec(BuildingKind::Bungalow);
+  const auto pieces = furnish(spec);
+  require(pieces.size() > 20, "a kitchen, a table with chairs, a wardrobe and a bed");
+  std::map<std::string, int> kinds;
+  const double iw = 0.5 * spec.width_meters - kInteriorWallThickness, id = 0.5 * spec.depth_meters - kInteriorWallThickness;
+  for (const auto& f : pieces) {
+    ++kinds[f.what];
+    require(std::abs(f.centre.x) + f.half_along <= iw && std::abs(f.centre.y) + f.half_across <= id, "every piece stands within the walls");
+    require(f.bottom >= 0 && f.height > 0 && f.bottom + f.height < spec.storey_height_meters, "every piece stands on the floor under the ceiling");
+    if (f.solid) require(f.bottom + f.height > 0.5, "a solid piece stands higher than the step height (it is never climbed)");
+    require(!(f.centre.y + f.half_across > id - 1.2 && std::abs(f.centre.x) - f.half_along < 1.0), "the entrance is kept clear");
+  }
+  require(kinds["cupboard"] == 2 && kinds["worktop"] == 1 && kinds["sink"] == 1 && kinds["stove"] == 1 && kinds["table"] >= 5 && kinds["chair"] >= 4 * 6 && kinds["wardrobe"] == 1 &&
+          kinds["bed"] == 1 && kinds["mattress"] == 1 && kinds["blanket"] == 1 && kinds["pillow"] == 1, "the pieces of furniture");
+  require(furnish(building_spec(BuildingKind::House)).empty(), "a solid building has no furniture");
+  rejects([] { auto s = building_spec(BuildingKind::Bungalow); s.width_meters = 1.0; furnish(s); }, "furnishing validates the spec");
+
+  RoadStyle road_style;
+  RoadNetwork roads(road_def(), road_style, plain_ground);
+  BuildingPlacementStyle style;
+  std::vector<BuildingRequest> two{{BuildingKind::Bungalow, BuildingSite{0, 50.0, 1}}, {BuildingKind::House, BuildingSite{0, 50.0, -1}}};
+  BuildingSet set(place_buildings(roads, two, plain_ground, std::nullopt, {50, 0}, style), plain_ground, style);
+  require(set.size() == 2 && set.stats().interiors == 1, "one interior among two buildings");
+  const auto& bungalow = set.buildings()[0];
+  require(near(bungalow.floor_meters, 50 + 0.15), "the floor stands over the highest ground under the bungalow");
+  // Inside, the floor is the surface; the doorway too; the path ramps up to it.
+  require(set.inside(0, bungalow.centre.x, bungalow.centre.y) && set.inside_of(bungalow.centre.x, bungalow.centre.y) == 0 && !set.inside(0, bungalow.door.x + bungalow.facing.x * 2, bungalow.door.y + bungalow.facing.y * 2),
+          "inside is within the walls");
+  require(!set.inside(1, set.buildings()[1].centre.x, set.buildings()[1].centre.y) && !set.inside_of(set.buildings()[1].centre.x, set.buildings()[1].centre.y), "the house is never entered");
+  rejects<std::out_of_range>([&] { (void)set.inside(5, 0, 0); }, "inside checks the index");
+  require(near(*set.platform_height(bungalow.centre.x, bungalow.centre.y), bungalow.floor_meters) && near(set.speed_factor(bungalow.centre.x, bungalow.centre.y), style.path_speed_factor),
+          "the floor carries the feet inside");
+  const Vec2 in_doorway = bungalow.door - bungalow.facing * 0.1;
+  require(near(*set.platform_height(in_doorway.x, in_doorway.y), bungalow.floor_meters) && near(*set.platform_height(bungalow.door.x, bungalow.door.y), bungalow.floor_meters), "and in the doorway");
+  const Vec2 on_ramp = bungalow.door + bungalow.facing * 0.1, down_path = bungalow.door + bungalow.facing * 3.0;
+  require(*set.platform_height(on_ramp.x, on_ramp.y) < bungalow.floor_meters && *set.platform_height(on_ramp.x, on_ramp.y) > 50 + style.surface_lift_meters &&
+          near(*set.platform_height(down_path.x, down_path.y), 50 + style.surface_lift_meters), "the path ramps down from the door to the lifted ground");
+  {
+    // On a slope rising behind the bungalow the floor stands over the highest
+    // corner and the footpath ramps up to the door at 3:10; a walker climbs it.
+    RoadNetwork sloped_roads(road_def(), road_style, sloping_ground);
+    std::vector<BuildingRequest> uphill{{BuildingKind::Bungalow, BuildingSite{0, 50.0, -1}}};
+    BuildingSet sloped(place_buildings(sloped_roads, uphill, sloping_ground, std::nullopt, {50, 0}, style), sloping_ground, style);
+    require(sloped.size() == 1, "the bungalow stands on the slope");
+    const auto& b = sloped.buildings()[0];
+    require(near(b.floor_meters, b.ground_max_meters + 0.15) && b.floor_meters - *sloping_ground(b.door.x, b.door.y) > 0.5, "the floor is raised over the uphill corners, well above the door's ground");
+    const Vec2 near_door = b.door + b.facing * 1.0, far_down = b.door + b.facing * 5.0;
+    require(near(*sloped.platform_height(near_door.x, near_door.y), b.floor_meters - 0.3) && near(*sloped.platform_height(far_down.x, far_down.y), *sloping_ground(far_down.x, far_down.y) + style.surface_lift_meters),
+            "the ramp drops 0.3 m per metre until it meets the lifted ground");
+    ObstacleField sloped_walls(sloped.obstacles()), sloped_door(sloped.door_obstacles());
+    WalkEnvironment env;
+    env.standing_height = sloping_ground;
+    env.lower = {-100, 0, -500}; env.upper = {1100, 0, 500};
+    env.obstacles = {&sloped_walls, &sloped_door};
+    env.platforms = [&](double x, double z, double) { return sloped.platform_height(x, z); };
+    env.gait.enabled = false;
+    FirstPersonCamera walker;
+    walker.feet = {b.path_end.x + b.facing.x * 1.0, *sloping_ground(b.path_end.x + b.facing.x, b.path_end.y + b.facing.y), b.path_end.y + b.facing.y * 1.0}; walker.grounded = true;
+    walker.yaw = std::atan2(b.facing.x, b.facing.y);
+    for (int i = 0; i < 60 * 6; ++i) walk(walker, WalkInput{1, 0, false}, 1.0 / 60.0, env);
+    require(near(walker.feet.y, b.floor_meters, 0.15) && walker.feet.y > *sloping_ground(b.door.x, b.door.y) + 0.5 && (Vec2{walker.feet.x, walker.feet.z} - b.door).length() < 1.0, "the walker climbs the ramp to the closed door, nearly at floor level");
+  }
+  // The walls leave the doorway open; the door leaf shuts it until it is opened.
+  ObstacleField walls(set.obstacles());
+  const auto gap_at = [&](const ObstacleField& field, Vec2 p) {
+    double nearest = 1e9;
+    for (const auto& o : field.obstacles()) nearest = std::min(nearest, std::hypot(o.x - p.x, o.z - p.y) - o.radius);
+    return nearest;
+  };
+  const Vec2 threshold = bungalow.door - bungalow.facing * 0.125;
+  require(gap_at(walls, threshold) > 0.5, "the walls leave the doorway open");
+  require(gap_at(walls, bungalow.door + bungalow.along * 2.0 - bungalow.facing * 0.125) < 0.0, "and stand on either side of it");
+  require(set.doors().size() == 2 && near(set.doors()[0].open, 0.0) && !set.doors()[0].opening, "the doors start closed and at rest");
+  ObstacleField door_field(set.door_obstacles());
+  require(door_field.size() > 3 && gap_at(door_field, threshold) < 0.0, "the closed leaf stands across the doorway");
+  require(!set.toggle_door(1) && set.toggle_door(0) && set.doors()[0].opening, "only the bungalow's door is opened");
+  rejects<std::out_of_range>([&] { set.toggle_door(7); }, "toggle checks the index");
+  rejects([&] { set.advance(-1.0); }, "advance needs a non-negative step");
+  const auto version = set.door_version();
+  set.advance(0.3);
+  require(near(set.doors()[0].open, 0.5) && set.door_version() != version, "half open after 0.3 s, the version moved");
+  set.advance(1.0);
+  require(near(set.doors()[0].open, 1.0) && set.doors()[0].opening, "fully open after the swing, resting");
+  const auto resting = set.door_version();
+  set.advance(1.0);
+  require(set.door_version() == resting, "a resting door leaves the version alone");
+  door_field = ObstacleField(set.door_obstacles());
+  require(gap_at(door_field, threshold) > 0.3, "the open leaf stands clear of the doorway's middle");
+  {
+    // The open leaf lies along the doorway's side, inside the room.
+    double along_sum = 0, across_sum = 0;
+    for (const auto& o : door_field.obstacles()) { along_sum += (Vec2{o.x, o.z} - bungalow.door).dot(bungalow.along); across_sum += (Vec2{o.x, o.z} - bungalow.door).dot(bungalow.facing); }
+    require(along_sum / door_field.size() > 0.4 && across_sum / door_field.size() < -0.4, "swung inward on the right-hand jamb");
+  }
+  set.toggle_door(0);
+  require(!set.doors()[0].opening, "toggled again, it closes");
+  set.advance(0.2);
+  require(near(set.doors()[0].open, 1.0 - 0.2 / 0.6), "closing at the same pace");
+  set.toggle_door(0);
+  require(set.doors()[0].opening, "toggled mid-swing, it opens again");
+  set.advance(1.0);
+  // The door meshes follow the leaf.
+  const auto open_meshes = set.build_door_meshes();
+  require(open_meshes.size() == 2 && std::string(open_meshes[0].what) == "door" && std::string(open_meshes[1].what) == "handle" && open_meshes[0].material == SurfaceMaterial::Timber,
+          "a timber leaf with a metal handle");
+  double sx = 0, sz = 0;
+  for (const auto& v : open_meshes[0].vertices) { sx += v.position[0]; sz += v.position[2]; }
+  const Vec2 leaf_centre{sx / open_meshes[0].vertices.size(), sz / open_meshes[0].vertices.size()};
+  require((leaf_centre - bungalow.door).dot(bungalow.facing) < -0.3 && (leaf_centre - bungalow.door).dot(bungalow.along) > 0.3, "the open leaf's mesh stands inside along the jamb");
+  set.toggle_door(0); set.advance(1.0);
+  const auto closed_meshes = set.build_door_meshes();
+  sx = sz = 0;
+  for (const auto& v : closed_meshes[0].vertices) { sx += v.position[0]; sz += v.position[2]; }
+  require((Vec2{sx / closed_meshes[0].vertices.size(), sz / closed_meshes[0].vertices.size()} - bungalow.door).length() < 0.2, "the closed leaf's mesh fills the doorway");
+  // The walker: stopped by the closed door, in once it is open, onto the floor, stopped by the table, never through a wall.
+  WalkEnvironment env;
+  env.standing_height = plain_ground;
+  env.lower = {-100, 0, -500}; env.upper = {1100, 0, 500};
+  env.obstacles = {&walls, &door_field};
+  env.platforms = [&](double x, double z, double) { return set.platform_height(x, z); };
+  env.surface_speed = [&](double x, double z) { return set.speed_factor(x, z); };
+  env.gait.enabled = false;
+  FirstPersonCamera walker;
+  walker.feet = {bungalow.door.x + bungalow.facing.x * 3.0, 50, bungalow.door.y + bungalow.facing.y * 3.0}; walker.grounded = true;
+  walker.yaw = std::atan2(bungalow.facing.x, bungalow.facing.y);  // toward the door
+  const auto local = [&](const FirstPersonCamera& w) { const Vec2 f{w.feet.x, w.feet.z}; return std::pair{(f - bungalow.centre).dot(bungalow.along), (f - bungalow.centre).dot(bungalow.facing)}; };
+  walk_frames(walker, env, set, door_field, WalkInput{1, 0, false}, 60 * 4);
+  require(local(walker).second > 0.5 * spec.depth_meters && local(walker).second < 0.5 * spec.depth_meters + 1.0 && !set.inside_of(walker.feet.x, walker.feet.z), "the closed door stops the walker at the threshold");
+  require(near(walker.feet.y, bungalow.floor_meters, 0.05), "up the ramp to the door's level");
+  require(set.entrance_near(walker.feet.x, walker.feet.z, 2.0) == 0, "within reach of the door");
+  set.toggle_door(0);
+  walk_frames(walker, env, set, door_field, WalkInput{1, 0, false}, 60 * 3);
+  require(set.inside_of(walker.feet.x, walker.feet.z) == 0 && near(walker.feet.y, bungalow.floor_meters, 1e-6) && walker.on_platform, "through the open door onto the floor");
+  require(std::abs(local(walker).first) < 0.8 && local(walker).second > -(0.5 * spec.depth_meters - 0.3) && local(walker).second < 0.0, "stopped inside, short of the back wall (the stove stands there)");
+  // Stand in front of the table (to the right of the door, looking in) and walk at it: the chairs on its near side stop the walker.
+  const Vec2 table_centre = bungalow.centre + bungalow.along * 1.6 + bungalow.facing * 0.2;
+  const Vec2 before_table = table_centre + bungalow.facing * 2.2;
+  walker.feet = {before_table.x, bungalow.floor_meters, before_table.y};
+  walker.yaw = std::atan2(bungalow.facing.x, bungalow.facing.y);  // toward the back wall, through the table
+  walk_frames(walker, env, set, door_field, WalkInput{1, 0, false}, 60 * 3);
+  const double table_gap = (table_centre - Vec2{walker.feet.x, walker.feet.z}).dot(bungalow.facing * -1.0);
+  require(table_gap > 1.0 && table_gap < 1.4 && near(local(walker).first, 1.6, 0.1) && set.inside_of(walker.feet.x, walker.feet.z) == 0, "the chairs at the table stop the walker");
+  // Walk at the side wall: still inside.
+  walker.yaw = std::atan2(-bungalow.along.x, -bungalow.along.y);
+  walk_frames(walker, env, set, door_field, WalkInput{1, 0, false}, 60 * 4);
+  require(set.inside_of(walker.feet.x, walker.feet.z) == 0 && local(walker).first < 0.5 * spec.width_meters - kInteriorWallThickness - 0.3, "the wall holds the walker in");
+  // Close the door from inside: the leaf swings shut and the way out is blocked.
+  set.toggle_door(0);
+  walk_frames(walker, env, set, door_field, WalkInput{0, 0, false}, 60);
+  require(near(set.doors()[0].open, 0.0), "closed again");
+  require(gap_at(door_field, threshold) < 0.0, "the leaf is back across the doorway");
+}
+
 }  // namespace
 
 int main() {
@@ -407,7 +576,8 @@ int main() {
     test_meshes();
     test_vegetation();
     test_civic_and_airport_kinds();
-    std::cout << "TerraFlux buildings: 7 tests passed\n";
+    test_interior();
+    std::cout << "TerraFlux buildings: 8 tests passed\n";
   } catch (const std::exception& error) {
     std::cerr << "TerraFlux buildings test failed: " << error.what() << '\n';
     return 1;
