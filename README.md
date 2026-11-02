@@ -89,9 +89,16 @@ or physical-GPU certification.
   line, edge lines) and bridge decks on railings and piers spanning valleys and water, planned from
   routes or authored in JSON (a bridge always joins a road at both ends); the walker goes faster on
   a sound road or deck, loses the bonus where a fallen tree blocks the way, is slowed by rubble,
-  crosses the lake on the deck and falls from its edge; burning trees felled across a road block
-  and damage it, a deck alight collapses, a flash flood at the piers washes a bridge out — and a
-  deck that gives way under the walker hurts it and drops it
+  crosses the lake on the deck and falls from its edge; trees felled across a road block it and
+  crack it by their mass, burning ones damage it, a deck alight collapses, a flash flood at the
+  piers washes a bridge out and a torrent over a road washes it away — and a deck that gives way
+  under the walker hurts it and drops it
+- Hazards on the buildings, by material: thatch, planks and timber burn (from burning trees, a
+  trunk on the roof, lightning, a torch, the blaze next door), stone, concrete, glass and metal do
+  not — but glass bursts and masonry spalls in the heat, a falling trunk smashes tiles and cracks
+  walls, a flood rots what is organic and a torrent scours any foundation, a gale strips thatch and
+  tiles; roofs fall in (on whoever is inside), buildings collapse into rubble, and the walker is
+  sheltered from rain and lightning under a sound roof
 - Buildings beside the roads: a thatched wooden bungalow, a two-storey stone house under red tiles,
   a five-storey white hospital with glass windows and a red cross, and a twenty-storey glass
   skyscraper with a white roof — each with its door to the road and a footpath to the
@@ -873,14 +880,20 @@ The walker uses them:
   bridge (ALIGHT 40%)`, `on the road (blocked by a fallen tree)`.
 - **Damage.** Every trunk the fire, the wind, the lightning or your axe
   brings down is checked against the network: lying across a road it
-  **blocks** it where it lies (`A tree fell across the road`); **burning**,
-  it damages the surface at 2 %/s of its intensity (`damaged`, darkening,
-  rubble at 100 %). A trunk lying on a deck — where the deck is at ground
-  level, at the abutments — sets **the bridge alight** (5 %/s, flames and a
-  plume) and at full damage **the bridge collapses**: the span between two
-  6 m stubs is gone, the slabs lie tilted below, the piers stand. A **flash
-  flood** running at a pier (3 m/s and 1 m deep for 45 s) **washes a bridge
-  out**. `RoadNetwork::destroy` does it outright. A deck that gives way
+  **blocks** it where it lies (`A tree fell across the road`) and **cracks
+  it by its mass** as it lands — asphalt and concrete do not burn, but they
+  break: a trunk's tonnes over `impact_tonnes` (12 t for a road, 8 t for a
+  deck) of damage, so a 3 t trunk cracks a road by a quarter and a huge one
+  smashes a deck outright; **burning**, it damages the surface at 2 %/s of
+  its intensity (`damaged`, darkening, rubble at 100 %). A trunk lying on a
+  deck — where the deck is at ground level, at the abutments — sets **the
+  bridge alight** (5 %/s, flames and a plume) and at full damage **the
+  bridge collapses**: the span between two 6 m stubs is gone, the slabs lie
+  tilted below, the piers stand. A **flash flood** running at a pier (3 m/s
+  and 1 m deep for 45 s) **washes a bridge out**; a torrent **over a road's
+  surface** (a channel's running water, not a lake standing on it) for
+  twice that **washes the road away**. `RoadNetwork::destroy` does it
+  outright. A deck that gives way
   **under you** costs 35 % of your health at once (cause `collapse`), knocks
   you down, and then you fall with it — into the valley (a fall's impact) or
   the water (swimming). Clearing a log off a road and rebuilding are not
@@ -958,8 +971,8 @@ plants on the plots and paths are cleared. `--buildings off` leaves them out.
 foundation to the roof (the doors are painted on, closed), so you walk along
 the wall or round the building; the footpath is a surface you walk on at the
 road's pace and it takes you to the door, where the title says `at the
-hospital's door`. Nothing here burns yet (a thatched roof in a wildfire is
-the obvious next step).
+hospital's door`. What the fire, a falling tree, the flood, the wind and
+lightning do to them is below (Hazards).
 
 **The bungalow is entered.** It is built hollow: four plank walls 0.25 m
 thick with a doorway and real window holes (you look out, and in), a timber
@@ -993,6 +1006,97 @@ until the stove stops it, walks at the table (the chairs stop it), closes
 the door from inside and fails to leave, then opens it again and walks out
 down the ramp; `INTERIOR_TEST_JSON` reports each frame.
 
+#### Hazards: fire, falling trees, flood, storm and lightning on the buildings
+
+The buildings live in the same weather as the roads. Each one is a set of
+**elements** — the walls, the roof, the windows, the door and (in the
+bungalow) the interior — each of a **material** (`material_hazard` in
+`mesh_parts.hpp`), and **not every material burns**:
+
+| Material | Burns | Otherwise damaged by |
+| --- | --- | --- |
+| Thatch | yes — catches at a spark (heat 0.25 for 1 s), burns through in 25 s | water (rots in 20 min), a trunk of 0.3 t, wind from 28 m/s |
+| Planks, timber, fabrics | yes — heat 0.45–0.5 for 2–3 s, 30–60 s to burn through | water (rots in 10–15 min), a trunk of 0.5–1 t |
+| Glass, window panes | no | **heat** ≥ 0.5 (bursts in 8 s), a trunk of 0.2 t, debris from 40 m/s |
+| Tiles | no | a trunk of 0.6 t, wind from 38 m/s, extreme heat (0.95) |
+| Metal | no | extreme heat ≥ 0.8 (buckles in 2 min), a trunk of 2 t, wind from 50 m/s |
+| Stone, brick, concrete, pavement, asphalt | no | extreme heat ≥ 0.9 (spalls over 10–15 min; asphalt softens at 0.6), trunks of 3–8 t |
+| Paint (markings, the cross, the band) | no | heat ≥ 0.4 (blisters) |
+
+What happens (`BuildingSet::advance(dt, BuildingHazards)`, every frame in
+the viewer with the tree fire's heat, the flood's water, the weather's wind
+and rain):
+
+- **Fire.** Heat at a building — from burning trees and logs beside it
+  (`TreeFireModel::exposure_at`), a burning trunk lying on its roof,
+  another building ablaze within 12 m, a lightning strike, a torch — lights
+  a flammable element once it has had its ignition heat for its ignition
+  time. Alight, the element's flames ramp up over 2 s, it burns through in
+  its material's time (faster in wind by 6 %/m/s, halved by a storm's rain),
+  and it heats the building's **other elements at 0.85**: a thatch roof
+  lights the plank walls in 3 s, the walls light the door and the room. A
+  burning building's heat reaches the walker (1 inside or at its walls,
+  fading out by 12 m; smoke too) and **the trees beside it** (the nearest
+  standing tree within 8 m every 3 s of a full blaze), and its flames and
+  plume are drawn. What does not burn is damaged by heat above its
+  threshold: the house's **glass bursts** from its own burning door, its
+  **stone only spalls** a little. A roof burned through **falls in**; walls
+  burned through bring the building down.
+- **Impact.** A trunk the fire, the wind or an axe brings down across a
+  footprint (`log_landed`, with the trunk's mass from the tree model) hits
+  the building: the **roof takes the mass** (a 2 t trunk smashes tiles and
+  thatch outright — the roof falls in — and dents concrete by a quarter),
+  the walls and windows half of it; a burning trunk stays on the roof and
+  heats it while it burns. The trunk itself lies where it fell (it is not
+  stopped by the building).
+- **Flood.** Water over the floor (`flood_depth`, from the flood model's
+  channels and the lake's rise) **soaks** the interior (above 5 cm), the
+  door (10 cm) and the walls (30 cm): organic materials rot through in
+  their soak time, stone and concrete stand in it; water over a burning
+  element **puts it out**; a **torrent at the walls** (3 m/s, 1 m deep, for
+  60 s) **scours the foundation** and the building goes, whatever it is
+  made of (`washed out`). Inside a flooded bungalow you wade.
+- **Wind.** A gale tears at the roof and the windows: thatch from 28 m/s
+  (stripped in a minute at 35), tiles from 38, glass from 40, plank walls
+  from 45; a stripped roof leaves the walls standing, open to the sky.
+- **Lightning.** A strike within 15 m of a building's walls (the
+  **tallest** it reaches draws the bolt) **strikes** it: a thatched roof is
+  alight, another is scorched (5 %). **Inside a building under a sound
+  roof you are sheltered** from the bolt and from the rain.
+
+Damage is drawn: char, soot and rot darken what is damaged (in tenths), a
+fallen roof is gone (the gable ends stand), burst windows are dark holes,
+a burned door a dark doorway, a burned-out room is bare; a collapsed
+building is a **heap of rubble** (black when it burned down, a few slabs
+leaning in it, the chimney standing) that you walk over slowly (×0.7) and
+that smoulders if it burned. The title says `ALIGHT`, `(no roof)`,
+`flooded 0.4 m`, `(damaged)`, `(burned down)`, `(washed out)`; the
+messages name every event (`THE BUNGALOW'S ROOF FELL IN ON YOU`). A roof
+falling in on you costs 35 % of your health and knocks you down, a
+building coming down on you 60 %. With a **torch** in hand, E beside a
+building's wall offers `E: set the bungalow's walls alight` (inside, the
+room; at the door, E opens the door instead; a stone wall takes no
+torch). Every event is reported and `BuildingSet::reset` restores
+everything. Fighting a fire, shoring a wall and rebuilding are not
+modelled.
+
+```bash
+./build-gl/terraflux-terrain-viewer --roads demo --hold torch --view first-person --view-x -802 --view-z -108 --view-yaw 0   # beside the bungalow's wall with a torch
+LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a -s "-screen 0 1280x800x24" \
+  ./build-gl/terraflux-terrain-viewer --hazards-test --smoke-test
+```
+
+`--hazards-test` lights the bungalow's walls with a torch and watches the
+fire take the thatch, the door and the room (its heat at the walker, the
+flames drawn, a tree beside it lit), stands inside as the roof falls in
+(hurt, knocked down), watches the walls burn through and the bungalow
+collapse into rubble walked over slowly, lights the house's door (the
+glass bursts in the heat, the stone does not burn) and drops a two-tonne
+trunk on it (the tiles smashed, the roof fallen in, the walls cracked a
+little), strikes the skyscraper with lightning (scorched, not lit) and
+scours the hospital with a torrent (washed out), then resets;
+`HAZARDS_TEST_JSON` reports each frame.
+
 ```bash
 ./build-gl/terraflux-terrain-viewer --view first-person --view-x -850 --view-z -70 --view-yaw -90 --view-pitch 12   # the hospital across the road
 ./build-gl/terraflux-terrain-viewer --roads examples/roads/lake_bridge.json          # authored sites
@@ -1019,7 +1123,20 @@ and closed, a walker stopped by the closed door, in through the open one
 onto the floor, stopped by the chairs and held by the walls, and kept in by
 the door closed from inside). `--buildings-test` shows the four from the
 world view (hidden first as the reference), walks the hospital's footpath to
-its door, and hides them again: the reference exactly.
+its door, and hides them again: the reference exactly. The suite's hazards
+test covers the material table, the elements per kind, the fire (thatch
+first, planks and door after their delay, the room from the building's own
+flames, the glass burst and the stone spalled by heat, exposure and
+emitters, the roof falling in, the collapse into rubble — a slow surface,
+no room, no door, the chimney the only obstacle, smouldering — the house
+standing with its door gone, rain and wind, reset), ignition by hand and
+the jump to the bungalow next door but not across the road, impact (tiles
+smashed, stone cracked by half the mass, concrete dented, a burning log
+spalling it, a huge trunk flattening a house), the flood (extinguishing,
+soaking in the material's time, stone and concrete standing, the plank
+walls rotting through, the torrent scouring the hospital), the wind
+(thatch stripped at 35 m/s, tiles and glass at 42) and lightning (thatch
+lit, tiles scorched, a miss, shelter, destroy).
 
 ### The city: CBD, suburbs, highways and an airport
 

@@ -2,13 +2,16 @@
 
 #include <terraflux/graphics/camera_rig.hpp>
 #include <terraflux/graphics/collision.hpp>
+#include <terraflux/graphics/fire_effects.hpp>
 #include <terraflux/graphics/mesh_parts.hpp>
 #include <terraflux/graphics/roads.hpp>
 #include <terraflux/graphics/vegetation.hpp>
 #include <terraflux/math.hpp>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <span>
 #include <string>
@@ -104,6 +107,19 @@ struct BuildingPlacementStyle {
   double water_margin_meters = 0.5;        // 0 .. 20 above the water level for every corner
   double surface_lift_meters = 0.1;        // 0 .. 1: the footpath over the ground
   double path_speed_factor = 1.3;          // 1 .. 3 walking the footpath (a paved surface)
+  double rubble_speed_factor = 0.7;        // 0.1 .. 1 over the rubble of a collapsed building
+  // Hazards (see BuildingHazards below).
+  double heat_reach_meters = 12.0;         // 1 .. 200: a fully burning building's heat fades out by this distance from its walls
+  double spread_heat = 0.85;               // 0 .. 1: the heat a burning element puts on the others of its building
+  double wind_burn_factor = 0.06;          // 0 .. 1 per m/s: burns faster in wind
+  double rain_slowdown_mm_h = 25.0;        // 1 .. 500: this much rain halves the burning
+  double flood_current_mps = 3.0;          // 0.1 .. 30 at the walls ...
+  double flood_depth_meters = 1.0;         // 0 .. 20 ... this deep ...
+  double flood_scour_seconds = 60.0;       // 1 .. 86400 ... for this long scours the foundation: the building goes
+  double strike_radius_meters = 15.0;      // 0 .. 200: a strike this close to the walls hits the building (the tallest of several)
+  double strike_scorch = 0.05;             // 0 .. 1 damage to a roof that does not burn
+  double collapse_damage = 0.6;            // 0 .. 1 of health taken by the building coming down on the walker inside
+  double roof_fall_damage = 0.35;          // 0 .. 1 of health taken by the roof falling in on the walker inside
   std::uint32_t seed = 0;
 };
 void validate_building_placement_style(const BuildingPlacementStyle& style);
@@ -154,8 +170,94 @@ std::vector<Furnishing> furnish(const BuildingSpec& spec);
 // The wall thickness of an enterable building and the room's extent (local, plan).
 constexpr double kInteriorWallThickness = 0.25;
 
+// Hazards. A building is made of elements — the walls, the roof, the
+// windows, the door and (in an enterable one) the interior — each of a
+// material (mesh_parts.hpp: material_hazard). What happens to it:
+//
+//  fire      A flammable element (thatch, planks, timber, fabrics) under
+//            enough heat for long enough catches: from burning trees and
+//            logs beside it (the hazards' heat function), from a burning
+//            trunk lying on it, from lightning, from another burning
+//            building, from a torch (ignite). Alight, it burns through in
+//            its material's time (faster in wind, slower in rain) and heats
+//            the building's other elements (spread_heat), so a thatch roof
+//            lights the plank walls and the room; a building's heat reaches
+//            the walker and its neighbours (heat_at). A non-flammable
+//            element is damaged by heat above its threshold: glass bursts,
+//            paint blisters, metal buckles, masonry spalls only in extreme
+//            heat. Burned-through walls bring the building down (collapsed);
+//            a burned-through roof falls in.
+//  impact    A trunk landing across the footprint smashes the roof by its
+//            mass (tiles and thatch go under a few hundred kilos, concrete
+//            takes tonnes), and the walls by half of it; a burning trunk on
+//            the roof keeps heating it.
+//  flood     Water over the floor (flood_depth) soaks the interior, the
+//            door and the walls: organic materials rot in their soak time;
+//            a torrent at the walls for flood_scour_seconds scours the
+//            foundation and the building goes, whatever it is made of; water
+//            over a burning element puts it out.
+//  wind      A gale tears at the roof and the windows: thatch from 28 m/s,
+//            tiles from 38, glass from 40, stripped in their wind times.
+//  lightning A strike within strike_radius of the walls (the tallest of the
+//            buildings it reaches) lights a flammable roof or scorches one
+//            that does not burn. Inside, the walker is sheltered.
+//
+// The events tell the viewer what happened; a collapse or a roof falling in
+// hurts a walker inside (collapse_damage, roof_fall_damage). A destroyed
+// building is a heap of rubble: a surface walked slowly, no walls, no door,
+// no room — the chimney stands in it.
+enum class BuildingElement : std::uint8_t { Walls, Roof, Windows, Door, Interior, Count };
+const char* building_element_name(BuildingElement element);
+// The element's material for a kind (nullopt: the kind has no such element).
+std::optional<SurfaceMaterial> building_element_material(BuildingKind kind, BuildingElement element);
+struct ElementState {
+  SurfaceMaterial material = SurfaceMaterial::Plain;
+  bool present = false;
+  double damage = 0.0;          // 0 sound .. 1 gone (burned through, burst, smashed, rotted, stripped)
+  bool alight = false;
+  double intensity = 0.0;       // 0 .. 1 flames
+  double heat_seconds = 0.0;    // of heat past the ignition or damage threshold, toward catching or cracking
+  double soaked_seconds = 0.0;  // under water
+  double wind_seconds = 0.0;    // in a tearing wind
+  std::string cause;            // what damaged it last: "fire", "heat", "impact", "flood", "wind", "lightning"
+};
+struct BuildingState {
+  std::array<ElementState, static_cast<std::size_t>(BuildingElement::Count)> elements;
+  double flood_depth_meters = 0.0;  // water over the floor
+  double scour_seconds = 0.0;       // a torrent at the walls for this long
+  bool roof_fallen = false;         // the roof has come down (burned through, smashed, or with the walls)
+  bool destroyed = false;           // collapsed: rubble
+  std::string destroyed_by;         // "fire", "impact", "flood", or what destroy() was told
+  std::uint32_t strikes = 0;        // lightning
+  double burn_seconds = 0.0;        // any element alight for this long
+  const ElementState& element(BuildingElement e) const { return elements[static_cast<std::size_t>(e)]; }
+  ElementState& element(BuildingElement e) { return elements[static_cast<std::size_t>(e)]; }
+  bool alight() const;              // any element burning
+  double intensity() const;         // the strongest flames
+  double integrity() const;         // 1 sound .. 0: the walls' and the roof's soundness
+};
+// A burning trunk lying on a building.
+struct BuildingLog { std::size_t building = 0; std::uint32_t tree = 0; bool burning = false; };
+struct BuildingEvent {
+  enum class Kind : std::uint8_t { Alight, BurnedOut, Damaged, RoofFell, Collapsed, WashedOut, Extinguished, Struck, Hit, Flooded } kind;
+  std::size_t building = 0;
+  BuildingElement element = BuildingElement::Walls;  // for Alight, BurnedOut, Damaged, Extinguished
+  int tree = -1;                                     // for Hit
+  std::string cause;                                 // for Damaged, Collapsed
+};
+const char* building_event_name(BuildingEvent::Kind kind);
+// What the world does to the buildings this step (all optional).
+struct BuildingHazards {
+  std::function<double(double x, double z)> heat;          // external fire heat 0 .. 1 at a plan position (burning trees, logs, embers)
+  std::function<double(std::uint32_t tree)> log_intensity; // of a trunk lying on a building (0 once it has burned out)
+  WaterFn water;                                            // flood and lake water at a plan position over its ground
+  double wind_speed_mps = 0.0;
+  double rain_mm_h = 0.0;
+};
+
 struct BuildingStats {
   std::size_t buildings = 0, bungalows = 0, houses = 0, hospitals = 0, skyscrapers = 0, police_stations = 0, terminals = 0, towers = 0, hangars = 0, interiors = 0;
+  std::size_t alight = 0, damaged = 0, roofless = 0, destroyed = 0, flooded = 0, struck = 0, logs = 0;
   double tallest_meters = 0.0, floor_area_m2 = 0.0;
   std::uint32_t most_storeys = 0;
 };
@@ -185,12 +287,48 @@ class BuildingSet {
   // left open in an enterable building) and the furniture.
   std::vector<Obstacle> obstacles() const;
   // Doors. toggle_door sets an enterable building's door swinging the other way
-  // (returns false for a solid building); advance moves the swinging doors
-  // (0.6 s for a full swing); door_version changes while any door moves.
+  // (returns false for a solid building, or one whose door is gone); advance
+  // moves the swinging doors (0.6 s for a full swing) and runs the hazards;
+  // door_version changes while any door moves.
   const std::vector<DoorState>& doors() const { return doors_; }
   bool toggle_door(std::size_t building);
-  void advance(double dt);
+  void advance(double dt, const BuildingHazards& hazards = {});
   std::uint64_t door_version() const { return door_version_; }
+  // Hazards (see above). The states as they stand; the events of the last
+  // advance / ignite / strike / log_landed / destroy (cleared by advance);
+  // version changes whenever the drawn geometry, the surfaces or the
+  // obstacles change (damage is drawn in steps of a tenth).
+  const std::vector<BuildingState>& states() const { return states_; }
+  const std::vector<BuildingLog>& logs() const { return logs_; }
+  const std::vector<BuildingEvent>& events() const { return events_; }
+  std::uint64_t version() const { return version_; }
+  // Sets an element alight (a torch, an ember): false when it is absent, not
+  // flammable, already alight, burned through, or under water.
+  bool ignite(std::size_t building, BuildingElement element, const char* cause = "fire");
+  // A lightning strike at a plan position: the tallest building within the
+  // strike radius of its walls is struck (event Struck; a flammable roof
+  // alight, another scorched). Returns the building or nullopt.
+  std::optional<std::size_t> strike(double x, double z);
+  // A trunk came down: lying from `base` along `direction` (unit, plan) for
+  // `length` metres, weighing `mass_kg`. Every building whose footprint it
+  // crosses is hit (event Hit): the roof smashed by the mass, the walls by
+  // half of it; a burning trunk stays on the roof as a log that heats it
+  // while it burns (log_intensity). Returns how many buildings were hit.
+  std::size_t log_landed(std::uint32_t tree, math::Vec2 base, math::Vec2 direction, double length, bool burning, double mass_kg);
+  // Brings a building down outright (rubble).
+  void destroy(std::size_t building, const char* cause);
+  // Everything sound, dry, unlit and standing again; the doors closed.
+  void reset();
+  // What a walker feels from the burning buildings at a plan position: heat
+  // (1 inside or at the walls of a fully burning building, fading to 0 by
+  // heat_reach) and smoke (their intensity summed, fading by 60 m), 0 .. 1.
+  struct Exposure { double heat = 0.0, smoke = 0.0; };
+  Exposure exposure_at(double x, double z) const;
+  // Whether the point is under a sound roof (inside a standing enterable building whose roof has not gone).
+  bool sheltered(double x, double z) const;
+  // Flames on the burning elements and plumes over them (a burned-out
+  // building smoulders), appended.
+  void emit(std::vector<FireInstance>& flames, std::vector<FireInstance>& smoke, const FireStyle& style) const;
   // The door leaves as they stand this moment: posts along each leaf, and their meshes.
   std::vector<Obstacle> door_obstacles() const;
   std::vector<MeshPart> build_door_meshes() const;
@@ -201,11 +339,20 @@ class BuildingSet {
  private:
   struct Leaf { math::Vec2 hinge, along; double width, height, bottom; };  // a door leaf's plan as it stands now
   Leaf door_leaf(std::size_t building) const;
+  bool door_present(std::size_t building) const;
+  void raise(BuildingEvent::Kind kind, std::size_t building, BuildingElement element = BuildingElement::Walls, int tree = -1, const char* cause = "");
+  void damage_element(std::size_t building, BuildingElement element, double amount, const char* cause);
+  void roof_falls(std::size_t building);
+  double external_heat_at(std::size_t building, const BuildingHazards& hazards) const;
   std::vector<Building> buildings_;
   std::vector<DoorState> doors_;
+  std::vector<BuildingState> states_;
+  std::vector<BuildingLog> logs_;
+  std::vector<BuildingEvent> events_;
+  std::vector<std::array<int, static_cast<std::size_t>(BuildingElement::Count)>> drawn_levels_;  // damage tenths as last drawn
   StandingHeightFn ground_;
   BuildingPlacementStyle style_;
-  std::uint64_t door_version_ = 0;
+  std::uint64_t door_version_ = 0, version_ = 0;
 };
 
 // Removes the plants standing on the plots (the footprint plus the margin) and

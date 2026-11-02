@@ -138,6 +138,7 @@ void validate_road_style(const RoadStyle& s) {
   if (!within(s.washout_current_mps, 0.1, 30) || !within(s.washout_depth_meters, 0, 20) || !within(s.washout_seconds, 1, 86400))
     throw std::invalid_argument("washout current must be 0.1..30 m/s, depth 0..20 m and time 1..86400 s");
   if (!within(s.collapse_damage, 0, 1)) throw std::invalid_argument("collapse damage must be 0..1");
+  if (!within(s.impact_tonnes, 0.1, 1000)) throw std::invalid_argument("impact mass must be 0.1..1000 tonnes");
 }
 
 double road_width(const RoadStyle& style) {
@@ -664,8 +665,9 @@ std::vector<Obstacle> RoadNetwork::obstacles() const {
 
 void RoadNetwork::raise(RoadEvent::Kind kind, std::uint32_t segment, int tree) { events_.push_back({kind, segment, tree}); }
 
-std::size_t RoadNetwork::log_landed(std::uint32_t tree, math::Vec2 base, math::Vec2 direction, double length, bool burning) {
-  if (!finite(base) || !finite(direction) || !within(length, 0, 1000)) throw std::invalid_argument("a landed trunk needs a finite base, direction and length");
+std::size_t RoadNetwork::log_landed(std::uint32_t tree, math::Vec2 base, math::Vec2 direction, double length, bool burning, double mass_kg) {
+  if (!finite(base) || !finite(direction) || !within(length, 0, 1000) || !within(mass_kg, 0, 1e7))
+    throw std::invalid_argument("a landed trunk needs a finite base, direction, length and mass");
   const double dl = direction.length();
   if (dl < 1e-9 || length <= 0) return 0;
   const math::Vec2 dir = direction / dl, tip = base + dir * length;
@@ -692,6 +694,16 @@ std::size_t RoadNetwork::log_landed(std::uint32_t tree, math::Vec2 base, math::V
     ++states_[i].blockages;
     raise(RoadEvent::Kind::Blocked, seg, static_cast<int>(tree));
     ++added;
+    // The impact: the surface does not burn by itself, but it breaks under the mass.
+    auto& st = states_[i];
+    if (mass_kg > 0 && !st.destroyed) {
+      const bool bridge = def_.segments[i].kind == RoadKind::Bridge;
+      const double impact = mass_kg / 1000.0 / (bridge ? style_.impact_tonnes * 2.0 / 3.0 : style_.impact_tonnes);
+      const double before = st.damage;
+      st.damage = std::min(1.0, st.damage + impact);
+      if (before <= 0 && st.damage > 0) raise(RoadEvent::Kind::Damaged, seg, static_cast<int>(tree));
+      if (st.damage >= 1.0) destroy(seg, "impact");
+    }
   }
   if (added) ++version_;
   return added;
@@ -716,17 +728,30 @@ void RoadNetwork::advance(double dt, const std::function<double(std::uint32_t tr
   }
   if (water) {
     for (std::size_t i = 0; i < geometry_.size(); ++i) {
-      if (def_.segments[i].kind != RoadKind::Bridge || states_[i].destroyed) continue;
+      if (states_[i].destroyed) continue;
       const auto seg = static_cast<std::uint32_t>(i);
+      const bool bridge = def_.segments[i].kind == RoadKind::Bridge;
       bool scoured = false;
-      for (const auto& p : pier_positions(seg)) {
-        const double ground = ground_at(p.x, p.y, deck_height(seg, (p - geometry_[i].a).dot(geometry_[i].dir)));
-        const auto w = water(p.x, p.y, ground);
-        if (w.current_mps >= style_.washout_current_mps && w.depth_meters >= style_.washout_depth_meters) { scoured = true; break; }
+      if (bridge) {
+        // Running water at a pier scours its footing.
+        for (const auto& p : pier_positions(seg)) {
+          const double ground = ground_at(p.x, p.y, deck_height(seg, (p - geometry_[i].a).dot(geometry_[i].dir)));
+          const auto w = water(p.x, p.y, ground);
+          if (w.current_mps >= style_.washout_current_mps && w.depth_meters >= style_.washout_depth_meters) { scoured = true; break; }
+        }
+      } else {
+        // A torrent over the carriageway (not a lake standing on it) tears the surface up.
+        const auto& g = geometry_[i];
+        const int samples = std::clamp(static_cast<int>(std::ceil(g.length / 10.0)), 1, 12);
+        for (int k = 0; k <= samples && !scoured; ++k) {
+          const math::Vec2 p = g.a + g.dir * (g.length * k / samples);
+          const auto w = water(p.x, p.y, ground_at(p.x, p.y, deck_height(seg, g.length * k / samples)));
+          if (w.channel && w.current_mps >= style_.washout_current_mps && w.depth_meters >= style_.washout_depth_meters) scoured = true;
+        }
       }
       auto& st = states_[i];
       st.washout_seconds = scoured ? st.washout_seconds + dt : std::max(0.0, st.washout_seconds - dt);
-      if (st.washout_seconds >= style_.washout_seconds) destroy(seg, "flood");
+      if (st.washout_seconds >= (bridge ? 1.0 : 2.0) * style_.washout_seconds) destroy(seg, "flood");
     }
   }
 }
@@ -741,8 +766,8 @@ void RoadNetwork::destroy(std::uint32_t segment, const char* cause) {
   st.damage = 1.0;
   ++version_;
   raise(RoadEvent::Kind::Destroyed, segment);
-  if (def_.segments[segment].kind == RoadKind::Bridge)
-    raise(st.destroyed_by == "flood" ? RoadEvent::Kind::WashedOut : RoadEvent::Kind::Collapsed, segment);
+  if (st.destroyed_by == "flood") raise(RoadEvent::Kind::WashedOut, segment);
+  else if (def_.segments[segment].kind == RoadKind::Bridge) raise(RoadEvent::Kind::Collapsed, segment);
 }
 
 void RoadNetwork::reset() {

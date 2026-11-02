@@ -40,6 +40,29 @@ enum class SurfaceMaterial : std::uint8_t {
 };
 const char* surface_material_name(SurfaceMaterial material);
 
+// What a material stands up to. Not every material burns: thatch, planks,
+// timber (and the fabrics of a furnished room) are fuel; asphalt, concrete,
+// stone, tiles, glass, metal, brick and pavement are not — but what does not
+// burn can still be damaged: glass bursts and paint blisters in the heat of
+// a fire beside it, metal buckles and masonry spalls in extreme heat; a
+// falling trunk smashes tiles and glass, cracks asphalt and concrete by its
+// mass; standing flood water rots what is organic (and a current scours any
+// foundation, see the roads and the buildings); a gale strips thatch, then
+// tiles, then glass.
+struct MaterialHazard {
+  bool flammable = false;          // burns
+  double ignition_heat = 1.0;      // 0 .. 1: the fire heat at which it catches (flammable only)
+  double ignition_seconds = 0.0;   // of such heat before it catches
+  double burn_seconds = 0.0;       // from flames to consumed, calm and dry
+  double heat_threshold = 1.0;     // 0 .. 1: the fire heat above which it is damaged without burning (glass bursts, metal buckles, masonry spalls)
+  double heat_damage_seconds = 0.0; // of such heat to ruin it
+  double soak_seconds = 0.0;       // of immersion to ruin it (0: standing water does nothing to it)
+  double impact_tonnes = 0.0;      // a falling mass of this many tonnes smashes it outright (damage = tonnes / this); 0: nothing does
+  double wind_mps = 0.0;           // the wind at which it starts to tear loose (0: never)
+  double wind_seconds = 0.0;       // of such wind to strip it
+};
+MaterialHazard material_hazard(SurfaceMaterial material);
+
 struct MeshPart {
   std::vector<TerrainGpuVertex> vertices;  // position and normal are used
   std::vector<std::uint32_t> indices;

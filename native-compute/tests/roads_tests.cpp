@@ -452,6 +452,57 @@ void test_washout() {
   std::vector<FireInstance> flames, smoke;
   network.emit(flames, smoke, FireStyle{});
   require(flames.empty() && smoke.empty(), "a washed-out bridge does not smoulder");
+  // A torrent over the road itself (not a lake standing on it) washes the road away, in twice the time.
+  RoadNetwork again(valley_def(), style, plain_ground);
+  const WaterFn over_road = [](double x, double, double ground_y) {
+    FloodSample w;
+    if (x > 20 && x < 60) { w.depth_meters = 1.2; w.surface_meters = ground_y + 1.2; w.current_mps = 3.5; w.current = {0, 1}; w.channel = true; }
+    else w.surface_meters = ground_y;
+    return w;
+  };
+  const WaterFn lake_on_road = [](double x, double, double ground_y) {
+    FloodSample w;
+    if (x > 20 && x < 60) { w.depth_meters = 2.0; w.surface_meters = ground_y + 2.0; w.current_mps = 3.5; w.current = {0, 1}; }
+    else w.surface_meters = ground_y;
+    return w;
+  };
+  again.advance(style.washout_seconds + 1.0, {}, over_road);
+  require(!again.states()[0].destroyed && near(again.states()[0].washout_seconds, style.washout_seconds + 1.0), "a road stands a bridge's washout time under a torrent");
+  again.advance(style.washout_seconds, {}, over_road);
+  require(again.states()[0].destroyed && again.states()[0].destroyed_by == "flood" && !again.states()[1].destroyed && !again.states()[2].destroyed, "twice that and the road is washed away, the bridge and the far road untouched");
+  bool road_washed = false;
+  for (const auto& e : again.events()) if (e.kind == RoadEvent::Kind::WashedOut && e.segment == 0) road_washed = true;
+  require(road_washed && near(again.sample(40, 0).speed_factor, style.rubble_speed_factor), "WashedOut is raised for the road, which is rubble");
+  RoadNetwork lake(valley_def(), style, plain_ground);
+  lake.advance(10.0 * style.washout_seconds, {}, lake_on_road);
+  require(!lake.states()[0].destroyed && lake.states()[0].washout_seconds == 0, "a lake's water standing on a road does not wash it away (only a channel's torrent does)");
+}
+
+void test_impact() {
+  RoadStyle style;
+  RoadNetwork network(valley_def(), style, plain_ground);
+  // A sound trunk of three tonnes across the road: blocked and cracked by the mass, not alight.
+  require(network.log_landed(20, {50, -12}, {0, 1}, 20, false, 3000.0) == 1, "a heavy trunk lands across the road");
+  require(near(network.states()[0].damage, 3.0 / style.impact_tonnes, 1e-9) && !network.states()[0].destroyed, "the road is cracked by mass / impact_tonnes");
+  bool damaged = false, blocked = false;
+  for (const auto& e : network.events()) { if (e.kind == RoadEvent::Kind::Damaged && e.tree == 20) damaged = true; if (e.kind == RoadEvent::Kind::Blocked) blocked = true; }
+  require(damaged && blocked, "Blocked and Damaged are raised for the impact");
+  network.advance(10.0, [](std::uint32_t) { return 0.0; }, {});
+  require(near(network.states()[0].damage, 3.0 / style.impact_tonnes, 1e-9), "a trunk that does not burn does no more");
+  // A trunk of the ruining mass smashes a deck outright (two thirds of the road's), and it collapses.
+  require(network.log_landed(21, {103, -12}, {0, 1}, 20, false, style.impact_tonnes * 2.0 / 3.0 * 1000.0) == 1, "a huge trunk lands on the deck");
+  bool collapsed = false;
+  for (const auto& e : network.events()) if (e.kind == RoadEvent::Kind::Collapsed && e.segment == 1) collapsed = true;
+  require(collapsed && network.states()[1].destroyed && network.states()[1].destroyed_by == "impact", "the deck is smashed and collapses");
+  std::vector<FireInstance> flames, smoke;
+  network.emit(flames, smoke, FireStyle{});
+  require(flames.empty() && smoke.empty(), "a smashed bridge does not smoulder");
+  rejects([&] { network.log_landed(22, {50, -12}, {0, 1}, 20, false, -1.0); }, "a negative mass is rejected");
+  rejects([] { RoadStyle s; s.impact_tonnes = 0; validate_road_style(s); }, "a zero impact mass is rejected");
+  // Without a mass (the old call) nothing but the blockage happens.
+  RoadNetwork plain(valley_def(), style, plain_ground);
+  plain.log_landed(23, {50, -12}, {0, 1}, 20, false);
+  require(plain.states()[0].damage == 0, "a trunk without a mass only blocks");
 }
 
 void test_meshes_and_renderer() {
@@ -566,10 +617,11 @@ int main() {
     test_walker();
     test_blockage_and_fire();
     test_washout();
+    test_impact();
     test_meshes_and_renderer();
     test_vegetation_clearing();
     test_vitals_collapse();
-    std::cout << "TerraFlux roads: 11 tests passed\n";
+    std::cout << "TerraFlux roads: 12 tests passed\n";
   } catch (const std::exception& error) {
     std::cerr << "TerraFlux roads test failed: " << error.what() << '\n';
     return 1;

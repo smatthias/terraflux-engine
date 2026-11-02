@@ -44,12 +44,14 @@ namespace terraflux::graphics {
 // of a destroyed one.
 //
 // The infrastructure is not indestructible. A trunk that the fire (or the
-// wind, or an axe) brings down across a road blocks it where it lies; while
-// it burns it damages the surface, and a deck it burns on is alight and
-// collapses when the damage is complete. A flash flood running at a pier
-// washes a bridge out. A walker on a deck that gives way is hurt by the
-// collapse and then falls with it. Nothing here feeds back into the fire
-// simulation, the contracts or the fixtures.
+// wind, or an axe) brings down across a road blocks it where it lies and
+// cracks the surface by its mass as it lands (asphalt and concrete do not
+// burn, but they break); while it burns it damages the surface, and a deck
+// it burns on is alight and collapses when the damage is complete. A flash
+// flood running at a pier washes a bridge out; running over a road's
+// surface for long enough it washes the road away. A walker on a deck that
+// gives way is hurt by the collapse and then falls with it. Nothing here
+// feeds back into the fire simulation, the contracts or the fixtures.
 enum class RoadKind : std::uint8_t { Road, Bridge };
 const char* road_kind_name(RoadKind kind);
 // What a segment carries: lane counts and widths come from the class.
@@ -87,9 +89,10 @@ struct RoadStyle {
   // Damage and destruction.
   double road_fire_damage_per_second = 0.02;    // 0 .. 1 per burning trunk at full intensity lying on a road
   double bridge_fire_damage_per_second = 0.05;  // 0 .. 1 per burning trunk on a deck (alight; at 1 it collapses)
-  double washout_current_mps = 3.0;      // 0.1 .. 30 at a pier
-  double washout_depth_meters = 1.0;     // 0 .. 20 at a pier
-  double washout_seconds = 45.0;         // 1 .. 86400 of such water before the bridge goes
+  double washout_current_mps = 3.0;      // 0.1 .. 30 at a pier, or over a road's surface
+  double washout_depth_meters = 1.0;     // 0 .. 20 at a pier, or over a road's surface
+  double washout_seconds = 45.0;         // 1 .. 86400 of such water before the bridge goes (a road takes twice as long)
+  double impact_tonnes = 12.0;           // 0.1 .. 1000: a trunk of this mass landing on a road surface ruins it outright (a deck takes 2/3 of it)
   double collapse_damage = 0.35;         // 0 .. 1 of health taken by a deck giving way under the walker (the fall is extra)
   std::uint32_t seed = 0;
 };
@@ -178,7 +181,7 @@ struct RoadSegmentState {
   double damage = 0.0;          // 0 sound .. 1 destroyed (by fire on the surface)
   bool destroyed = false;
   std::string destroyed_by;       // "fire", "flood", or what destroy() was told
-  double washout_seconds = 0.0;   // running water at a pier for this long (bridges)
+  double washout_seconds = 0.0;   // running water at a pier (bridges) or over the surface (roads) for this long
   std::size_t blockages = 0;      // trunks lying across it
 };
 struct RoadEvent {
@@ -267,15 +270,19 @@ class RoadNetwork {
   double speed_factor(double x, double z, double feet_y) const;
   std::vector<Obstacle> obstacles() const;
   // A trunk came down: lying from `base` along `direction` (unit, plan) for
-  // `length` metres. Every segment it crosses is blocked where it crosses
-  // (event Blocked, one per segment); a burning trunk will damage them as the
-  // network advances. Returns the number of segments newly blocked.
-  std::size_t log_landed(std::uint32_t tree, math::Vec2 base, math::Vec2 direction, double length, bool burning);
+  // `length` metres, weighing `mass_kg`. Every segment it crosses is blocked
+  // where it crosses (event Blocked, one per segment) and takes impact damage
+  // of mass / impact_tonnes (event Damaged; a deck smashed outright collapses);
+  // a burning trunk will damage them further as the network advances.
+  // Returns the number of segments newly blocked.
+  std::size_t log_landed(std::uint32_t tree, math::Vec2 base, math::Vec2 direction, double length, bool burning, double mass_kg = 0.0);
   // Advances by dt seconds: burning trunks damage the surfaces they lie on
   // (`log_intensity(tree)` is 0 .. 1, 0 once it has burned out), a deck at
   // full damage collapses (Destroyed + Collapsed), running water at a pier
   // (from `water` over the pier's ground) for washout_seconds washes a bridge
-  // out (Destroyed + WashedOut). Events of the call replace the previous ones.
+  // out (Destroyed + WashedOut), running water over a road's surface for
+  // twice that washes the road away (the same events). Events of the call
+  // replace the previous ones.
   void advance(double dt, const std::function<double(std::uint32_t tree)>& log_intensity, const WaterFn& water);
   // Destroys a segment outright (a bridge collapses, a road is rubble).
   void destroy(std::uint32_t segment, const char* cause);

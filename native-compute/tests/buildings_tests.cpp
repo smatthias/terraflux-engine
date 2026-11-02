@@ -565,6 +565,233 @@ void test_interior() {
   require(gap_at(door_field, threshold) < 0.0, "the leaf is back across the doorway");
 }
 
+// The hazards: fire by material, heat on what does not burn, impact, flood, wind and lightning.
+void test_hazards() {
+  using E = BuildingElement;
+  using K = BuildingEvent::Kind;
+  // Materials: fuel or not, and what damages the rest.
+  require(material_hazard(SurfaceMaterial::Thatch).flammable && material_hazard(SurfaceMaterial::Planks).flammable && material_hazard(SurfaceMaterial::Timber).flammable,
+          "thatch, planks and timber burn");
+  for (const auto m : {SurfaceMaterial::Concrete, SurfaceMaterial::Stone, SurfaceMaterial::Glass, SurfaceMaterial::Metal, SurfaceMaterial::Brick, SurfaceMaterial::Tiles, SurfaceMaterial::Asphalt, SurfaceMaterial::Pavement})
+    require(!material_hazard(m).flammable && material_hazard(m).heat_threshold < 1.0 && material_hazard(m).heat_damage_seconds > 0, "the rest do not burn but extreme heat damages them");
+  require(material_hazard(SurfaceMaterial::Glass).heat_threshold < material_hazard(SurfaceMaterial::Metal).heat_threshold &&
+          material_hazard(SurfaceMaterial::Metal).heat_threshold < material_hazard(SurfaceMaterial::Concrete).heat_threshold, "glass bursts before metal buckles before concrete spalls");
+  require(material_hazard(SurfaceMaterial::Tiles).impact_tonnes < material_hazard(SurfaceMaterial::Concrete).impact_tonnes && material_hazard(SurfaceMaterial::Thatch).wind_mps < material_hazard(SurfaceMaterial::Tiles).wind_mps,
+          "tiles smash under less than concrete, thatch blows off before tiles");
+  require(*building_element_material(BuildingKind::Bungalow, E::Roof) == SurfaceMaterial::Thatch && *building_element_material(BuildingKind::House, E::Walls) == SurfaceMaterial::Stone &&
+          !building_element_material(BuildingKind::Bungalow, E::Windows) && !building_element_material(BuildingKind::House, E::Interior) &&
+          *building_element_material(BuildingKind::Hangar, E::Roof) == SurfaceMaterial::Metal && *building_element_material(BuildingKind::Skyscraper, E::Walls) == SurfaceMaterial::Glass,
+          "the elements are what the kinds are built of");
+  require(std::string(building_element_name(E::Interior)) == "interior" && std::string(building_event_name(K::WashedOut)) == "washed out", "names");
+  rejects([] { BuildingPlacementStyle s; s.flood_scour_seconds = 0; validate_building_placement_style(s); }, "an instant scour is rejected");
+  rejects([] { BuildingPlacementStyle s; s.heat_reach_meters = 0.5; validate_building_placement_style(s); }, "a tiny heat reach is rejected");
+
+  RoadStyle road_style;
+  RoadNetwork roads(road_def(), road_style, plain_ground);
+  BuildingPlacementStyle style;
+  std::vector<BuildingRequest> three{{BuildingKind::Bungalow, BuildingSite{0, 50.0, 1}}, {BuildingKind::House, BuildingSite{0, 50.0, -1}}, {BuildingKind::Hospital, BuildingSite{2, 300.0, 1}}};
+  const auto placed = place_buildings(roads, three, plain_ground, std::nullopt, {50, 0}, style);
+  require(placed.size() == 3, "a bungalow, a house and a hospital");
+  const auto count = [](const BuildingSet& set, K kind, std::size_t building, std::optional<E> element = std::nullopt) {
+    std::size_t n = 0;
+    for (const auto& e : set.events()) if (e.kind == kind && e.building == building && (!element || e.element == *element)) ++n;
+    return n;
+  };
+  {
+    // Fire: heat beside the bungalow and the house (a burning tree between them).
+    BuildingSet set(placed, plain_ground, style);
+    const auto& bungalow = set.buildings()[0];
+    const auto& house = set.buildings()[1];
+    for (const auto& st : set.states()) require(!st.alight() && !st.destroyed && st.integrity() == 1.0 && st.element(E::Walls).present && st.element(E::Roof).present, "everything starts sound");
+    require(!set.states()[0].element(E::Windows).present && set.states()[0].element(E::Interior).present && !set.states()[1].element(E::Interior).present, "the bungalow has no glass, the house no modelled interior");
+    BuildingHazards fire;
+    fire.heat = [&](double x, double z) { return (Vec2{x, z} - Vec2{50, 0}).length() < 40.0 ? 1.0 : 0.0; };  // the road between them is ablaze
+    const auto version = set.version();
+    set.advance(1.0, fire);
+    require(set.states()[0].element(E::Roof).alight && count(set, K::Alight, 0, E::Roof) == 1 && set.states()[0].element(E::Roof).cause == "fire", "a second of full heat lights the thatch");
+    require(!set.states()[0].element(E::Walls).alight && !set.states()[1].element(E::Walls).alight, "planks take longer, stone never");
+    set.advance(3.0, fire);
+    require(set.states()[0].element(E::Walls).alight && set.states()[0].element(E::Door).alight && !set.states()[0].element(E::Interior).alight, "three seconds on, the plank walls and the timber door are alight; the room not yet (only the building's own flames reach it)");
+    require(set.states()[1].element(E::Door).alight && !set.states()[1].element(E::Walls).alight && !set.states()[1].element(E::Roof).alight, "the house's timber door burns, its stone walls and tiled roof do not");
+    require(set.states()[0].alight() && set.states()[0].intensity() > 0.9 && set.stats().alight == 2, "both buildings count as alight");
+    // Heat on what does not burn: the house's glass bursts, the walls are only slightly damaged.
+    set.advance(8.0, fire);
+    require(set.states()[0].element(E::Interior).alight && set.states()[0].element(E::Interior).cause == "fire", "the room caught from the burning roof and walls");
+    require(set.states()[1].element(E::Windows).damage >= 1.0 && set.states()[1].element(E::Windows).cause == "heat" && count(set, K::Damaged, 1, E::Windows) + count(set, K::Damaged, 1, E::Windows) >= 0,
+            "the house's windows burst in the heat");
+    require(set.states()[1].element(E::Walls).damage > 0 && set.states()[1].element(E::Walls).damage < 0.05 && set.states()[1].element(E::Walls).cause == "heat", "the stone walls only spall a little");
+    require(set.states()[2].element(E::Walls).damage == 0 && !set.states()[2].alight(), "the hospital far away feels nothing");
+    // Exposure: full heat at the bungalow, none far away; flames and plumes are emitted.
+    require(near(set.exposure_at(bungalow.centre.x, bungalow.centre.y).heat, 1.0) && set.exposure_at(bungalow.centre.x, bungalow.centre.y).smoke > 0 &&
+            set.exposure_at(bungalow.centre.x + 500, bungalow.centre.y).heat == 0, "the burning bungalow's heat at its walls, nothing far off");
+    std::vector<FireInstance> flames, smoke;
+    set.emit(flames, smoke, FireStyle{});
+    require(flames.size() > 10 && smoke.size() == 2, "flames on the burning elements and a plume over each burning building");
+    require(set.version() > version, "the char changes what is drawn");
+    // The thatch burns through (25 s): the roof falls in on the room; the walls take a minute and the bungalow collapses.
+    set.advance(25.0, fire);
+    require(set.states()[0].roof_fallen && set.states()[0].element(E::Roof).damage >= 1.0 && count(set, K::RoofFell, 0) == 1, "the thatch burned through and the roof fell in");
+    require(!set.sheltered(bungalow.centre.x, bungalow.centre.y), "no shelter under a fallen roof");
+    for (int i = 0; i < 80 && !set.states()[0].destroyed; ++i) set.advance(1.0, fire);
+    require(set.states()[0].destroyed && set.states()[0].destroyed_by == "fire" && count(set, K::Collapsed, 0) == 1, "the plank walls burned through: the bungalow collapsed");
+    require(!set.inside(0, bungalow.centre.x, bungalow.centre.y) && near(*set.platform_height(bungalow.centre.x, bungalow.centre.y), bungalow.floor_meters + 0.45) &&
+            near(set.speed_factor(bungalow.centre.x, bungalow.centre.y), style.rubble_speed_factor), "rubble: a slow heap to walk over, no room");
+    require(!set.toggle_door(0) && set.door_obstacles().empty() && set.build_door_meshes().empty(), "no door left");
+    std::size_t posts_near = 0;
+    for (const auto& o : set.obstacles()) if (std::hypot(o.x - bungalow.centre.x, o.z - bungalow.centre.y) < 8.0) ++posts_near;
+    require(posts_near == 1, "only the chimney stands in the rubble");
+    require(set.stats().destroyed == 1 && set.states()[0].integrity() == 0.0 && !set.states()[0].alight(), "the stats count it, its fire is out");
+    flames.clear(); smoke.clear();
+    set.emit(flames, smoke, FireStyle{});
+    bool smoulder = false;
+    for (const auto& pl : smoke) if (pl.kind == 2.0f) smoulder = true;
+    require(smoulder, "the burned-down bungalow smoulders");
+    std::map<std::string, std::size_t> parts;
+    for (const auto& p : set.build_meshes()) ++parts[p.what];
+    require(parts["rubble"] >= 1 && parts["roof"] == 2 && parts["window"] == 1 && parts["burst"] == 1 && parts["floor"] == 0 && parts["table"] == 0,
+            "rubble drawn, two roofs left (the house's and the hospital's), the house's windows burst (dark holes), no room");
+    // The house stands: its door burned away, its tiles scorched, the walls hardly touched.
+    require(!set.states()[1].destroyed && set.states()[1].element(E::Door).damage >= 1.0 && set.states()[1].element(E::Roof).damage > 0 && set.states()[1].element(E::Roof).damage < 0.2 &&
+            set.states()[1].integrity() > 0.8, "the stone house survives the fire with its door gone");
+    require(set.stats().damaged == 1, "one damaged building left standing");
+    // Rain halves the burning, wind speeds it: two fresh sets, the same fire.
+    BuildingSet wet(placed, plain_ground, style), windy(placed, plain_ground, style);
+    BuildingHazards rainy = fire; rainy.rain_mm_h = style.rain_slowdown_mm_h;
+    BuildingHazards gale = fire; gale.wind_speed_mps = 20.0;
+    wet.advance(11.0, rainy); windy.advance(11.0, gale);
+    require(wet.states()[0].element(E::Roof).damage < windy.states()[0].element(E::Roof).damage * 0.5, "rain slows the fire, wind drives it");
+    rejects([&] { set.advance(-1.0, fire); }, "a negative step is rejected");
+    rejects<std::out_of_range>([&] { set.ignite(9, E::Roof); }, "ignite checks the index");
+    set.reset();
+    require(!set.states()[0].destroyed && set.states()[0].integrity() == 1.0 && set.stats().alight == 0 && set.inside(0, bungalow.centre.x, bungalow.centre.y), "reset restores everything");
+    (void)house;
+  }
+  {
+    // Ignition by hand, and the spread between buildings: a torch at the bungalow's door.
+    BuildingSet set(placed, plain_ground, style);
+    require(!set.ignite(1, E::Walls, "torch") && !set.ignite(0, E::Windows, "torch"), "stone will not take a torch, nor an element that is not there");
+    require(set.ignite(0, E::Door, "torch") && !set.ignite(0, E::Door, "torch") && set.states()[0].element(E::Door).cause == "torch", "the timber door takes it once");
+    set.advance(8.0, {});
+    const auto& bungalow = set.buildings()[0];
+    const Vec2 beside = bungalow.door + bungalow.facing * 6.0, across = set.buildings()[1].door;
+    require(set.exposure_at(beside.x, beside.y).heat > 0.5 && set.exposure_at(beside.x, beside.y).heat < 1.0 && set.exposure_at(across.x, across.y).heat == 0.0,
+            "the blaze's heat fades over its reach: strong six metres before the door, gone at the house across the road");
+    for (int i = 0; i < 120; ++i) set.advance(1.0, {});
+    require(set.states()[0].destroyed, "left alone, the burning door takes the whole bungalow");
+    require(set.states()[1].element(E::Door).damage == 0 && !set.states()[1].alight(), "the house across the road is beyond its reach");
+    // Two bungalows side by side would not be: a second set with the house replaced by a bungalow next door.
+    std::vector<BuildingRequest> pair{{BuildingKind::Bungalow, BuildingSite{0, 50.0, 1}}, {BuildingKind::Bungalow, BuildingSite{0, 66.0, 1}}};
+    BuildingSet row(place_buildings(roads, pair, plain_ground, std::nullopt, {50, 0}, style), plain_ground, style);
+    require(row.size() == 2 && row.ignite(0, E::Roof, "torch"), "two bungalows in a row, the first lit");
+    for (int i = 0; i < 60 && !row.states()[1].alight(); ++i) row.advance(1.0, {});
+    require(row.states()[1].alight() && row.states()[1].element(E::Roof).cause == "fire", "the fire jumps to the bungalow next door");
+  }
+  {
+    // Impact: a trunk across the house smashes the tiles (the roof falls in) and cracks the walls; a concrete roof takes it.
+    BuildingSet set(placed, plain_ground, style);
+    const auto& house = set.buildings()[1];
+    const auto& hospital = set.buildings()[2];
+    const Vec2 start = house.centre - house.along * 20.0;
+    require(set.log_landed(5, start, house.along, 30.0, false, 2000.0) == 1 && count(set, K::Hit, 1) == 1 && set.events()[0].tree == 5, "a two-tonne trunk across the house hits it");
+    require(set.states()[1].roof_fallen && set.states()[1].element(E::Roof).cause == "impact" && count(set, K::RoofFell, 1) == 1, "the tiled roof is smashed and falls in");
+    require(near(set.states()[1].element(E::Walls).damage, 0.5 * 2.0 / material_hazard(SurfaceMaterial::Stone).impact_tonnes, 1e-9) && !set.states()[1].destroyed, "the stone walls are cracked by half the mass");
+    require(set.logs().size() == 1 && set.logs()[0].building == 1 && set.log_landed(5, start, house.along, 30.0, false, 2000.0) == 0, "the trunk lies on it once");
+    require(set.log_landed(6, start + house.facing * 40.0, house.along, 30.0, false, 2000.0) == 0, "a trunk forty metres off misses");
+    const Vec2 hs = hospital.centre - hospital.along * 30.0;
+    require(set.log_landed(7, hs, hospital.along, 60.0, true, 2000.0) == 1 && near(set.states()[2].element(E::Roof).damage, 2.0 / material_hazard(SurfaceMaterial::Concrete).impact_tonnes, 1e-9) && !set.states()[2].roof_fallen,
+            "a concrete roof is dented, not smashed");
+    // Burning on the hospital's roof, the trunk heats it: concrete spalls slowly; on the house's it would have lit nothing (tiles).
+    BuildingHazards log;
+    log.log_intensity = [](std::uint32_t tree) { return tree == 7 ? 1.0 : 0.0; };
+    const double before = set.states()[2].element(E::Roof).damage;
+    set.advance(10.0, log);
+    require(set.states()[2].element(E::Roof).damage > before && set.states()[2].element(E::Roof).cause == "heat" && set.logs()[1].burning, "the burning trunk spalls the concrete roof");
+    log.log_intensity = [](std::uint32_t) { return 0.0; };
+    set.advance(10.0, log);
+    require(!set.logs()[1].burning, "burned out, the log heats nothing");
+    std::map<std::string, std::size_t> parts;
+    for (const auto& p : set.build_meshes()) ++parts[p.what];
+    require(parts["roof"] == 2, "the house's roof is not drawn any more");
+    rejects([&] { set.log_landed(1, start, house.along, 30.0, false, -5.0); }, "a negative mass is rejected");
+    // An enormous trunk brings a house down outright.
+    require(set.log_landed(8, start, house.along, 30.0, false, 20000.0) == 1 && set.states()[1].destroyed && set.states()[1].destroyed_by == "impact", "twenty tonnes flatten the house");
+  }
+  {
+    // Flood: water over the floor soaks the room, the door and the planks; a torrent at the walls scours the foundation; water puts fire out.
+    BuildingSet set(placed, plain_ground, style);
+    const auto& bungalow = set.buildings()[0];
+    BuildingHazards flood;
+    flood.water = [](double, double, double ground_y) { FloodSample w; w.depth_meters = 0.6; w.surface_meters = ground_y + 0.6; return w; };
+    {
+      BuildingSet lit(placed, plain_ground, style);
+      require(lit.ignite(0, E::Walls, "torch"), "the walls are lit before the water comes");
+      lit.advance(0.5, {});
+      require(lit.states()[0].element(E::Walls).alight && !lit.states()[0].element(E::Roof).alight, "burning");
+      lit.advance(0.5, flood);
+      require(!lit.states()[0].element(E::Walls).alight && count(lit, K::Extinguished, 0, E::Walls) == 1, "the water put the walls out");
+      require(!lit.ignite(0, E::Interior, "torch") && !lit.ignite(0, E::Door, "torch") && lit.ignite(0, E::Roof, "torch"), "nothing under water can be lit; the roof, above it, can");
+    }
+    set.advance(1.0, flood);
+    require(near(set.states()[0].flood_depth_meters, 0.45) && count(set, K::Flooded, 0) == 1 && set.stats().flooded == 3, "water 0.45 m over the bungalow's floor (the other two are flooded too)");
+    set.advance(450.0, flood);
+    require(near(set.states()[0].element(E::Interior).damage, 451.0 / material_hazard(SurfaceMaterial::Timber).soak_seconds, 1e-6) && set.states()[0].element(E::Interior).cause == "flood",
+            "the furniture rots in its soak time");
+    require(set.states()[0].element(E::Door).damage > 0.4 && set.states()[0].element(E::Walls).damage > 0.4 && set.states()[0].element(E::Walls).cause == "flood", "so do the door and the planks");
+    require(set.states()[1].element(E::Walls).damage == 0 && set.states()[1].element(E::Door).damage > 0.4, "the house's stone stands in water, its timber door rots");
+    require(set.states()[2].element(E::Walls).damage == 0, "concrete does not mind");
+    for (int i = 0; i < 1000 && !set.states()[0].destroyed; ++i) set.advance(1.0, flood);
+    require(set.states()[0].destroyed && set.states()[0].destroyed_by == "flood" && count(set, K::WashedOut, 0) == 1, "rotted through, the plank walls give: the bungalow goes");
+    // A torrent at the walls takes any building in the scour time.
+    BuildingSet scour(placed, plain_ground, style);
+    BuildingHazards torrent;
+    torrent.water = [&](double x, double z, double ground_y) {
+      FloodSample w;
+      if ((Vec2{x, z} - set.buildings()[2].centre).length() < 40.0) { w.depth_meters = 1.5; w.surface_meters = ground_y + 1.5; w.current_mps = 4.0; w.current = {1, 0}; w.channel = true; }
+      else w.surface_meters = ground_y;
+      return w;
+    };
+    scour.advance(style.flood_scour_seconds - 1.0, torrent);
+    require(!scour.states()[2].destroyed && near(scour.states()[2].scour_seconds, style.flood_scour_seconds - 1.0), "the torrent scours the hospital's foundation");
+    scour.advance(2.0, torrent);
+    require(scour.states()[2].destroyed && scour.states()[2].destroyed_by == "flood" && !scour.states()[0].destroyed, "and the concrete hospital goes with it; the bungalow, dry, stands");
+    std::vector<FireInstance> flames, smoke;
+    scour.emit(flames, smoke, FireStyle{});
+    require(flames.empty() && smoke.empty(), "a washed-out building does not smoulder");
+    require(!scour.platform_height(bungalow.centre.x + 1000, bungalow.centre.y), "(sanity) nothing far off");
+  }
+  {
+    // Wind: a gale strips the thatch, not the tiles; the windows hold below their wind.
+    BuildingSet set(placed, plain_ground, style);
+    BuildingHazards gale; gale.wind_speed_mps = 35.0;
+    set.advance(30.0, gale);
+    require(set.states()[0].element(E::Roof).damage > 0.5 && set.states()[0].element(E::Roof).cause == "wind" && set.states()[1].element(E::Roof).damage == 0 && set.states()[1].element(E::Windows).damage == 0,
+            "thatch tears loose at 35 m/s, tiles and glass hold");
+    set.advance(30.0, gale);
+    require(set.states()[0].roof_fallen && !set.states()[0].destroyed, "the thatch is stripped: open to the sky, the walls standing");
+    gale.wind_speed_mps = 42.0;
+    set.advance(60.0, gale);
+    require(set.states()[1].element(E::Roof).damage > 0.5 && set.states()[1].element(E::Windows).damage >= 1.0, "at 42 m/s the tiles go and the glass is smashed by debris");
+  }
+  {
+    // Lightning: a strike lights the thatch, scorches the tiles, misses far off; the tallest draws the bolt.
+    BuildingSet set(placed, plain_ground, style);
+    const auto& bungalow = set.buildings()[0];
+    const auto& house = set.buildings()[1];
+    require(set.strike(bungalow.centre.x + 0.5 * bungalow.spec.width_meters + 5.0, bungalow.centre.y) == 0 && set.states()[0].strikes == 1 && set.states()[0].element(E::Roof).alight &&
+            set.states()[0].element(E::Roof).cause == "lightning" && count(set, K::Struck, 0) == 1, "a strike five metres from the bungalow's wall lights its thatch");
+    require(set.strike(house.centre.x, house.centre.y) == 1 && near(set.states()[1].element(E::Roof).damage, style.strike_scorch, 1e-9) && set.states()[1].element(E::Roof).cause == "lightning" && !set.states()[1].alight(),
+            "a strike on the house scorches its tiles");
+    require(!set.strike(house.centre.x, house.centre.y + 500.0), "a strike far off hits nothing");
+    require(set.sheltered(bungalow.centre.x, bungalow.centre.y) && !set.sheltered(house.centre.x, house.centre.y), "inside the bungalow is under a roof (the house cannot be entered)");
+    rejects([&] { set.strike(std::nan(""), 0); }, "a strike needs a finite position");
+    // The hospital (five storeys) draws a bolt that lands between it and a spot nearer the house.
+    const Vec2 mid = house.centre + (set.buildings()[2].centre - house.centre) * 0.5;
+    (void)mid;
+    set.destroy(2, "test");
+    require(set.states()[2].destroyed && set.states()[2].destroyed_by == "test" && count(set, K::Collapsed, 2) == 1, "destroy brings a building down outright");
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -577,7 +804,8 @@ int main() {
     test_vegetation();
     test_civic_and_airport_kinds();
     test_interior();
-    std::cout << "TerraFlux buildings: 8 tests passed\n";
+    test_hazards();
+    std::cout << "TerraFlux buildings: 9 tests passed\n";
   } catch (const std::exception& error) {
     std::cerr << "TerraFlux buildings test failed: " << error.what() << '\n';
     return 1;

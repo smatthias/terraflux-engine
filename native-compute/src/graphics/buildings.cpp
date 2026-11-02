@@ -21,6 +21,8 @@ constexpr double kDoorwayClearance = 0.15; // the doorway is this much wider tha
 constexpr double kDoorPostRadius = 0.08;   // a door leaf as a chain of posts this thick
 constexpr double kDoorSwingSeconds = 0.6;  // a full swing
 constexpr double kRampGrade = 0.3;         // the footpath climbs to a raised door at most this steeply (1:3.3)
+constexpr double kRubbleHeight = 0.45;     // a collapsed building's heap over its floor (stepped onto)
+constexpr double kFlameRamp = 2.0;         // seconds for a lit element's flames to reach full strength
 
 bool within(double v, double lo, double hi) { return std::isfinite(v) && v >= lo && v <= hi; }
 bool finite(math::Vec2 v) { return std::isfinite(v.x) && std::isfinite(v.y); }
@@ -218,6 +220,92 @@ void validate_building_placement_style(const BuildingPlacementStyle& s) {
     throw std::invalid_argument("candidate spacing must be 1..100 m, end margin 0..500 m and gap 0..100 m");
   if (!within(s.water_margin_meters, 0, 20) || !within(s.surface_lift_meters, 0, 1) || !within(s.path_speed_factor, 1, 3))
     throw std::invalid_argument("water margin must be 0..20 m, lift 0..1 m and path speed factor 1..3");
+  if (!within(s.rubble_speed_factor, 0.1, 1) || !within(s.heat_reach_meters, 1, 200) || !within(s.spread_heat, 0, 1) || !within(s.wind_burn_factor, 0, 1) ||
+      !within(s.rain_slowdown_mm_h, 1, 500))
+    throw std::invalid_argument("rubble speed factor must be 0.1..1, heat reach 1..200 m, spread heat 0..1, wind burn factor 0..1 and rain slowdown 1..500 mm/h");
+  if (!within(s.flood_current_mps, 0.1, 30) || !within(s.flood_depth_meters, 0, 20) || !within(s.flood_scour_seconds, 1, 86400))
+    throw std::invalid_argument("flood current must be 0.1..30 m/s, depth 0..20 m and scour time 1..86400 s");
+  if (!within(s.strike_radius_meters, 0, 200) || !within(s.strike_scorch, 0, 1) || !within(s.collapse_damage, 0, 1) || !within(s.roof_fall_damage, 0, 1))
+    throw std::invalid_argument("strike radius must be 0..200 m, scorch 0..1, collapse and roof fall damage 0..1");
+}
+
+// ---------------------------------------------------------------------------
+const char* building_element_name(BuildingElement element) {
+  switch (element) {
+    case BuildingElement::Walls: return "walls";
+    case BuildingElement::Roof: return "roof";
+    case BuildingElement::Windows: return "windows";
+    case BuildingElement::Door: return "door";
+    case BuildingElement::Interior: return "interior";
+    case BuildingElement::Count: break;
+  }
+  throw std::invalid_argument("unknown building element");
+}
+
+std::optional<SurfaceMaterial> building_element_material(BuildingKind kind, BuildingElement element) {
+  using M = SurfaceMaterial;
+  (void)building_kind_name(kind);
+  switch (element) {
+    case BuildingElement::Walls:
+      switch (kind) {
+        case BuildingKind::Bungalow: return M::Planks;
+        case BuildingKind::House: return M::Stone;
+        case BuildingKind::Skyscraper: return M::Glass;
+        case BuildingKind::Hangar: return M::Metal;
+        default: return M::Concrete;
+      }
+    case BuildingElement::Roof:
+      switch (kind) {
+        case BuildingKind::Bungalow: return M::Thatch;
+        case BuildingKind::House: return M::Tiles;
+        case BuildingKind::Hangar: return M::Metal;
+        default: return M::Concrete;
+      }
+    case BuildingElement::Windows:
+      switch (kind) {
+        case BuildingKind::Bungalow: case BuildingKind::Skyscraper: case BuildingKind::Hangar: return std::nullopt;  // open holes; the glass is the wall; none
+        default: return M::Window;
+      }
+    case BuildingElement::Door:
+      switch (kind) {
+        case BuildingKind::Bungalow: case BuildingKind::House: return M::Timber;
+        case BuildingKind::PoliceStation: case BuildingKind::ControlTower: case BuildingKind::Hangar: return M::Metal;
+        default: return M::Window;
+      }
+    case BuildingElement::Interior: return building_enterable(kind) ? std::optional<M>(M::Timber) : std::nullopt;
+    case BuildingElement::Count: break;
+  }
+  throw std::invalid_argument("unknown building element");
+}
+
+const char* building_event_name(BuildingEvent::Kind kind) {
+  switch (kind) {
+    case BuildingEvent::Kind::Alight: return "alight";
+    case BuildingEvent::Kind::BurnedOut: return "burned out";
+    case BuildingEvent::Kind::Damaged: return "damaged";
+    case BuildingEvent::Kind::RoofFell: return "roof fell";
+    case BuildingEvent::Kind::Collapsed: return "collapsed";
+    case BuildingEvent::Kind::WashedOut: return "washed out";
+    case BuildingEvent::Kind::Extinguished: return "extinguished";
+    case BuildingEvent::Kind::Struck: return "struck";
+    case BuildingEvent::Kind::Hit: return "hit";
+    case BuildingEvent::Kind::Flooded: return "flooded";
+  }
+  throw std::invalid_argument("unknown building event");
+}
+
+bool BuildingState::alight() const {
+  for (const auto& e : elements) if (e.alight) return true;
+  return false;
+}
+double BuildingState::intensity() const {
+  double best = 0.0;
+  for (const auto& e : elements) best = std::max(best, e.intensity);
+  return best;
+}
+double BuildingState::integrity() const {
+  if (destroyed) return 0.0;
+  return std::clamp(1.0 - 0.6 * element(BuildingElement::Walls).damage - 0.4 * element(BuildingElement::Roof).damage, 0.0, 1.0);
 }
 
 namespace {
@@ -449,6 +537,41 @@ bool in_doorway(const Building& b, double a, double bb) {
   const double hd = 0.5 * b.spec.depth_meters;
   return std::abs(a) <= 0.5 * door_size(b.kind).width + kDoorwayClearance && bb >= hd - kWall - 1e-9 && bb <= hd + 1e-9;
 }
+// Where a kind's chimney stands (plan), if it has one.
+std::optional<math::Vec2> chimney_plan(const Building& b) {
+  const Frame frame = frame_of(b);
+  const double hw = 0.5 * b.spec.width_meters, hd = 0.5 * b.spec.depth_meters;
+  if (b.kind == BuildingKind::Bungalow) return frame.plan(-hw * 0.55, -hd * 0.3);
+  if (b.kind == BuildingKind::House) return frame.plan(hw * 0.5, -hd * 0.45);
+  return std::nullopt;
+}
+// The distance from a plan point to a building's footprint (0 inside it).
+double footprint_distance(const Building& b, math::Vec2 p) {
+  const auto [a, bb] = frame_of(b).local(p);
+  const double dx = std::max(0.0, std::abs(a) - 0.5 * b.spec.width_meters), dz = std::max(0.0, std::abs(bb) - 0.5 * b.spec.depth_meters);
+  return std::hypot(dx, dz);
+}
+// Whether a plan segment crosses a building's footprint (Liang-Barsky in the local frame).
+bool crosses_footprint(const Building& b, math::Vec2 from, math::Vec2 to) {
+  const Frame frame = frame_of(b);
+  const auto [a0, b0] = frame.local(from);
+  const auto [a1, b1] = frame.local(to);
+  const double hw = 0.5 * b.spec.width_meters, hd = 0.5 * b.spec.depth_meters;
+  double t0 = 0.0, t1 = 1.0;
+  const double d[2] = {a1 - a0, b1 - b0}, s0[2] = {a0, b0}, h[2] = {hw, hd};
+  for (int axis = 0; axis < 2; ++axis) {
+    for (const double sign : {-1.0, 1.0}) {
+      const double p = -sign * d[axis], q = sign * s0[axis] + h[axis];  // sign * s <= h  ->  p t <= q
+      if (std::abs(p) < 1e-12) { if (q < 0) return false; continue; }
+      const double t = q / p;
+      if (p < 0) t0 = std::max(t0, t); else t1 = std::min(t1, t);
+      if (t0 > t1) return false;
+    }
+  }
+  return true;
+}
+// A colour darkened by damage (char, soot, rot).
+math::Vec3 charred(math::Vec3 color, double damage) { return color * (1.0 - 0.65 * std::clamp(damage, 0.0, 1.0)); }
 // Posts along a line, the last one centred on `to`.
 void post_chain(std::vector<Obstacle>& out, math::Vec2 from, math::Vec2 to, double radius, double bottom, double top) {
   const double len = (to - from).length();
@@ -472,6 +595,15 @@ BuildingSet::BuildingSet(std::vector<Building> buildings, StandingHeightFn groun
       throw std::invalid_argument("building frame must be finite with unit axes");
   }
   doors_.resize(buildings_.size());
+  states_.resize(buildings_.size());
+  drawn_levels_.resize(buildings_.size());
+  for (std::size_t i = 0; i < buildings_.size(); ++i) {
+    for (std::size_t e = 0; e < static_cast<std::size_t>(BuildingElement::Count); ++e) {
+      auto& el = states_[i].elements[e];
+      if (const auto m = building_element_material(buildings_[i].kind, static_cast<BuildingElement>(e))) { el.material = *m; el.present = true; }
+      drawn_levels_[i][e] = 0;
+    }
+  }
 }
 
 BuildingStats BuildingSet::stats() const {
@@ -489,10 +621,22 @@ BuildingStats BuildingSet::stats() const {
       case BuildingKind::Hangar: ++s.hangars; break;
     }
     if (building_enterable(b.kind)) ++s.interiors;
+    const auto& st = states_[&b - buildings_.data()];
+    if (st.alight()) ++s.alight;
+    if (st.destroyed) ++s.destroyed;
+    else {
+      bool any = false;
+      for (const auto& e : st.elements) if (e.present && e.damage > 0) any = true;
+      if (any) ++s.damaged;
+      if (st.roof_fallen) ++s.roofless;
+    }
+    if (st.flood_depth_meters > 0) ++s.flooded;
+    if (st.strikes) ++s.struck;
     s.tallest_meters = std::max(s.tallest_meters, b.height_meters);
     s.most_storeys = std::max(s.most_storeys, b.storeys);
     s.floor_area_m2 += b.spec.width_meters * b.spec.depth_meters * b.storeys;
   }
+  s.logs = logs_.size();
   return s;
 }
 
@@ -501,7 +645,10 @@ std::optional<double> BuildingSet::platform_height(double x, double z) const {
   for (std::size_t i = 0; i < buildings_.size(); ++i) {
     const auto& b = buildings_[i];
     const auto [a, bb] = frame_of(b).local({x, z});
-    if (building_enterable(b.kind) && (inside(i, x, z) || in_doorway(b, a, bb))) return b.floor_meters;
+    if (states_[i].destroyed) {
+      // A heap of rubble over the footprint, stepped onto.
+      if (std::abs(a) <= 0.5 * b.spec.width_meters && std::abs(bb) <= 0.5 * b.spec.depth_meters) return b.floor_meters + kRubbleHeight;
+    } else if (building_enterable(b.kind) && (inside(i, x, z) || in_doorway(b, a, bb))) return b.floor_meters;
     if (std::abs(a) > 0.5 * b.spec.path_width_meters || bb < 0.5 * b.spec.depth_meters - 1e-9 || bb > 0.5 * b.spec.depth_meters + b.spec.setback_meters + 1e-9) continue;
     const auto h = ground_(x, z);
     if (!h) continue;
@@ -510,7 +657,11 @@ std::optional<double> BuildingSet::platform_height(double x, double z) const {
   return std::nullopt;
 }
 
-double BuildingSet::speed_factor(double x, double z) const { return platform_height(x, z) ? style_.path_speed_factor : 1.0; }
+double BuildingSet::speed_factor(double x, double z) const {
+  if (!platform_height(x, z)) return 1.0;
+  if (const auto i = building_at(x, z)) if (states_[*i].destroyed) return style_.rubble_speed_factor;
+  return style_.path_speed_factor;
+}
 
 std::optional<std::size_t> BuildingSet::building_at(double x, double z, double margin) const {
   if (!std::isfinite(x) || !std::isfinite(z) || !within(margin, 0, 1000)) throw std::invalid_argument("building query out of range");
@@ -537,7 +688,7 @@ bool BuildingSet::inside(std::size_t building, double x, double z) const {
   if (building >= buildings_.size()) throw std::out_of_range("building index out of range");
   if (!std::isfinite(x) || !std::isfinite(z)) throw std::invalid_argument("building query out of range");
   const auto& b = buildings_[building];
-  if (!building_enterable(b.kind)) return false;
+  if (!building_enterable(b.kind) || states_[building].destroyed) return false;
   const auto [a, bb] = frame_of(b).local({x, z});
   return std::abs(a) < 0.5 * b.spec.width_meters - kWall && std::abs(bb) < 0.5 * b.spec.depth_meters - kWall;
 }
@@ -550,10 +701,17 @@ std::optional<std::size_t> BuildingSet::inside_of(double x, double z) const {
 
 std::vector<Obstacle> BuildingSet::obstacles() const {
   std::vector<Obstacle> out;
-  for (const auto& b : buildings_) {
+  for (std::size_t i = 0; i < buildings_.size(); ++i) {
+    const auto& b = buildings_[i];
+    const auto& st = states_[i];
     const Frame frame = frame_of(b);
     const double hw = 0.5 * b.spec.width_meters, hd = 0.5 * b.spec.depth_meters;
     const double bottom = b.ground_min_meters - kFoundationDepth, top = b.floor_meters + b.height_meters;
+    if (st.destroyed) {
+      // Rubble is walked over; the chimney stands in it.
+      if (const auto c = chimney_plan(b)) { Obstacle o; o.x = c->x; o.z = c->y; o.radius = 0.45; o.bottom = bottom; o.top = top; out.push_back(o); }
+      continue;
+    }
     const auto chain = [&](math::Vec2 from, math::Vec2 to) { post_chain(out, from, to, kWallPostRadius, bottom, top); };
     if (!building_enterable(b.kind)) {
       chain(frame.plan(-hw, hd), frame.plan(hw, hd));
@@ -571,7 +729,8 @@ std::vector<Obstacle> BuildingSet::obstacles() const {
     chain(frame.plan(mw, md), frame.plan(mw, -md));
     chain(frame.plan(mw, -md), frame.plan(-mw, -md));
     chain(frame.plan(-mw, -md), frame.plan(-mw, md));
-    // The furniture: a solid piece as posts along its longer axis, as thick as its shorter one.
+    // The furniture: a solid piece as posts along its longer axis, as thick as its shorter one (gone once it has burned).
+    if (st.element(BuildingElement::Interior).damage >= 1.0) continue;
     for (const auto& f : furnish(b.spec)) {
       if (!f.solid) continue;
       const double r = std::min(f.half_along, f.half_across), reach = std::max(f.half_along, f.half_across) - r;
@@ -599,17 +758,167 @@ BuildingSet::Leaf BuildingSet::door_leaf(std::size_t i) const {
   return Leaf{frame.plan(0.5 * door.width, hd - 0.5 * kWall), along, door.width - 0.02, door.height, b.floor_meters};
 }
 
+bool BuildingSet::door_present(std::size_t i) const {
+  return building_enterable(buildings_[i].kind) && !states_[i].destroyed && states_[i].element(BuildingElement::Door).damage < 1.0;
+}
+
 bool BuildingSet::toggle_door(std::size_t building) {
   if (building >= buildings_.size()) throw std::out_of_range("building index out of range");
-  if (!building_enterable(buildings_[building].kind)) return false;
+  if (!door_present(building)) return false;
   auto& d = doors_[building];
   d.opening = !(d.opening || d.open >= 1.0);
   ++door_version_;
   return true;
 }
 
-void BuildingSet::advance(double dt) {
-  if (!std::isfinite(dt) || dt < 0) throw std::invalid_argument("door time step must be finite and non-negative");
+void BuildingSet::raise(BuildingEvent::Kind kind, std::size_t building, BuildingElement element, int tree, const char* cause) {
+  BuildingEvent e; e.kind = kind; e.building = building; e.element = element; e.tree = tree; e.cause = cause ? cause : "";
+  events_.push_back(std::move(e));
+}
+
+void BuildingSet::damage_element(std::size_t i, BuildingElement element, double amount, const char* cause) {
+  auto& el = states_[i].element(element);
+  if (!el.present || amount <= 0 || el.damage >= 1.0) return;
+  const double before = el.damage;
+  el.damage = std::min(1.0, el.damage + amount);
+  el.cause = cause ? cause : "";
+  if (before <= 0) raise(BuildingEvent::Kind::Damaged, i, element, -1, cause);
+}
+
+void BuildingSet::roof_falls(std::size_t i) {
+  auto& st = states_[i];
+  if (st.roof_fallen) return;
+  st.roof_fallen = true;
+  auto& roof = st.element(BuildingElement::Roof);
+  const bool burning = roof.alight;
+  roof.alight = false; roof.intensity = 0.0; roof.damage = 1.0;
+  ++version_;
+  raise(BuildingEvent::Kind::RoofFell, i, BuildingElement::Roof, -1, roof.cause.c_str());
+  // The debris lands in the room: the interior is smashed, and lit if the roof was burning.
+  damage_element(i, BuildingElement::Interior, 0.5, "impact");
+  if (burning) ignite(i, BuildingElement::Interior, "fire");
+}
+
+void BuildingSet::destroy(std::size_t i, const char* cause) {
+  if (i >= buildings_.size()) throw std::out_of_range("building index out of range");
+  auto& st = states_[i];
+  if (st.destroyed) return;
+  st.destroyed = true;
+  st.destroyed_by = cause ? cause : "";
+  st.roof_fallen = true;
+  for (auto& el : st.elements) { if (!el.present) continue; el.alight = false; el.intensity = 0.0; el.damage = 1.0; if (el.cause.empty()) el.cause = st.destroyed_by; }
+  doors_[i] = DoorState{};
+  logs_.erase(std::remove_if(logs_.begin(), logs_.end(), [&](const BuildingLog& l) { return l.building == i; }), logs_.end());
+  ++version_; ++door_version_;
+  raise(st.destroyed_by == "flood" ? BuildingEvent::Kind::WashedOut : BuildingEvent::Kind::Collapsed, i, BuildingElement::Walls, -1, st.destroyed_by.c_str());
+}
+
+bool BuildingSet::ignite(std::size_t i, BuildingElement element, const char* cause) {
+  if (i >= buildings_.size()) throw std::out_of_range("building index out of range");
+  if (element >= BuildingElement::Count) throw std::invalid_argument("unknown building element");
+  auto& st = states_[i];
+  auto& el = st.element(element);
+  if (st.destroyed || !el.present || el.alight || el.damage >= 1.0 || !material_hazard(el.material).flammable) return false;
+  const double submerged_at = element == BuildingElement::Interior ? 0.05 : element == BuildingElement::Door ? 0.1 : element == BuildingElement::Walls ? 0.3 : element == BuildingElement::Windows ? 1.0 : 1e9;
+  if (st.flood_depth_meters > submerged_at) return false;
+  el.alight = true; el.heat_seconds = 0.0; el.cause = cause ? cause : "fire";
+  raise(BuildingEvent::Kind::Alight, i, element, -1, el.cause.c_str());
+  return true;
+}
+
+std::optional<std::size_t> BuildingSet::strike(double x, double z) {
+  if (!std::isfinite(x) || !std::isfinite(z)) throw std::invalid_argument("strike position must be finite");
+  std::optional<std::size_t> best;
+  double best_score = std::numeric_limits<double>::infinity();
+  for (std::size_t i = 0; i < buildings_.size(); ++i) {
+    if (states_[i].destroyed) continue;
+    const double d = footprint_distance(buildings_[i], {x, z});
+    if (d > style_.strike_radius_meters) continue;
+    const double score = d - buildings_[i].height_meters;  // the tallest within reach draws the bolt
+    if (score < best_score) { best_score = score; best = i; }
+  }
+  if (!best) return std::nullopt;
+  auto& st = states_[*best];
+  ++st.strikes;
+  raise(BuildingEvent::Kind::Struck, *best, BuildingElement::Roof);
+  if (!ignite(*best, BuildingElement::Roof, "lightning")) damage_element(*best, BuildingElement::Roof, style_.strike_scorch, "lightning");
+  return best;
+}
+
+std::size_t BuildingSet::log_landed(std::uint32_t tree, math::Vec2 base, math::Vec2 direction, double length, bool burning, double mass_kg) {
+  if (!finite(base) || !finite(direction) || !within(length, 0, 1000) || !within(mass_kg, 0, 1e7))
+    throw std::invalid_argument("a landed trunk needs a finite base, direction, length and mass");
+  const double dl = direction.length();
+  if (dl < 1e-9 || length <= 0) return 0;
+  const math::Vec2 tip = base + direction * (length / dl);
+  std::size_t hit = 0;
+  for (std::size_t i = 0; i < buildings_.size(); ++i) {
+    if (states_[i].destroyed || !crosses_footprint(buildings_[i], base, tip)) continue;
+    bool known = false;
+    for (const auto& l : logs_) if (l.building == i && l.tree == tree) known = true;
+    if (known) continue;
+    logs_.push_back({i, tree, burning});
+    ++hit;
+    raise(BuildingEvent::Kind::Hit, i, BuildingElement::Roof, static_cast<int>(tree));
+    auto& st = states_[i];
+    const double tonnes = mass_kg / 1000.0;
+    const auto smash = [&](BuildingElement element, double share) {
+      const auto& el = st.element(element);
+      if (!el.present) return;
+      const double strength = material_hazard(el.material).impact_tonnes;
+      if (strength <= 0) return;
+      damage_element(i, element, share * tonnes / strength, "impact");
+    };
+    smash(BuildingElement::Roof, 1.0);
+    smash(BuildingElement::Walls, 0.5);
+    smash(BuildingElement::Windows, 0.5);
+    if (st.element(BuildingElement::Roof).damage >= 1.0) roof_falls(i);
+    if (st.element(BuildingElement::Walls).damage >= 1.0) destroy(i, "impact");
+    ++version_;
+  }
+  return hit;
+}
+
+void BuildingSet::reset() {
+  for (std::size_t i = 0; i < buildings_.size(); ++i) {
+    BuildingState fresh;
+    for (std::size_t e = 0; e < static_cast<std::size_t>(BuildingElement::Count); ++e) {
+      if (const auto m = building_element_material(buildings_[i].kind, static_cast<BuildingElement>(e))) { fresh.elements[e].material = *m; fresh.elements[e].present = true; }
+      drawn_levels_[i][e] = 0;
+    }
+    states_[i] = std::move(fresh);
+    doors_[i] = DoorState{};
+  }
+  logs_.clear();
+  events_.clear();
+  ++version_; ++door_version_;
+}
+
+double BuildingSet::external_heat_at(std::size_t i, const BuildingHazards& hazards) const {
+  const auto& b = buildings_[i];
+  const Frame frame = frame_of(b);
+  const double hw = 0.5 * b.spec.width_meters, hd = 0.5 * b.spec.depth_meters;
+  double heat = 0.0;
+  const math::Vec2 samples[6] = {b.centre, b.door, frame.plan(-hw, -hd), frame.plan(hw, -hd), frame.plan(hw, hd), frame.plan(-hw, hd)};
+  for (const auto& p : samples) {
+    if (hazards.heat) heat = std::max(heat, std::clamp(hazards.heat(p.x, p.y), 0.0, 1.0));
+    // The other burning buildings.
+    for (std::size_t j = 0; j < buildings_.size(); ++j) {
+      if (j == i) continue;
+      const double intensity = states_[j].intensity();
+      if (intensity <= 0) continue;
+      const double d = footprint_distance(buildings_[j], p);
+      heat = std::max(heat, intensity * (1.0 - std::clamp((d - 3.0) / std::max(style_.heat_reach_meters - 3.0, 0.1), 0.0, 1.0)));
+    }
+  }
+  return heat;
+}
+
+void BuildingSet::advance(double dt, const BuildingHazards& hazards) {
+  if (!std::isfinite(dt) || dt < 0) throw std::invalid_argument("building time step must be finite and non-negative");
+  events_.clear();
+  if (dt <= 0) return;
+  // The doors.
   for (auto& d : doors_) {
     const double target = d.opening ? 1.0 : 0.0;
     if (d.open == target) continue;
@@ -617,12 +926,193 @@ void BuildingSet::advance(double dt) {
     d.open = d.opening ? std::min(1.0, d.open + step) : std::max(0.0, d.open - step);
     ++door_version_;
   }
+  // The logs lying on the buildings: their fire goes on or out.
+  for (auto& l : logs_) l.burning = hazards.log_intensity && l.building < states_.size() && std::clamp(hazards.log_intensity(l.tree), 0.0, 1.0) > 0;
+  const double wind = std::clamp(hazards.wind_speed_mps, 0.0, 150.0), rain = std::max(0.0, hazards.rain_mm_h);
+  const double burn_rate = (1.0 + style_.wind_burn_factor * wind) / (1.0 + rain / style_.rain_slowdown_mm_h);
+  constexpr std::size_t kCount = static_cast<std::size_t>(BuildingElement::Count);
+  constexpr double kSubmergedAt[kCount] = {0.3, 1e9, 1.0, 0.1, 0.05};  // walls, roof, windows, door, interior: water over the floor that covers the element
+  for (std::size_t i = 0; i < buildings_.size(); ++i) {
+    auto& st = states_[i];
+    const auto& b = buildings_[i];
+    if (st.destroyed) continue;
+    // The hazards at this building, sampled once for the step.
+    const double external = external_heat_at(i, hazards);
+    double log_heat = 0.0;
+    for (const auto& l : logs_) if (l.building == i && l.burning) log_heat = std::max(log_heat, std::clamp(hazards.log_intensity(l.tree), 0.0, 1.0));
+    double surface = -std::numeric_limits<double>::infinity(), depth_here = 0.0;
+    bool torrent = false;
+    if (hazards.water) {
+      const Frame frame = frame_of(b);
+      const double hw = 0.5 * b.spec.width_meters, hd = 0.5 * b.spec.depth_meters;
+      const math::Vec2 samples[5] = {b.door, frame.plan(-hw, -hd), frame.plan(hw, -hd), frame.plan(hw, hd), frame.plan(-hw, hd)};
+      for (const auto& p : samples) {
+        const auto g = ground_(p.x, p.y);
+        if (!g) continue;
+        const auto w = hazards.water(p.x, p.y, *g);
+        if (w.depth_meters > 0) surface = std::max(surface, w.surface_meters);
+        if (w.current_mps >= style_.flood_current_mps && w.depth_meters >= style_.flood_depth_meters) torrent = true;
+      }
+      depth_here = std::isfinite(surface) ? std::max(0.0, surface - b.floor_meters) : 0.0;
+    }
+    const bool was_flooded = st.flood_depth_meters > 0.05;
+    st.flood_depth_meters = depth_here;
+    if (!was_flooded && depth_here > 0.05) raise(BuildingEvent::Kind::Flooded, i);
+    st.scour_seconds = torrent ? st.scour_seconds + dt : std::max(0.0, st.scour_seconds - dt);
+    if (st.scour_seconds >= style_.flood_scour_seconds) { destroy(i, "flood"); continue; }
+    // The elements, in sub-steps so a cascade within one call follows its delays.
+    const int steps = std::max(1, static_cast<int>(std::ceil(dt / 0.25)));
+    const double h = dt / steps;
+    for (int step = 0; step < steps; ++step) {
+      const double internal = st.intensity() * style_.spread_heat;
+      for (std::size_t e = 0; e < kCount; ++e) {
+        auto& el = st.elements[e];
+        if (!el.present) continue;
+        const auto element = static_cast<BuildingElement>(e);
+        const auto hz = material_hazard(el.material);
+        double heat = internal;
+        if (element != BuildingElement::Interior) heat = std::max(heat, external);
+        if (element == BuildingElement::Roof) heat = std::max(heat, log_heat);
+        const bool under_water = st.flood_depth_meters > kSubmergedAt[e];
+        if (under_water) {
+          if (el.alight) { el.alight = false; el.intensity = 0.0; raise(BuildingEvent::Kind::Extinguished, i, element, -1, "flood"); }
+          el.heat_seconds = 0.0;
+          if (hz.soak_seconds > 0) { el.soaked_seconds += h; damage_element(i, element, h / hz.soak_seconds, "flood"); }
+        } else if (hz.flammable) {
+          if (el.alight) {
+            el.intensity = std::min(1.0, el.intensity + h / kFlameRamp);
+            st.burn_seconds += h;
+            damage_element(i, element, h * el.intensity * burn_rate / hz.burn_seconds, "fire");
+            if (el.damage >= 1.0) { el.alight = false; el.intensity = 0.0; raise(BuildingEvent::Kind::BurnedOut, i, element); }
+          } else if (el.damage < 1.0 && heat >= hz.ignition_heat) {
+            el.heat_seconds += h;
+            if (el.heat_seconds >= hz.ignition_seconds) ignite(i, element, "fire");
+          } else el.heat_seconds = std::max(0.0, el.heat_seconds - h);
+        } else if (heat >= hz.heat_threshold && hz.heat_damage_seconds > 0) {
+          damage_element(i, element, h / hz.heat_damage_seconds, "heat");
+        }
+        if (!el.alight && el.intensity > 0) el.intensity = std::max(0.0, el.intensity - h / kFlameRamp);
+        // The wind tears at what it can.
+        if (!under_water && hz.wind_mps > 0 && wind >= hz.wind_mps && hz.wind_seconds > 0) {
+          el.wind_seconds += h;
+          const double ratio = wind / hz.wind_mps;
+          damage_element(i, element, h * ratio * ratio / hz.wind_seconds, "wind");
+        }
+      }
+      // Consequences.
+      if (st.element(BuildingElement::Roof).present && st.element(BuildingElement::Roof).damage >= 1.0 && !st.roof_fallen) roof_falls(i);
+      if (st.element(BuildingElement::Walls).damage >= 1.0) { destroy(i, st.element(BuildingElement::Walls).cause.c_str()); break; }
+    }
+    if (st.destroyed) continue;
+    // What is drawn changes in tenths of damage.
+    for (std::size_t e = 0; e < kCount; ++e) {
+      const int level = static_cast<int>(std::floor(std::clamp(st.elements[e].damage, 0.0, 1.0) * 10.0 + 1e-9));
+      if (level != drawn_levels_[i][e]) { drawn_levels_[i][e] = level; ++version_; if (e == static_cast<std::size_t>(BuildingElement::Door) && level >= 10) ++door_version_; }
+    }
+  }
+}
+
+BuildingSet::Exposure BuildingSet::exposure_at(double x, double z) const {
+  if (!std::isfinite(x) || !std::isfinite(z)) throw std::invalid_argument("exposure needs a finite position");
+  Exposure e;
+  for (std::size_t i = 0; i < buildings_.size(); ++i) {
+    const double intensity = states_[i].intensity();
+    if (intensity <= 0) continue;
+    const double d = footprint_distance(buildings_[i], {x, z});
+    e.heat = std::max(e.heat, intensity * (1.0 - std::clamp((d - 3.0) / std::max(style_.heat_reach_meters - 3.0, 0.1), 0.0, 1.0)));
+    if (d < 60.0) e.smoke += intensity * (1.0 - d / 60.0) * 0.5;
+  }
+  e.heat = std::clamp(e.heat, 0.0, 1.0);
+  e.smoke = std::clamp(e.smoke, 0.0, 1.0);
+  return e;
+}
+
+bool BuildingSet::sheltered(double x, double z) const {
+  const auto i = inside_of(x, z);
+  return i && !states_[*i].roof_fallen;
+}
+
+void BuildingSet::emit(std::vector<FireInstance>& flames, std::vector<FireInstance>& smoke, const FireStyle& style) const {
+  const auto f = [](double v) { return static_cast<float>(v); };
+  const auto hash01 = [](std::size_t i, std::uint32_t salt, std::uint32_t seed) {
+    std::uint32_t h = static_cast<std::uint32_t>(i) * 2654435761u ^ (salt * 40503u) ^ (seed * 97u);
+    h ^= h >> 13; h *= 0x5bd1e995u; h ^= h >> 15;
+    return (h & 0xffffffu) / static_cast<double>(0x1000000u);
+  };
+  for (std::size_t i = 0; i < buildings_.size(); ++i) {
+    const auto& st = states_[i];
+    const auto& b = buildings_[i];
+    const Frame frame = frame_of(b);
+    const double hw = 0.5 * b.spec.width_meters, hd = 0.5 * b.spec.depth_meters;
+    const double walls_top = b.floor_meters + wall_height(b.spec);
+    if (st.destroyed) {
+      if (st.destroyed_by != "fire") continue;
+      FireInstance pl{};
+      pl.position[0] = f(b.centre.x); pl.position[1] = f(b.floor_meters + kRubbleHeight); pl.position[2] = f(b.centre.y);
+      pl.size = f(style.smoke_height_meters * 0.3); pl.phase = f(2.0 * kPi * hash01(i, 3, style.seed));
+      pl.intensity = 0.25f; pl.kind = 2.0f; pl.seed = f(hash01(i, 4, style.seed) * 100.0);
+      smoke.push_back(pl);
+      continue;
+    }
+    const auto flame = [&](math::Vec3 at, double size, double intensity, std::uint32_t salt) {
+      FireInstance fl{};
+      fl.position[0] = f(at.x); fl.position[1] = f(at.y); fl.position[2] = f(at.z);
+      fl.size = f(size * style.flame_scale); fl.phase = f(2.0 * kPi * hash01(i, salt, style.seed));
+      fl.intensity = f(intensity); fl.kind = 0.0f; fl.seed = f(hash01(i, salt + 50, style.seed) * 100.0);
+      flames.push_back(fl);
+    };
+    double plume = 0.0;
+    for (std::size_t e = 0; e < static_cast<std::size_t>(BuildingElement::Count); ++e) {
+      const auto& el = st.elements[e];
+      if (el.intensity <= 0) continue;
+      plume = std::max(plume, el.intensity);
+      const double size = 1.5 + 2.0 * el.intensity;
+      switch (static_cast<BuildingElement>(e)) {
+        case BuildingElement::Roof: {
+          // Over the roof's surface: up the slopes of a gable, on the slab of a flat roof.
+          const int count = std::max(3, static_cast<int>(b.spec.width_meters / 2.5));
+          for (int k = 0; k < count; ++k) {
+            const double bb = (hash01(i, 100 + k, style.seed) - 0.5) * 1.6 * hd;
+            const double surface = gabled(b.kind) ? walls_top + (hd - std::abs(bb) + roof_overhang(b.kind)) * std::tan(roof_pitch(b.kind)) : walls_top + 0.3;
+            flame(frame.at(-hw + (k + 0.5) * b.spec.width_meters / count, bb, surface + 0.3), size, el.intensity, 100 + k);
+          }
+          break;
+        }
+        case BuildingElement::Walls:
+          // Up the outside of the walls, a little proud of them.
+          for (int k = 0; k < 8; ++k) {
+            const double t = (k % 4 + 0.5) / 4.0;
+            const double out = 0.35;
+            const math::Vec2 p = k < 4 ? frame.plan(-hw + t * b.spec.width_meters, (k % 2 ? 1.0 : -1.0) * (hd + out)) : frame.plan((k % 2 ? 1.0 : -1.0) * (hw + out), -hd + t * b.spec.depth_meters);
+            flame(lift(p, walls_top - 1.2), size * 0.8, el.intensity, 200 + k);
+          }
+          break;
+        case BuildingElement::Windows:
+          for (const double side : {-1.0, 1.0}) flame(frame.at(side * hw * 0.5, hd + 0.3, b.floor_meters + 1.6), size * 0.5, el.intensity, side > 0 ? 301 : 300);
+          break;
+        case BuildingElement::Door: flame(lift(b.door + b.facing * 0.35, b.floor_meters + 1.0), size * 0.6, el.intensity, 400); break;
+        case BuildingElement::Interior:
+          flame(frame.at(0, 0, b.floor_meters + 0.8), size * 0.8, el.intensity, 500);
+          flame(frame.at(hw * 0.4, 0, b.floor_meters + 0.8), size * 0.6, el.intensity, 501);
+          flame(frame.at(-hw * 0.4, -hd * 0.5, b.floor_meters + 0.8), size * 0.6, el.intensity, 502);
+          break;
+        case BuildingElement::Count: break;
+      }
+    }
+    if (plume > 0) {
+      FireInstance pl{};
+      pl.position[0] = f(b.centre.x); pl.position[1] = f(b.floor_meters + b.height_meters * (st.roof_fallen ? 0.6 : 1.0)); pl.position[2] = f(b.centre.y);
+      pl.size = f(style.smoke_height_meters * 0.6 * (0.4 + 0.6 * plume)); pl.phase = f(2.0 * kPi * hash01(i, 40, style.seed));
+      pl.intensity = f(plume); pl.kind = 1.0f; pl.seed = f(hash01(i, 41, style.seed) * 100.0);
+      smoke.push_back(pl);
+    }
+  }
 }
 
 std::vector<Obstacle> BuildingSet::door_obstacles() const {
   std::vector<Obstacle> out;
   for (std::size_t i = 0; i < buildings_.size(); ++i) {
-    if (!building_enterable(buildings_[i].kind)) continue;
+    if (!door_present(i)) continue;
     const Leaf leaf = door_leaf(i);
     post_chain(out, leaf.hinge, leaf.hinge + leaf.along * leaf.width, kDoorPostRadius, leaf.bottom - 0.1, leaf.bottom + leaf.height);
   }
@@ -633,8 +1123,11 @@ std::vector<MeshPart> BuildingSet::build_door_meshes() const {
   std::vector<MeshPart> parts;
   MeshPart leaves; leaves.color = {0.36, 0.24, 0.13}; leaves.what = "door"; leaves.material = SurfaceMaterial::Timber;
   MeshPart handles; handles.color = {0.75, 0.72, 0.55}; handles.what = "handle"; handles.material = SurfaceMaterial::Metal;
+  double worst = 0.0;
+  for (std::size_t i = 0; i < buildings_.size(); ++i) if (door_present(i)) worst = std::max(worst, states_[i].element(BuildingElement::Door).damage);
+  leaves.color = charred(leaves.color, worst);
   for (std::size_t i = 0; i < buildings_.size(); ++i) {
-    if (!building_enterable(buildings_[i].kind)) continue;
+    if (!door_present(i)) continue;
     const Leaf leaf = door_leaf(i);
     const math::Vec3 along = plan3(leaf.along), across = kUp.cross(along).normalized();
     const math::Vec3 centre = lift(leaf.hinge + leaf.along * (0.5 * leaf.width), leaf.bottom + 0.01 + 0.5 * (leaf.height - 0.02));
@@ -651,13 +1144,21 @@ std::vector<MeshPart> BuildingSet::build_meshes() const {
   const math::Vec3 concrete{0.62, 0.60, 0.57}, path_color{0.70, 0.68, 0.65};
   MeshPart paths; paths.color = path_color; paths.what = "path"; paths.material = SurfaceMaterial::Pavement;
   MeshPart foundations; foundations.color = concrete * 0.85; foundations.what = "foundation"; foundations.material = SurfaceMaterial::Concrete;
-  std::vector<MeshPart> furniture;  // shared by every hollow building, a part per kind of piece
-  for (const auto& b : buildings_) {
+  std::vector<MeshPart> furniture;  // shared by every hollow building, a part per kind of piece (and per tenth of char)
+  std::vector<std::string> furniture_keys;
+  MeshPart rubble; rubble.color = {0.46, 0.44, 0.41}; rubble.what = "rubble"; rubble.material = SurfaceMaterial::Stone;
+  MeshPart ashes; ashes.color = {0.16, 0.14, 0.12}; ashes.what = "rubble"; ashes.material = SurfaceMaterial::Stone;  // burned down: black
+  for (std::size_t index = 0; index < buildings_.size(); ++index) {
+    const auto& b = buildings_[index];
+    const auto& st = states_[index];
     const Frame frame = frame_of(b);
     const math::Vec3 u3 = plan3(b.along), v3 = plan3(b.facing);
     const double hw = 0.5 * b.spec.width_meters, hd = 0.5 * b.spec.depth_meters;
     const double walls_top = b.floor_meters + wall_height(b.spec);
     const auto kind = b.kind;
+    const double walls_damage = st.element(BuildingElement::Walls).damage, roof_damage = st.element(BuildingElement::Roof).damage;
+    const double windows_damage = st.element(BuildingElement::Windows).present ? st.element(BuildingElement::Windows).damage : 0.0;
+    const double door_damage = st.element(BuildingElement::Door).damage, interior_damage = st.element(BuildingElement::Interior).damage;
     // Materials by kind: the colour and the procedural surface (mesh_parts.hpp).
     math::Vec3 wall{0.55, 0.53, 0.50}, roof{0.62, 0.22, 0.15}, window{0.55, 0.70, 0.85}, door_color{0.30, 0.20, 0.12}, trim{0.80, 0.82, 0.85};
     SurfaceMaterial wall_material = SurfaceMaterial::Stone, roof_material = SurfaceMaterial::Tiles, door_material = SurfaceMaterial::Timber;
@@ -682,11 +1183,58 @@ std::vector<MeshPart> BuildingSet::build_meshes() const {
     }
     const bool hollow = building_enterable(kind);
     const DoorSize door = door_size(kind);
+    // Damage shows: char, soot, rot and dust darken what is damaged.
+    wall = charred(wall, walls_damage); roof = charred(roof, roof_damage); window = charred(window, windows_damage); door_color = charred(door_color, door_damage);
+    if (door_damage >= 1.0) { door_color = {0.05, 0.04, 0.03}; door_material = SurfaceMaterial::Plain; }  // burned away: the dark doorway
+    const bool windows_burst = windows_damage >= 1.0;
+    if (windows_burst) window = {0.05, 0.05, 0.06};  // burst: dark holes
     // Foundation: from below the lowest corner to the floor slab (a hollow
     // building's timber floor lies on it), a little wider than the walls.
-    const double foundation_top = hollow ? b.floor_meters - 0.1 : b.floor_meters;
+    const double foundation_top = hollow && !st.destroyed ? b.floor_meters - 0.1 : b.floor_meters;
     add_box(foundations, frame.at(0, 0, 0.5 * (b.ground_min_meters - kFoundationDepth + foundation_top)), u3, kUp, v3,
             {hw + 0.1, 0.5 * (foundation_top - (b.ground_min_meters - kFoundationDepth)), hd + 0.1});
+    if (st.destroyed) {
+      // A heap of rubble over the footprint, a few leaning slabs of wall in it, and the chimney standing.
+      MeshPart& heap = st.destroyed_by == "fire" ? ashes : rubble;
+      add_box(heap, frame.at(0, 0, b.floor_meters + 0.5 * kRubbleHeight), u3, kUp, v3, {hw * 0.95, 0.5 * kRubbleHeight, hd * 0.95});
+      add_box(heap, frame.at(-hw * 0.3, hd * 0.2, b.floor_meters + kRubbleHeight + 0.25), u3, kUp, v3, {std::min(hw * 0.4, 3.0), 0.25, std::min(hd * 0.3, 2.0)});
+      add_box(heap, frame.at(hw * 0.35, -hd * 0.3, b.floor_meters + kRubbleHeight + 0.15), u3, kUp, v3, {std::min(hw * 0.25, 2.0), 0.15, std::min(hd * 0.45, 3.0)});
+      {
+        const math::Vec3 tilted = (u3 * 0.94 + kUp * 0.34).normalized();
+        math::Vec3 tilted_up = v3.cross(tilted).normalized();
+        if (tilted_up.y < 0) tilted_up = tilted_up * -1.0;
+        MeshPart slab; slab.color = charred(wall, st.destroyed_by == "fire" ? 1.0 : 0.3); slab.what = wall_what; slab.material = wall_material;
+        add_box(slab, frame.at(hw * 0.5, hd * 0.6, b.floor_meters + kRubbleHeight + 0.6), tilted, tilted_up, v3, {std::min(hw * 0.45, 3.0), 0.12, std::min(hd * 0.2, 1.2)});
+        parts.push_back(std::move(slab));
+      }
+      if (const auto c = chimney_plan(b)) {
+        MeshPart chimney; chimney.color = charred(kind == BuildingKind::Bungalow ? math::Vec3{0.70, 0.42, 0.32} : math::Vec3{0.62, 0.34, 0.26}, st.destroyed_by == "fire" ? 0.5 : 0.0);
+        chimney.what = "chimney"; chimney.material = SurfaceMaterial::Brick;
+        const double chimney_top = b.floor_meters + b.height_meters - 0.2;
+        add_box(chimney, lift(*c, 0.5 * (b.floor_meters + chimney_top)), u3, kUp, v3, {0.3, 0.5 * (chimney_top - b.floor_meters), 0.3});
+        parts.push_back(std::move(chimney));
+      }
+      // The footpath stays.
+      {
+        const math::Vec2 from = b.door, to = b.path_end;
+        const double len = (to - from).length();
+        const math::Vec2 dir = (to - from) / std::max(len, 1e-9), right{-dir.y, dir.x};
+        const int n = std::max(1, static_cast<int>(std::ceil(len / 1.0)));
+        const double half = 0.5 * b.spec.path_width_meters;
+        std::vector<math::Vec3> left(n + 1), right_side(n + 1);
+        for (int k = 0; k <= n; ++k) {
+          const auto c = from + dir * (len * k / n);
+          for (const double sgn : {-1.0, 1.0}) {
+            const auto p = c + right * (sgn * half);
+            const auto h = ground_(p.x, p.y);
+            const double y = path_height_at(b, p, h ? *h : ground_(c.x, c.y).value_or(b.ground_max_meters), style_.surface_lift_meters);
+            (sgn < 0 ? left : right_side)[k] = lift(p, y);
+          }
+        }
+        for (int k = 0; k < n; ++k) add_quad(paths, left[k], right_side[k], right_side[k + 1], left[k + 1]);
+      }
+      continue;
+    }
     // The windows: a row per storey on every face (computed here, drawn below
     // as panes proud of a solid wall or left as holes through a hollow one).
     struct Face { math::Vec3 normal; double length; bool front; };
@@ -747,24 +1295,31 @@ std::vector<MeshPart> BuildingSet::build_meshes() const {
         }
         piece(s, half_len, b.floor_meters, walls_top);
       }
-      // The floor and the ceiling.
-      MeshPart floor_part; floor_part.color = {0.62, 0.46, 0.28}; floor_part.what = "floor"; floor_part.material = SurfaceMaterial::Planks;
+      // The floor and the ceiling (the ceiling goes with a burned-out room or a fallen roof).
+      MeshPart floor_part; floor_part.color = charred({0.62, 0.46, 0.28}, interior_damage); floor_part.what = "floor"; floor_part.material = SurfaceMaterial::Planks;
       add_box(floor_part, frame.at(0, 0, b.floor_meters - 0.05), u3, kUp, v3, {hw - kWall + 0.02, 0.05, hd - kWall + 0.02});
       parts.push_back(std::move(floor_part));
-      MeshPart ceiling; ceiling.color = {0.88, 0.86, 0.80}; ceiling.what = "ceiling"; ceiling.material = SurfaceMaterial::Plain;
-      add_box(ceiling, frame.at(0, 0, walls_top - 0.05), u3, kUp, v3, {hw - kWall + 0.02, 0.05, hd - kWall + 0.02});
-      parts.push_back(std::move(ceiling));
-      // The furniture, a part per kind of piece.
-      for (const auto& f : furnish(b.spec)) {
-        if (!f.drawn) continue;
-        auto it = std::find_if(furniture.begin(), furniture.end(), [&](const MeshPart& part) { return std::string_view(part.what) == f.what; });
-        if (it == furniture.end()) {
-          MeshPart part; part.color = f.color; part.what = f.what; part.material = f.material;
-          furniture.push_back(std::move(part));
-          it = furniture.end() - 1;
-        }
-        add_box(*it, frame.at(f.centre.x, f.centre.y, b.floor_meters + f.bottom + 0.5 * f.height), u3, kUp, v3, {f.half_along, 0.5 * f.height, f.half_across});
+      if (interior_damage < 1.0 && !st.roof_fallen) {
+        MeshPart ceiling; ceiling.color = charred({0.88, 0.86, 0.80}, interior_damage); ceiling.what = "ceiling"; ceiling.material = SurfaceMaterial::Plain;
+        add_box(ceiling, frame.at(0, 0, walls_top - 0.05), u3, kUp, v3, {hw - kWall + 0.02, 0.05, hd - kWall + 0.02});
+        parts.push_back(std::move(ceiling));
       }
+      // The furniture, a part per kind of piece (gone once the room has burned out).
+      const int char_level = static_cast<int>(std::floor(std::clamp(interior_damage, 0.0, 1.0) * 10.0 + 1e-9));
+      if (interior_damage < 1.0)
+        for (const auto& f : furnish(b.spec)) {
+          if (!f.drawn) continue;
+          const std::string key = std::string(f.what) + "#" + std::to_string(char_level);
+          auto it = std::find(furniture_keys.begin(), furniture_keys.end(), key);
+          if (it == furniture_keys.end()) {
+            MeshPart part; part.color = charred(f.color, interior_damage); part.what = f.what; part.material = f.material;
+            furniture.push_back(std::move(part));
+            furniture_keys.push_back(key);
+            it = furniture_keys.end() - 1;
+          }
+          add_box(furniture[static_cast<std::size_t>(it - furniture_keys.begin())], frame.at(f.centre.x, f.centre.y, b.floor_meters + f.bottom + 0.5 * f.height), u3, kUp, v3,
+                  {f.half_along, 0.5 * f.height, f.half_across});
+        }
     }
     if (kind == BuildingKind::Bungalow) {
       // Masonry: a course of fieldstone the timber walls stand on, and a brick chimney.
@@ -834,8 +1389,8 @@ std::vector<MeshPart> BuildingSet::build_meshes() const {
       }
     }
     // Windows: glass (or open holes) a little proud of the wall; a hollow wall has real holes.
-    MeshPart windows; windows.color = window; windows.what = kind == BuildingKind::Bungalow ? "opening" : "window";
-    windows.material = kind == BuildingKind::Bungalow ? SurfaceMaterial::Plain : SurfaceMaterial::Window;
+    MeshPart windows; windows.color = window; windows.what = kind == BuildingKind::Bungalow ? "opening" : windows_burst ? "burst" : "window";
+    windows.material = kind == BuildingKind::Bungalow || windows_burst ? SurfaceMaterial::Plain : SurfaceMaterial::Window;
     if (kind == BuildingKind::Terminal) {
       // Continuous glass bands along every face, one per storey, parted at the doors.
       for (const auto& face : faces) {
@@ -944,13 +1499,15 @@ std::vector<MeshPart> BuildingSet::build_meshes() const {
         }
     }
     parts.push_back(std::move(body));
-    parts.push_back(std::move(roof_part));
-    if (!windows.indices.empty()) parts.push_back(std::move(windows));
+    if (!st.roof_fallen) parts.push_back(std::move(roof_part));  // burned through, smashed or stripped: open to the sky
+    if (!windows.indices.empty()) parts.push_back(std::move(windows));  // burst: dark holes
     if (!trim_part.indices.empty()) parts.push_back(std::move(trim_part));
     parts.push_back(std::move(door_part));
   }
   if (!paths.indices.empty()) parts.push_back(std::move(paths));
   if (!foundations.indices.empty()) parts.push_back(std::move(foundations));
+  if (!rubble.indices.empty()) parts.push_back(std::move(rubble));
+  if (!ashes.indices.empty()) parts.push_back(std::move(ashes));
   for (auto& part : furniture) parts.push_back(std::move(part));
   return parts;
 }

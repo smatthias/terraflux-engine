@@ -182,6 +182,7 @@ struct Options {
   std::string buildings="auto"; // auto (the four kinds beside the demo/replay roads, a file's own list) | off
   bool buildings_test=false;
   bool interior_test=false;   // scripted: walk into the bungalow through its door and out again (needs --smoke-test)
+  bool hazards_test=false;    // scripted: fire, a falling trunk, a flood and lightning on the buildings (needs --smoke-test)
   std::string load_state,save_state,screenshot_file;
   std::string request_file, response_file, obj_file, gltf_file, texture_file, scene_file;
 };
@@ -429,6 +430,7 @@ Options parse_args(int argc, char** argv) {
     }
     else if(arg=="--buildings-test")options.buildings_test=true;
     else if(arg=="--interior-test")options.interior_test=true;
+    else if(arg=="--hazards-test")options.hazards_test=true;
     else if((arg=="--rope-length" || arg=="--chainsaw-fuel") && i+1<argc) {
       const std::string text=argv[++i];double value=0;
       const auto parsed=std::from_chars(text.data(),text.data()+text.size(),value);
@@ -537,7 +539,7 @@ Options parse_args(int argc, char** argv) {
     else if (arg == "--screenshot" && i+1<argc)options.screenshot_file=argv[++i];
     else if (arg == "--scene" && i + 1 < argc) options.scene_file = argv[++i];
     else throw std::invalid_argument(
-        "usage: terraflux-terrain-viewer [--request request.json --response response.json] [--obj model.obj | --gltf model.gltf] [--texture texture.ppm] [--scene scene.json (legacy scenes require --obj)] [--replay-speed 1] [--replay-frame 0] [--replay-controls-test with replay --smoke-test] [--hide-terrain] [--hide-fire] [--layers-test with replay --smoke-test] [--terrain-contours 50] [--render-cell 5] [--max-render-vertices 4000000] [--terrain-detail 1] [--rock-relief 5] [--snow-line 0.72] [--terrain-shading-test with --smoke-test] [--water-level 35] [--wave-height 0.6] [--wave-length 24] [--wave-speed 3] [--wave-direction 90] [--water-clarity 4] [--water-floor sand|vegetation|mud|stones|mixed|random] [--floor-seed 7] [--floor-patch-size 45] [--water-test with --smoke-test] [--vegetation off|low|medium|high] [--tree-style conifer|broadleaf|mixed|custom] [--tree-obj model.obj] [--tree-spacing 12] [--grass-spacing 2.5] [--grass-distance 300] [--tree-height 16] [--vegetation-seed 0] [--vegetation-test with --smoke-test] [--flame-scale 1] [--smoke-scale 1] [--fire-test with replay --smoke-test] [--weather off|auto|clear|cirrus|cumulus|stratocumulus|stratus|nimbostratus|cumulonimbus] [--cloud-cover 0.35] [--cloud-base 1200] [--temperature 18] [--dew-point 8] [--stability 0.01] [--wind-direction 90] [--wind-min 2] [--wind-max 6] [--wind-swing 20] [--wind-period 12] [--hour 10] [--latitude 47] [--day-of-year 172] [--time-scale 10] [--weather-time 0] [--moon-phase 0.5] [--moon-size 2] [--rainfall 0] [--weather-test with --smoke-test] [--view-yaw 26] [--view-pitch 43] [--view-zoom 1] [--view-x 0] [--view-z 0] [--view world|first-person] [--walk-speed 2.5] [--max-slope 45] [--no-collision] [--jump-height 1] [--gravity 9.81] [--no-gait] [--tree-fire model|grid|off] [--tree-fire-test with replay --smoke-test] [--storm-test with --smoke-test] [--flash-flood 0] [--flood-test with --smoke-test] [--climb-test with --smoke-test] [--vitals-test with --smoke-test] [--no-arms] [--body-pose run] [--body-test with --smoke-test] [--no-stones] [--hold torch] [--items-test with --smoke-test] [--tool rope|axe|chainsaw] [--rope-length 20] [--chainsaw-fuel 300] [--tools-test with --smoke-test] [--roads auto|city|demo|off|roads.json] [--roads-test with --smoke-test] [--city-test with --smoke-test] [--buildings auto|off] [--buildings-test with --smoke-test] [--interior-test with --smoke-test] [--first-person-test with --smoke-test] [--collision-test with --smoke-test] [--jump-test with --smoke-test] [--gait-test with --smoke-test] [--terrain-tiles] [--terrain-residency] [--terrain-retain-frames 30] [--terrain-retention-test with --smoke-test --terrain-retain-frames 2] [--max-resident-terrain-tiles 4096] [--terrain-residency-test with --smoke-test --terrain-residency] [--terrain-tile-quads 32] [--terrain-tile-test with --smoke-test --terrain-tiles] [--offscreen] [--offscreen-resize-test with --offscreen --smoke-test] [--profile] [--no-culling] [--no-instancing] [--asset-preview with --gltf] [--benchmark-frames 60] [--screenshot frame.ppm] [--smoke-test] [--asset-lifecycle-test with --smoke-test]");
+        "usage: terraflux-terrain-viewer [--request request.json --response response.json] [--obj model.obj | --gltf model.gltf] [--texture texture.ppm] [--scene scene.json (legacy scenes require --obj)] [--replay-speed 1] [--replay-frame 0] [--replay-controls-test with replay --smoke-test] [--hide-terrain] [--hide-fire] [--layers-test with replay --smoke-test] [--terrain-contours 50] [--render-cell 5] [--max-render-vertices 4000000] [--terrain-detail 1] [--rock-relief 5] [--snow-line 0.72] [--terrain-shading-test with --smoke-test] [--water-level 35] [--wave-height 0.6] [--wave-length 24] [--wave-speed 3] [--wave-direction 90] [--water-clarity 4] [--water-floor sand|vegetation|mud|stones|mixed|random] [--floor-seed 7] [--floor-patch-size 45] [--water-test with --smoke-test] [--vegetation off|low|medium|high] [--tree-style conifer|broadleaf|mixed|custom] [--tree-obj model.obj] [--tree-spacing 12] [--grass-spacing 2.5] [--grass-distance 300] [--tree-height 16] [--vegetation-seed 0] [--vegetation-test with --smoke-test] [--flame-scale 1] [--smoke-scale 1] [--fire-test with replay --smoke-test] [--weather off|auto|clear|cirrus|cumulus|stratocumulus|stratus|nimbostratus|cumulonimbus] [--cloud-cover 0.35] [--cloud-base 1200] [--temperature 18] [--dew-point 8] [--stability 0.01] [--wind-direction 90] [--wind-min 2] [--wind-max 6] [--wind-swing 20] [--wind-period 12] [--hour 10] [--latitude 47] [--day-of-year 172] [--time-scale 10] [--weather-time 0] [--moon-phase 0.5] [--moon-size 2] [--rainfall 0] [--weather-test with --smoke-test] [--view-yaw 26] [--view-pitch 43] [--view-zoom 1] [--view-x 0] [--view-z 0] [--view world|first-person] [--walk-speed 2.5] [--max-slope 45] [--no-collision] [--jump-height 1] [--gravity 9.81] [--no-gait] [--tree-fire model|grid|off] [--tree-fire-test with replay --smoke-test] [--storm-test with --smoke-test] [--flash-flood 0] [--flood-test with --smoke-test] [--climb-test with --smoke-test] [--vitals-test with --smoke-test] [--no-arms] [--body-pose run] [--body-test with --smoke-test] [--no-stones] [--hold torch] [--items-test with --smoke-test] [--tool rope|axe|chainsaw] [--rope-length 20] [--chainsaw-fuel 300] [--tools-test with --smoke-test] [--roads auto|city|demo|off|roads.json] [--roads-test with --smoke-test] [--city-test with --smoke-test] [--buildings auto|off] [--buildings-test with --smoke-test] [--interior-test with --smoke-test] [--hazards-test with --smoke-test] [--first-person-test with --smoke-test] [--collision-test with --smoke-test] [--jump-test with --smoke-test] [--gait-test with --smoke-test] [--terrain-tiles] [--terrain-residency] [--terrain-retain-frames 30] [--terrain-retention-test with --smoke-test --terrain-retain-frames 2] [--max-resident-terrain-tiles 4096] [--terrain-residency-test with --smoke-test --terrain-residency] [--terrain-tile-quads 32] [--terrain-tile-test with --smoke-test --terrain-tiles] [--offscreen] [--offscreen-resize-test with --offscreen --smoke-test] [--profile] [--no-culling] [--no-instancing] [--asset-preview with --gltf] [--benchmark-frames 60] [--screenshot frame.ppm] [--smoke-test] [--asset-lifecycle-test with --smoke-test]");
   }
   if(options.replay_speed_requested && options.request_file.empty())
     throw std::invalid_argument("--replay-speed requires replay input");
@@ -711,7 +713,7 @@ Options parse_args(int argc, char** argv) {
     throw std::invalid_argument("--buildings-test requires demo or replay smoke mode with visible terrain, roads and buildings, default weather and flood options, and no assets or other scripted test");
   if(options.interior_test && (!options.smoke_test || !options.scene_file.empty() || !options.obj_file.empty() ||
       !options.gltf_file.empty() || options.hide_terrain || options.view_mode!="world" || options.roads=="off" || options.buildings=="off" ||
-      options.flash_flood || options.weather || options.no_collision || options.roads_test || options.buildings_test || options.city_test ||
+      options.flash_flood || options.weather || options.no_collision || options.roads_test || options.buildings_test || options.city_test || options.hazards_test ||
       options.tools_test || options.items_test || options.body_test || options.vitals_test || options.climb_test || options.flood_test || options.storm_test ||
       options.tree_fire_test || options.gait_test || options.jump_test || options.first_person_test || options.collision_test || options.layers_test ||
       options.replay_controls_test || options.terrain_shading_test || options.water_test || options.vegetation_test || options.fire_test ||
@@ -719,6 +721,16 @@ Options parse_args(int argc, char** argv) {
       options.scene_detach_test || options.scene_residency_test || options.terrain_tile_test || options.terrain_residency_test ||
       options.terrain_retention_test))
     throw std::invalid_argument("--interior-test requires demo or replay smoke mode with visible terrain, roads and buildings, default weather and flood options, and no assets or other scripted test");
+  if(options.hazards_test && (!options.smoke_test || !options.scene_file.empty() || !options.obj_file.empty() ||
+      !options.gltf_file.empty() || options.hide_terrain || options.view_mode!="world" || options.roads=="off" || options.buildings=="off" ||
+      options.flash_flood || options.weather || options.no_collision || options.roads_test || options.buildings_test || options.city_test || options.interior_test ||
+      options.tools_test || options.items_test || options.body_test || options.vitals_test || options.climb_test || options.flood_test || options.storm_test ||
+      options.tree_fire_test || options.gait_test || options.jump_test || options.first_person_test || options.collision_test || options.layers_test ||
+      options.replay_controls_test || options.terrain_shading_test || options.water_test || options.vegetation_test || options.fire_test ||
+      options.weather_test || options.offscreen_resize_test || options.asset_lifecycle_test || options.scene_controls_test ||
+      options.scene_detach_test || options.scene_residency_test || options.terrain_tile_test || options.terrain_residency_test ||
+      options.terrain_retention_test))
+    throw std::invalid_argument("--hazards-test requires demo or replay smoke mode with visible terrain, roads, buildings and the tree fire model, default weather and flood options, and no assets or other scripted test");
   if(options.weather_test && (!options.smoke_test || !options.scene_file.empty() || !options.obj_file.empty() ||
       !options.gltf_file.empty() || options.hide_terrain || options.hide_fire || options.weather || options.cloud_cover ||
       options.cloud_base || options.wind_direction || options.wave_direction!=90.0 || options.weather_time!=0.0 || options.layers_test ||
@@ -1364,7 +1376,7 @@ int main(int argc, char** argv) {
     std::size_t vegetation_cleared_for_roads=0;
     // "auto" is the city in interactive runs, the simple demo network for the roads and
     // buildings tests, and nothing in other smoke runs.
-    const std::string roads_choice=options.roads!="auto"?options.roads:options.city_test?"city":(options.roads_test || options.buildings_test || options.interior_test)?"demo":options.smoke_test?"off":"city";
+    const std::string roads_choice=options.roads!="auto"?options.roads:options.city_test?"city":(options.roads_test || options.buildings_test || options.interior_test || options.hazards_test)?"demo":options.smoke_test?"off":"city";
     std::optional<terraflux::graphics::CityPlan> city_plan;
     std::optional<terraflux::graphics::CityLayout> city;
     std::vector<terraflux::graphics::BuildingRequest> city_requests;
@@ -1456,7 +1468,12 @@ int main(int argc, char** argv) {
       for(const auto& zone:city_plan->zones)if(std::hypot(x-zone.centre.x,z-zone.centre.y)<=zone.radius_meters+20.0)return &zone;
       return nullptr;
     };
-    building_field=(buildings && !options.no_collision)?terraflux::graphics::ObstacleField(buildings->obstacles()):terraflux::graphics::ObstacleField{};
+    std::uint64_t building_obstacles_version=~std::uint64_t{0};
+    const auto rebuild_building_obstacles=[&] {
+      building_field=(buildings && !options.no_collision)?terraflux::graphics::ObstacleField(buildings->obstacles()):terraflux::graphics::ObstacleField{};
+      building_obstacles_version=buildings?buildings->version():0;
+    };
+    rebuild_building_obstacles();
     std::uint64_t door_obstacles_version=~std::uint64_t{0};
     const auto rebuild_door_obstacles=[&] {
       door_field=(buildings && !options.no_collision)?terraflux::graphics::ObstacleField(buildings->door_obstacles()):terraflux::graphics::ObstacleField{};
@@ -1595,10 +1612,25 @@ int main(int argc, char** argv) {
       if(person.crouched)text<<" | crouched";
       if(person.grip<0.6)text<<(person.grip<0.3?" | ICE":" | snow");
       if(buildings && person.grounded) {
-        if(const auto room=buildings->inside_of(person.feet.x,person.feet.z))
+        const auto building_state=[&](std::size_t i) {
+          const auto& st=buildings->states()[i];
+          if(st.destroyed)text<<(st.destroyed_by=="flood"?" (washed out)":st.destroyed_by=="fire"?" (burned down)":" (collapsed)");
+          else {
+            if(st.alight())text<<" ALIGHT";
+            if(st.roof_fallen)text<<" (no roof)";
+            if(st.flood_depth_meters>0.05)text<<" flooded "<<std::fixed<<std::setprecision(1)<<st.flood_depth_meters<<" m"<<std::defaultfloat;
+            if(!st.alight() && !st.roof_fallen && st.integrity()<0.999)text<<" (damaged)";
+          }
+        };
+        if(const auto room=buildings->inside_of(person.feet.x,person.feet.z)) {
           text<<" | inside the "<<terraflux::graphics::building_kind_name(buildings->buildings()[*room].kind)<<(buildings->doors()[*room].open>0.5?" (door open)":" (door closed)");
-        else if(const auto door=buildings->entrance_near(person.feet.x,person.feet.z,4.0))
+          building_state(*room);
+        } else if(const auto door=buildings->entrance_near(person.feet.x,person.feet.z,4.0)) {
           text<<" | at the "<<terraflux::graphics::building_kind_name(buildings->buildings()[*door].kind)<<"'s door";
+          building_state(*door);
+        } else if(const auto on=buildings->building_at(person.feet.x,person.feet.z)) {
+          if(buildings->states()[*on].destroyed){text<<" | on the "<<terraflux::graphics::building_kind_name(buildings->buildings()[*on].kind)<<"'s rubble";building_state(*on);}
+        }
         else if(buildings->platform_height(person.feet.x,person.feet.z) && !(roads && roads->sample(person.feet.x,person.feet.z).on))text<<" | on a footpath";
       }
       if(const auto* zone=zone_at(person.feet.x,person.feet.z))text<<" | "<<zone->name<<" ("<<terraflux::graphics::zone_kind_name(zone->kind)<<")";
@@ -1948,15 +1980,20 @@ int main(int argc, char** argv) {
     std::unique_ptr<terraflux::graphics::MeshPartRenderer> building_renderer,door_renderer;  // the doors move: their own parts
     std::size_t building_draws=0;
     bool buildings_visible=true;
-    std::uint64_t doors_uploaded_version=~std::uint64_t{0};
+    std::uint64_t doors_uploaded_version=~std::uint64_t{0},buildings_uploaded_version=~std::uint64_t{0};
     const auto upload_doors=[&] {
       if(!buildings || !door_renderer)return;
       door_renderer->set_parts(buildings->build_door_meshes());
       doors_uploaded_version=buildings->door_version();
     };
+    const auto upload_buildings=[&] {
+      if(!buildings || !building_renderer)return;
+      building_renderer->set_parts(buildings->build_meshes());
+      buildings_uploaded_version=buildings->version();
+    };
     if(buildings) {
       building_renderer=std::make_unique<terraflux::graphics::MeshPartRenderer>(device);
-      building_renderer->set_parts(buildings->build_meshes());
+      upload_buildings();
       door_renderer=std::make_unique<terraflux::graphics::MeshPartRenderer>(device);
       upload_doors();
       if(options.smoke_test || options.profile || options.residency_report) {
@@ -2015,17 +2052,96 @@ int main(int argc, char** argv) {
       road_events_handled=0;  // advance() starts a new list
       handle_road_events();
     };
-    // Trunks the tree model has just grounded lie across whatever road they reach.
+    // What the buildings report: alight, burned out, damaged (and by what), a
+    // roof fallen in, a collapse, a washout, a strike, a trunk landed on one —
+    // and a roof or a building coming down on a walker inside hurts it.
+    std::size_t building_events_handled=0;
+    const auto handle_building_events=[&] {
+      if(!buildings)return;
+      const auto& events=buildings->events();
+      for(;building_events_handled<events.size();++building_events_handled) {
+        const auto& e=events[building_events_handled];
+        const std::string kind=terraflux::graphics::building_kind_name(buildings->buildings()[e.building].kind);
+        std::string KIND=kind;for(auto& c:KIND)c=static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+        const std::string element=terraflux::graphics::building_element_name(e.element);
+        const bool inside_it=view_mode==terraflux::graphics::CameraMode::FirstPerson && buildings->building_at(person.feet.x,person.feet.z)==e.building && person.grounded;
+        std::string what;
+        using Kind=terraflux::graphics::BuildingEvent::Kind;
+        switch(e.kind) {
+          case Kind::Alight:what="THE "+KIND+"'S "+element+(e.element==terraflux::graphics::BuildingElement::Walls || e.element==terraflux::graphics::BuildingElement::Windows?" ARE":" IS")+" ALIGHT ("+e.cause+")";break;
+          case Kind::BurnedOut:what="The "+kind+"'s "+element+" burned through";break;
+          case Kind::Damaged:what="The "+kind+"'s "+element+(e.cause=="heat"?(e.element==terraflux::graphics::BuildingElement::Windows?" burst in the heat":" cracked in the heat"):
+                                   e.cause=="impact"?" smashed":e.cause=="flood"?" soaked through":e.cause=="wind"?" torn by the wind":e.cause=="lightning"?" scorched by the strike":" damaged ("+e.cause+")");break;
+          case Kind::RoofFell:what="THE "+KIND+"'S ROOF FELL IN";break;
+          case Kind::Collapsed:what="THE "+KIND+" COLLAPSED ("+e.cause+")";break;
+          case Kind::WashedOut:what="THE "+KIND+" WAS WASHED OUT by the flood";break;
+          case Kind::Extinguished:what="The flood put out the "+kind+"'s "+element;break;
+          case Kind::Struck:what="LIGHTNING STRUCK THE "+KIND;break;
+          case Kind::Hit:what="A tree fell on the "+kind;break;
+          case Kind::Flooded:what="The "+kind+" is flooded";break;
+        }
+        if(inside_it && (e.kind==Kind::RoofFell || e.kind==Kind::Collapsed || e.kind==Kind::WashedOut)) {
+          pending_collapse=std::max(pending_collapse,e.kind==Kind::RoofFell?building_style.roof_fall_damage:building_style.collapse_damage);
+          terraflux::graphics::knock_down(person,e.kind==Kind::RoofFell?2.5:4.0,1.0);
+          terraflux::graphics::shake(person,e.kind==Kind::RoofFell?0.08:0.14);
+          what+=" ON YOU";
+        }
+        lightning_message=what;lightning_message_until=engine_time+6.0;
+        std::cout<<what<<'\n';
+      }
+    };
+    // The buildings' own time: the doors swing, the fire beside them (and on
+    // them) heats their elements, the flood soaks and scours them, the wind
+    // tears at them — and a blaze lights the trees beside it.
+    std::vector<double> building_radiant_seconds(buildings?buildings->size():0,0.0);
+    const auto advance_buildings=[&](double dt) {
+      if(!buildings || dt<=0)return;
+      terraflux::graphics::BuildingHazards hazards;
+      if(tree_fire) {
+        hazards.heat=[&](double x,double z){return tree_fire->exposure_at(x,z,fire_style.wind_direction_degrees,12.0,0.1).heat;};  // heat only: the smoke is not needed here
+        hazards.log_intensity=[&](std::uint32_t tree)->double{return tree<tree_fire->size()?tree_fire->states()[tree].intensity:0.0;};
+      }
+      hazards.water=walk_env.water;
+      hazards.wind_speed_mps=weather.config().enabled?std::clamp(weather.wind().speed_mps,0.0,150.0):0.0;
+      hazards.rain_mm_h=last_rain_mm_h;
+      buildings->advance(dt,hazards);
+      building_events_handled=0;  // advance() starts a new list
+      handle_building_events();
+      if(tree_fire && vegetation) {
+        const auto& trees=vegetation->placement().trees;
+        for(std::size_t i=0;i<buildings->size();++i) {
+          const double intensity=buildings->states()[i].intensity();
+          if(intensity<=0){building_radiant_seconds[i]=0;continue;}
+          building_radiant_seconds[i]+=intensity*dt;
+          if(building_radiant_seconds[i]<3.0)continue;  // every three seconds of a full blaze, the nearest tree in reach
+          building_radiant_seconds[i]=0;
+          const auto& b=buildings->buildings()[i];
+          std::optional<std::size_t> pick;double best=8.0;
+          for(std::size_t t=0;t<trees.size() && t<tree_fire->size();++t) {
+            if(tree_fire->states()[t].stage!=TreeFireStage::Unburned || !tree_fire->standing(static_cast<std::uint32_t>(t)))continue;
+            const terraflux::math::Vec2 p{trees[t].position[0],trees[t].position[2]};
+            const auto [a,bb]=std::pair{(p-b.centre).dot(b.along),(p-b.centre).dot(b.facing)};
+            const double d=std::hypot(std::max(0.0,std::abs(a)-0.5*b.spec.width_meters),std::max(0.0,std::abs(bb)-0.5*b.spec.depth_meters));
+            if(d<best){best=d;pick=t;}
+          }
+          if(pick)tree_fire->ignite(static_cast<std::uint32_t>(*pick),IgnitionSource::Radiation);
+        }
+      }
+    };
+    // Trunks the tree model has just grounded lie across whatever road they
+    // reach, and land on whatever building they reach.
     const auto logs_on_roads=[&] {
-      if(!roads || !tree_fire || !vegetation)return;
+      if(!tree_fire || !vegetation)return;
       for(const auto& e:tree_fire->events()) {
         if(e.kind!=TreeFireEvent::Kind::Grounded)continue;
         const auto& st=tree_fire->states()[e.tree];
         const auto& b=tree_fire->bodies()[e.tree];
         const auto& t=vegetation->placement().trees[e.tree];
-        roads->log_landed(e.tree,{t.position[0],t.position[2]},st.fall_direction,b.height_meters,st.intensity>0);
+        if(roads)roads->log_landed(e.tree,{t.position[0],t.position[2]},st.fall_direction,b.height_meters,st.intensity>0,b.mass_kg);
+        if(buildings)buildings->log_landed(e.tree,{t.position[0],t.position[2]},st.fall_direction,b.height_meters,st.intensity>0,b.mass_kg);
       }
       handle_road_events();
+      handle_building_events();
     };
     terraflux::math::Vec3 held_world_position;  // where the held thing is (the torch flame)
     const auto rebuild_stone_obstacles=[&]{ stone_field=options.no_collision?terraflux::graphics::ObstacleField{}:terraflux::graphics::ObstacleField(terraflux::graphics::stone_obstacles(stones)); };
@@ -2052,8 +2168,26 @@ int main(int argc, char** argv) {
       return best;
     };
     const auto fire_heat_at_hand=[&]()->double {
-      if(!tree_fire)return 0.0;
-      return tree_fire->exposure_at(person.feet.x,person.feet.z,fire_style.wind_direction_degrees).heat;
+      double heat=0.0;
+      if(tree_fire)heat=tree_fire->exposure_at(person.feet.x,person.feet.z,fire_style.wind_direction_degrees).heat;
+      if(buildings)heat=std::max(heat,buildings->exposure_at(person.feet.x,person.feet.z).heat);
+      return heat;
+    };
+    // The building element a torch in the hand would light: the room the
+    // walker stands in, or the walls beside it (at the door, E opens the door
+    // instead: a fire is set from the side of the house) — when it burns.
+    const auto torch_target=[&]()->std::optional<std::pair<std::size_t,terraflux::graphics::BuildingElement>> {
+      if(!buildings)return std::nullopt;
+      using E=terraflux::graphics::BuildingElement;
+      std::optional<std::pair<std::size_t,E>> target;
+      if(const auto room=buildings->inside_of(person.feet.x,person.feet.z))target={*room,E::Interior};
+      else if(buildings->entrance_near(person.feet.x,person.feet.z,2.0))return std::nullopt;
+      else if(const auto beside=buildings->building_at(person.feet.x,person.feet.z,1.5))target={*beside,E::Walls};
+      if(!target)return std::nullopt;
+      const auto& st=buildings->states()[target->first];
+      const auto& el=st.element(target->second);
+      if(st.destroyed || !el.present || el.alight || el.damage>=1.0 || !terraflux::graphics::material_hazard(el.material).flammable)return std::nullopt;
+      return target;
     };
     const auto interact_options=[&]()->std::string {
       const auto eye=person.eye(),fwd=look_forward();
@@ -2079,6 +2213,7 @@ int main(int argc, char** argv) {
       if(held.kind==terraflux::graphics::HeldKind::Torch) {
         const auto trunk=tree_in_reach(1.4);
         if(trunk && tree_fire && *trunk<tree_fire->size() && tree_fire->states()[*trunk].stage==TreeFireStage::Unburned)return "E: set the tree alight | Q: throw";
+        if(const auto target=torch_target())return std::string("E: set the ")+terraflux::graphics::building_kind_name(buildings->buildings()[target->first].kind)+"'s "+terraflux::graphics::building_element_name(target->second)+" alight | Q: throw";
         return "E: put the torch down | Q: throw";
       }
       return "E: drop the stone | Q: throw";
@@ -2113,6 +2248,9 @@ int main(int argc, char** argv) {
         if(trunk && tree_fire && *trunk<tree_fire->size() && tree_fire->states()[*trunk].stage==TreeFireStage::Unburned) {
           tree_fire->ignite(static_cast<std::uint32_t>(*trunk),IgnitionSource::Ember);
           return "set the tree alight";
+        }
+        if(const auto target=torch_target()) {
+          if(buildings->ignite(target->first,target->second,"torch")){handle_building_events();return std::string("set the ")+terraflux::graphics::building_kind_name(buildings->buildings()[target->first].kind)+"'s "+terraflux::graphics::building_element_name(target->second)+" alight";}
         }
       }
       // Drop at the feet.
@@ -3074,6 +3212,10 @@ int main(int argc, char** argv) {
     std::vector<std::uint8_t> buildings_reference;
     struct InteriorProbe { std::size_t target=0; double door_distance=0,floor=0,feet_y=0,table_gap=0,leaf_open=0; bool at_door=false,inside=false,on_floor=false,kept_in=false,out=false; std::string hint,did; };
     InteriorProbe interior_probe;
+    struct HazardsProbe { std::size_t bungalow=0,house=0,hospital=0,tower=0; std::string hint,did,destroyed_by,house_roof_cause; double heat=0,flames=0,walls_damage=0,health_lost=0,feet_y=0,floor=0;
+                          bool alight=false,roof_fell_on_me=false,destroyed=false,on_rubble=false,house_roof_fell=false,windows_burst=false,house_stands=false,struck=false,washed_out=false,sound=false;
+                          std::size_t events=0,trees_lit=0; std::uint64_t version=0; };
+    HazardsProbe hazards_probe;
     struct StormProbe { double strike_x=0,strike_z=0,distance=0,stunned=0,shake=0,walked=0,drift=0; int struck_tree=-1; std::size_t windthrown=0; };
     StormProbe storm_probe;
     std::uint64_t tree_fire_obstacle_version_start=0;
@@ -3179,7 +3321,7 @@ int main(int argc, char** argv) {
            options.water_test || options.terrain_shading_test || options.vegetation_test || options.fire_test ||
            options.first_person_test || options.collision_test || options.jump_test || options.gait_test || options.tree_fire_test ||
            options.storm_test || options.flood_test || options.climb_test || options.vitals_test || options.body_test || options.items_test || options.tools_test ||
-           options.roads_test || options.buildings_test || options.interior_test || options.city_test)?
+           options.roads_test || options.buildings_test || options.interior_test || options.hazards_test || options.city_test)?
           (1.0/60.0):std::max(0.0,now-previous_time);
       const double delta = std::clamp(elapsed, 0.0, 0.1);
       previous_time = now;
@@ -3332,7 +3474,7 @@ int main(int argc, char** argv) {
       }
       // The roads live on the engine clock too (scripted road tests drive them themselves); the doors swing on it.
       if(!options.roads_test)advance_roads(weather_step);
-      if(buildings && weather_step>0)buildings->advance(weather_step);
+      if(!options.hazards_test)advance_buildings(weather_step);
       {
         // The title's clock and wind follow the simulation (once a minute of solar time).
         const auto current=weather_title();
@@ -3724,6 +3866,7 @@ int main(int argc, char** argv) {
         e.swimming=person.swimming;e.exhausted=person.exhausted;e.crouched=person.crouched;
         double heat=0,smoke=0;
         if(tree_fire){const auto x=tree_fire->exposure_at(person.feet.x,person.feet.z,fire_style.wind_direction_degrees);heat=x.heat;smoke=x.smoke;}
+        if(buildings){const auto x=buildings->exposure_at(person.feet.x,person.feet.z);heat=std::max(heat,x.heat);smoke=std::min(1.0,smoke+x.smoke);e.sheltered=buildings->sheltered(person.feet.x,person.feet.z);}
         if(fire_field) {
           const auto front=fire_front_at(*fire_field,mesh.origin_grid_x,mesh.origin_grid_y,cell_size,person.feet.x,person.feet.z);
           if(fire_front_burning(front,fire_edge_noise(person.feet.x,person.feet.z))){heat=std::max(heat,0.8);smoke=std::max(smoke,0.5);}
@@ -4569,6 +4712,137 @@ int main(int argc, char** argv) {
           person.yaw=std::atan2(b.facing.x,b.facing.y);  // turn round and look back at the open door
         }
       }
+      if(options.hazards_test) {
+        // Frames: 0 a torch at the bungalow's door sets it alight: the fire
+        // spreads over the thatch and the planks, its heat reaches the walker,
+        // flames and smoke are drawn; 1 inside as the thatch burns through:
+        // the roof falls in on the walker; out again as the walls burn through
+        // and the bungalow collapses into rubble, walked over slowly, the
+        // chimney standing; 2 a two-tonne trunk lands on the house: the tiles
+        // are smashed and the roof falls in, the stone walls only cracked; its
+        // timber door lit with the torch: the glass bursts in the heat, the
+        // stone does not burn; 3 lightning strikes the skyscraper (scorched,
+        // not lit) and a torrent at the hospital's walls scours its
+        // foundation: washed out; 4 everything reset: sound again.
+        using terraflux::graphics::CameraMode;
+        using terraflux::graphics::WalkInput;
+        using terraflux::graphics::BuildingKind;
+        using terraflux::graphics::BuildingElement;
+        using terraflux::graphics::BuildingEvent;
+        if(!roads || !buildings || !tree_fire)throw std::runtime_error("hazards test needs the road network, the buildings and the tree fire model");
+        auto& pr=hazards_probe;
+        const auto stand_at=[&](terraflux::math::Vec2 p,double yaw) {
+          const auto gg=ground_height(p.x,p.y);
+          if(!gg)throw std::runtime_error("hazards test point has no ground");
+          const auto g=built_surface(p.x,p.y,*gg);
+          person.feet={p.x,g?std::max(*g,*gg):*gg,p.y};person.grounded=true;person.yaw=yaw;person.pitch=0.05;
+          person.vertical_velocity_mps=0;person.velocity_mps={};person.gait_speed_mps=0;person.gait_phase=0;person.stunned_seconds=0;person.stun_crouch_meters=0;person.crouch_meters=0;
+          (void)terraflux::graphics::settle(person,walk_env);
+        };
+        const auto run=[&](double seconds) { for(int i=0;i<static_cast<int>(seconds*60);++i)advance_buildings(1.0/60.0); };
+        const auto saw=[&](BuildingEvent::Kind kind,std::size_t building) { for(const auto& e:buildings->events())if(e.kind==kind && e.building==building)return true; return false; };
+        if(rendered_frames==0) {
+          for(std::size_t i=0;i<buildings->size();++i) {
+            switch(buildings->buildings()[i].kind) {
+              case BuildingKind::Bungalow:pr.bungalow=i;break;
+              case BuildingKind::House:pr.house=i;break;
+              case BuildingKind::Hospital:pr.hospital=i;break;
+              case BuildingKind::Skyscraper:pr.tower=i;break;
+              default:break;
+            }
+          }
+          if(!set_view_mode(CameraMode::FirstPerson,false))throw std::runtime_error("hazards test found no ground to stand on");
+          const auto& b=buildings->buildings()[pr.bungalow];
+          stand_at(b.door+b.along*3.0+b.facing*1.0,std::atan2(b.facing.x,b.facing.y));  // beside the front wall, off the door
+          held.kind=terraflux::graphics::HeldKind::Torch;held.size=0.8;held.torch_seconds=terraflux::graphics::kTorchSeconds;
+          pr.hint=interact_options();
+          pr.did=interact();
+          pr.version=buildings->version();
+          const auto lit_before=tree_fire->stats().ignited_by_radiation;
+          run(8.0);
+          pr.trees_lit=tree_fire->stats().ignited_by_radiation-lit_before;
+          const auto& st=buildings->states()[pr.bungalow];
+          pr.alight=st.alight() && st.element(BuildingElement::Walls).alight && st.element(BuildingElement::Roof).alight && st.element(BuildingElement::Door).alight;
+          pr.heat=buildings->exposure_at(person.feet.x,person.feet.z).heat;
+          std::vector<FireInstance> flames,smoke;
+          buildings->emit(flames,smoke,fire_style);
+          pr.flames=static_cast<double>(flames.size());
+          pr.events=buildings->events().size();
+          held.kind=terraflux::graphics::HeldKind::Nothing;
+          stand_at(b.door+b.facing*9.0,std::atan2(b.facing.x,b.facing.y));
+          person.pitch=0.15;
+        } else if(rendered_frames==1) {
+          const auto& b=buildings->buildings()[pr.bungalow];
+          person.feet={b.centre.x,b.floor_meters,b.centre.y};person.grounded=true;person.yaw=std::atan2(b.facing.x,b.facing.y);person.pitch=0.3;
+          person.stunned_seconds=0;person.velocity_mps={};
+          pending_collapse=0;
+          const double health_before=vitals.health;
+          bool fell=false;
+          for(int i=0;i<60*40 && !fell;++i){advance_buildings(1.0/60.0);if(saw(BuildingEvent::Kind::RoofFell,pr.bungalow))fell=true;}
+          pr.roof_fell_on_me=fell && pending_collapse>0 && person.stunned_seconds>0;
+          apply_vitals(terraflux::graphics::advance_vitals(vitals,gather_exposure(),1.0/60.0,vitals_style));
+          pr.health_lost=health_before-vitals.health;
+          stand_at(b.door+b.facing*9.0,std::atan2(b.facing.x,b.facing.y));
+          for(int i=0;i<60*120 && !buildings->states()[pr.bungalow].destroyed;++i)advance_buildings(1.0/60.0);
+          pr.destroyed=buildings->states()[pr.bungalow].destroyed;pr.destroyed_by=buildings->states()[pr.bungalow].destroyed_by;
+          if(buildings->version()!=building_obstacles_version)rebuild_building_obstacles();
+          stand_at(b.centre,std::atan2(b.facing.x,b.facing.y));
+          for(int i=0;i<30;++i)terraflux::graphics::walk(person,WalkInput{0.3,0,false},1.0/60.0,walk_env);
+          pr.feet_y=person.feet.y;pr.floor=b.floor_meters;
+          pr.on_rubble=person.on_platform && std::abs(person.feet.y-(b.floor_meters+0.45))<1e-6 && std::abs(walk_env.surface_speed(person.feet.x,person.feet.z)-building_style.rubble_speed_factor)<1e-9 &&
+                       std::abs(person.surface_speed_factor-building_style.rubble_speed_factor)<1e-9;
+          stand_at(b.door+b.facing*8.0,std::atan2(b.facing.x,b.facing.y));
+          person.pitch=0.05;
+        } else if(rendered_frames==2) {
+          const auto& h=buildings->buildings()[pr.house];
+          // The torch at the house's stone wall lights nothing; its timber door is lit by hand (as the fire would from beside it).
+          stand_at(h.door+h.along*3.0+h.facing*1.0,std::atan2(h.facing.x,h.facing.y));
+          held.kind=terraflux::graphics::HeldKind::Torch;held.size=0.8;held.torch_seconds=terraflux::graphics::kTorchSeconds;
+          pr.hint=interact_options();
+          pr.did="";
+          held.kind=terraflux::graphics::HeldKind::Nothing;
+          buildings->ignite(pr.house,BuildingElement::Door,"torch");
+          handle_building_events();
+          run(12.0);
+          const auto& st=buildings->states()[pr.house];
+          pr.windows_burst=st.element(BuildingElement::Windows).damage>=1.0 && st.element(BuildingElement::Windows).cause=="heat";
+          pr.house_stands=!st.destroyed && !st.element(BuildingElement::Walls).alight && st.element(BuildingElement::Door).alight && st.element(BuildingElement::Walls).damage<0.05;
+          // Then a two-tonne trunk lands across it.
+          buildings->log_landed(0,h.centre-h.along*20.0,h.along,30.0,false,2000.0);
+          handle_building_events();
+          pr.house_roof_fell=st.roof_fallen && saw(BuildingEvent::Kind::Hit,pr.house) && saw(BuildingEvent::Kind::RoofFell,pr.house);
+          pr.house_roof_cause=st.element(BuildingElement::Roof).cause;
+          pr.walls_damage=st.element(BuildingElement::Walls).damage;
+          stand_at(h.door+h.facing*10.0,std::atan2(h.facing.x,h.facing.y));
+          person.pitch=0.2;
+        } else if(rendered_frames==3) {
+          const auto& t=buildings->buildings()[pr.tower];
+          const auto struck=buildings->strike(t.centre.x+0.5*t.spec.width_meters+4.0,t.centre.y);
+          handle_building_events();
+          pr.struck=struck==pr.tower && buildings->states()[pr.tower].strikes==1 && !buildings->states()[pr.tower].alight() &&
+                    std::abs(buildings->states()[pr.tower].element(BuildingElement::Roof).damage-building_style.strike_scorch)<1e-9;
+          // A torrent at the hospital's walls (the flood model's water, were the channels there).
+          const auto& hosp=buildings->buildings()[pr.hospital];
+          terraflux::graphics::BuildingHazards torrent;
+          torrent.water=[&](double x,double z,double ground_y) {
+            terraflux::graphics::FloodSample w;
+            if(buildings->building_at(x,z,3.0)==pr.hospital){w.depth_meters=1.5;w.surface_meters=ground_y+1.5;w.current_mps=4.0;w.current={1,0};w.channel=true;}
+            else w.surface_meters=ground_y;
+            return w;
+          };
+          for(int i=0;i<static_cast<int>((building_style.flood_scour_seconds+2.0)*4) && !buildings->states()[pr.hospital].destroyed;++i){buildings->advance(0.25,torrent);building_events_handled=0;handle_building_events();}
+          pr.washed_out=buildings->states()[pr.hospital].destroyed && buildings->states()[pr.hospital].destroyed_by=="flood" && !buildings->states()[pr.tower].destroyed;
+          stand_at(hosp.path_end+hosp.facing*2.0,std::atan2(hosp.facing.x,hosp.facing.y));
+          person.pitch=0.1;
+        } else if(rendered_frames==4) {
+          buildings->reset();
+          building_events_handled=0;
+          const auto st=buildings->stats();
+          pr.sound=st.alight==0 && st.damaged==0 && st.destroyed==0 && st.roofless==0 && st.struck==0 && st.logs==0;
+          const auto& b=buildings->buildings()[pr.bungalow];
+          stand_at(b.door+b.facing*8.0,std::atan2(b.facing.x,b.facing.y));
+        }
+      }
       if(options.flood_test) {
         // Frames: 0 dry, standing in first person in the terrain's largest
         // drainage channel (reference); 1 after half an hour of thunderstorm
@@ -4969,7 +5243,7 @@ int main(int argc, char** argv) {
                     cell_size, fire_field ? fire_field->width : 1,
                     fire_field ? fire_field->height : 1,
                     (options.layers_test || options.replay_controls_test || options.terrain_shading_test || options.water_test ||
-                     options.vegetation_test || options.fire_test || options.first_person_test || options.collision_test || options.jump_test || options.gait_test || options.tree_fire_test || options.storm_test || options.flood_test || options.climb_test || options.vitals_test || options.body_test || options.items_test || options.tools_test || options.roads_test || options.buildings_test || options.interior_test || options.city_test)?0.0:engine_time);
+                     options.vegetation_test || options.fire_test || options.first_person_test || options.collision_test || options.jump_test || options.gait_test || options.tree_fire_test || options.storm_test || options.flood_test || options.climb_test || options.vitals_test || options.body_test || options.items_test || options.tools_test || options.roads_test || options.buildings_test || options.interior_test || options.hazards_test || options.city_test)?0.0:engine_time);
       const auto& camera_vp=camera_frame.view_projection;
       const auto terrain_frustum=Frustum::from_view_projection(camera_vp);
       // Atmosphere for this frame: the camera basis for the sky rays, the sun,
@@ -5007,9 +5281,16 @@ int main(int argc, char** argv) {
         const double sx=weather_state.strike_position.x,sz=weather_state.strike_position.z;
         int struck_tree=-1;
         if(tree_fire)struck_tree=tree_fire->strike(sx,sz,std::min(60.0,weather_state.wind.speed_mps),weather_state.wind.direction_degrees);
+        std::optional<std::size_t> struck_building;
+        if(buildings){struck_building=buildings->strike(sx,sz);handle_building_events();}
         terraflux::graphics::LightningEffect effect;
         double distance=-1.0;
-        if(first_person) {
+        const bool under_a_roof=first_person && buildings && buildings->sheltered(person.feet.x,person.feet.z);
+        if(first_person && under_a_roof) {
+          // Inside a building the walker is sheltered from the bolt (and from the rain).
+          distance=std::hypot(person.feet.x-sx,person.feet.z-sz);
+          if(distance<60.0){terraflux::graphics::shake(person,0.04);lightning_message="LIGHTNING "+std::to_string(static_cast<int>(std::lround(distance)))+" m away: sheltered inside";lightning_message_until=engine_time+6.0;std::cout<<lightning_message<<'\n';}
+        } else if(first_person) {
           distance=std::hypot(person.feet.x-sx,person.feet.z-sz);
           // Crouched, the walker is a smaller target: the strike counts as farther away.
           effect=terraflux::graphics::lightning_effect(person.crouched?distance/(1.0-vitals_style.crouched_shelter):distance);
@@ -5027,7 +5308,7 @@ int main(int argc, char** argv) {
         ++lightning_strikes;
         if(options.smoke_test || options.profile || options.storm_test)
           std::cout<<"LIGHTNING_JSON={\"strike\":"<<lightning_strikes<<",\"position\":["<<sx<<","<<sz<<"],\"intensity\":"<<weather_state.strike.intensity
-                   <<",\"struck_tree\":"<<struck_tree<<",\"distance_m\":"<<distance<<",\"hazard\":\""<<terraflux::graphics::lightning_hazard_name(effect.hazard)
+                   <<",\"struck_tree\":"<<struck_tree<<",\"struck_building\":"<<(struck_building?static_cast<long long>(*struck_building):-1LL)<<",\"distance_m\":"<<distance<<",\"hazard\":\""<<terraflux::graphics::lightning_hazard_name(effect.hazard)
                    <<"\",\"knock_down_s\":"<<effect.knock_down_seconds<<",\"shake_m\":"<<effect.shake_meters<<"}\n";
       }
       if(first_person && !options.smoke_test)apply_vitals(terraflux::graphics::advance_vitals(vitals,gather_exposure(),delta,vitals_style));
@@ -5436,8 +5717,10 @@ int main(int argc, char** argv) {
         frame_draws+=static_cast<std::uint32_t>(road_draws);
       }
       building_draws=0;
+      if(buildings && buildings->version()!=building_obstacles_version)rebuild_building_obstacles();
       if(buildings && buildings->door_version()!=door_obstacles_version)rebuild_door_obstacles();
       if(buildings && building_renderer && layer_visibility.terrain && buildings_visible) {
+        if(buildings->version()!=buildings_uploaded_version)upload_buildings();
         if(buildings->door_version()!=doors_uploaded_version)upload_doors();
         building_draws=building_renderer->draw(camera)+door_renderer->draw(camera);
         frame_draws+=static_cast<std::uint32_t>(building_draws);
@@ -5770,6 +6053,7 @@ int main(int argc, char** argv) {
           FireEmitters dynamic;
           tree_fire->emit(dynamic.flames,dynamic.smoke,fire_style);
           if(roads)roads->emit(dynamic.flames,dynamic.smoke,fire_style);
+          if(buildings)buildings->emit(dynamic.flames,dynamic.smoke,fire_style);
           if(first_person && held.kind==terraflux::graphics::HeldKind::Torch) {
             FireInstance fl{};
             fl.position[0]=static_cast<float>(held_world_position.x);fl.position[1]=static_cast<float>(held_world_position.y);fl.position[2]=static_cast<float>(held_world_position.z);
@@ -6021,6 +6305,38 @@ int main(int argc, char** argv) {
         } else {
           if(building_draws)throw std::runtime_error("the buildings were not hidden again");
           if(pixels!=buildings_reference)throw std::runtime_error("hiding the buildings did not restore the reference exactly");
+        }
+      }
+      if(options.hazards_test) {
+        const auto& pr=hazards_probe;
+        const auto st=buildings->stats();
+        std::cout<<"HAZARDS_TEST_JSON={\"frame\":"<<rendered_frames<<",\"building_draws\":"<<building_draws<<",\"hint\":\""<<pr.hint<<"\",\"did\":\""<<pr.did<<"\",\"alight\":"<<(pr.alight?"true":"false")
+                 <<",\"heat\":"<<pr.heat<<",\"flames\":"<<pr.flames<<",\"trees_lit\":"<<pr.trees_lit<<",\"roof_fell_on_me\":"<<(pr.roof_fell_on_me?"true":"false")<<",\"health_lost\":"<<pr.health_lost
+                 <<",\"destroyed\":"<<(pr.destroyed?"true":"false")<<",\"destroyed_by\":\""<<pr.destroyed_by<<"\",\"on_rubble\":"<<(pr.on_rubble?"true":"false")<<",\"feet_y\":"<<pr.feet_y<<",\"floor_m\":"<<pr.floor
+                 <<",\"house_roof_fell\":"<<(pr.house_roof_fell?"true":"false")<<",\"house_roof_cause\":\""<<pr.house_roof_cause<<"\",\"windows_burst\":"<<(pr.windows_burst?"true":"false")<<",\"walls_damage\":"<<pr.walls_damage
+                 <<",\"house_stands\":"<<(pr.house_stands?"true":"false")<<",\"struck\":"<<(pr.struck?"true":"false")<<",\"washed_out\":"<<(pr.washed_out?"true":"false")<<",\"sound\":"<<(pr.sound?"true":"false")
+                 <<",\"stats\":{\"alight\":"<<st.alight<<",\"damaged\":"<<st.damaged<<",\"roofless\":"<<st.roofless<<",\"destroyed\":"<<st.destroyed<<",\"struck\":"<<st.struck<<",\"logs\":"<<st.logs<<"}"
+                 <<",\"fire_flames\":"<<fire_stats.flames<<",\"feet\":["<<person.feet.x<<","<<person.feet.y<<","<<person.feet.z<<"]}\n";
+        if(!building_draws)throw std::runtime_error("the buildings drew nothing");
+        if(rendered_frames==0) {
+          if(pr.hint!="E: set the bungalow's walls alight | Q: throw" || pr.did!="set the bungalow's walls alight")throw std::runtime_error("the torch did not offer to light the bungalow's walls");
+          if(!pr.alight || st.alight<1)throw std::runtime_error("the fire did not spread over the bungalow's walls, thatch and door");
+          if(pr.heat<0.9 || pr.flames<10 || fire_stats.flames<10)throw std::runtime_error("the blaze's heat did not reach the walker or its flames were not drawn");
+          if(buildings->version()==pr.version)throw std::runtime_error("the char did not change the drawing");
+        } else if(rendered_frames==1) {
+          if(!pr.roof_fell_on_me || pr.health_lost<=0)throw std::runtime_error("the roof falling in did not hurt the walker inside");
+          if(!pr.destroyed || pr.destroyed_by!="fire")throw std::runtime_error("the bungalow did not burn down");
+          if(!pr.on_rubble)throw std::runtime_error("the rubble is not a slow surface to walk over");
+        } else if(rendered_frames==2) {
+          if(!pr.house_roof_fell || pr.house_roof_cause!="impact")throw std::runtime_error("the trunk did not smash the house's tiled roof");
+          if(pr.hint!="E: put the torch down | Q: throw")throw std::runtime_error("the torch should find nothing to light on a stone wall");
+          if(!pr.windows_burst)throw std::runtime_error("the burning door did not burst the house's windows");
+          if(pr.walls_damage<=0 || pr.walls_damage>0.2 || !pr.house_stands)throw std::runtime_error("the stone house should stand, cracked a little, its walls unlit");
+        } else if(rendered_frames==3) {
+          if(!pr.struck)throw std::runtime_error("the strike did not scorch the skyscraper");
+          if(!pr.washed_out)throw std::runtime_error("the torrent did not wash the hospital out");
+        } else {
+          if(!pr.sound)throw std::runtime_error("reset did not restore the buildings");
         }
       }
       if(options.interior_test) {
@@ -6632,6 +6948,11 @@ int main(int argc, char** argv) {
       }else if(options.city_test) {
         if(rendered_frames==5) {
           std::cout<<"City passed: a CBD of skyscrapers, five or more suburbs of houses with police stations, an airport with runway, taxiway, apron, terminal, tower and hangars, curved streets, and multi-lane highways with diamond interchanges whose viaducts carry the highway over the avenues; every building stands beside a road; the world view is restored exactly\n";
+          break;
+        }
+      }else if(options.hazards_test) {
+        if(rendered_frames==5) {
+          std::cout<<"Hazards passed: a torch lights the bungalow's plank walls and the fire takes the thatch, the door and the room, its heat reaching the walker and the trees; the roof falls in on the walker inside and the bungalow collapses into rubble; a trunk smashes the house's tiles and its burning door bursts the glass while the stone stands; lightning scorches the skyscraper and a torrent washes the hospital out; reset restores everything\n";
           break;
         }
       }else if(options.interior_test) {

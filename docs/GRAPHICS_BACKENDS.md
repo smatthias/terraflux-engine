@@ -1882,17 +1882,22 @@ where it stands (nullopt off the network or over a missing span);
 `obstacles()` is the piers (cylinders from the ground to the slab bottom,
 at least 0.5 m tall) of every bridge and, on standing deck, chains of
 0.15 m posts along both railings. `log_landed(tree, base, direction,
-length, burning)` registers a trunk lying within the half width of a
-centre line (segment–segment approach) — on a bridge only where the deck
-is within 1.5 m of the ground — once per tree and segment (event
-`Blocked`). `advance(dt, log_intensity, water)` clears the events, lets
-every burning trunk damage its segment at the kind's rate (the first
-damage raises `Damaged` on a road, `Alight` on a bridge; full damage
-destroys by "fire"), and counts running water at any pier (current and
-depth over the thresholds, from `water(x, z, ground)`) toward the washout
-(recovering when it ebbs; full, destroyed by "flood"). `destroy(segment,
-cause)` raises `Destroyed` and, for a bridge, `Collapsed` or (cause
-"flood") `WashedOut`. `reset()` restores everything; `version()` changes
+length, burning, mass_kg = 0)` registers a trunk lying within the half
+width of a centre line (segment–segment approach) — on a bridge only where
+the deck is within 1.5 m of the ground — once per tree and segment (event
+`Blocked`) and cracks the surface by its mass: tonnes / `impact_tonnes`
+(12 t; a deck two thirds of it) of damage (`Damaged`; a deck smashed
+outright is destroyed by "impact" and collapses). `advance(dt,
+log_intensity, water)` clears the events, lets every burning trunk damage
+its segment at the kind's rate (the first damage raises `Damaged` on a
+road, `Alight` on a bridge; full damage destroys by "fire"), counts
+running water at any pier of a bridge (current and depth over the
+thresholds, from `water(x, z, ground)`) toward the washout (recovering
+when it ebbs; full, destroyed by "flood"), and a channel's torrent over a
+road's surface (sampled every 10 m along it; a lake standing on it does
+not count) toward twice the washout time. `destroy(segment, cause)`
+raises `Destroyed` and `WashedOut` (cause "flood") or, for a bridge,
+`Collapsed`. `reset()` restores everything; `version()` changes
 with the blockages and the destruction. `stats()` counts and measures.
 
 `build_meshes()` gives `MeshPart`s (`mesh_parts.hpp`: position/normal
@@ -2011,6 +2016,54 @@ pieces that would not fit between the walls or would crowd the entrance
 are left out. The drawn pieces are merged into one part per name across
 every enterable building (a dozen draws for a whole suburb).
 
+Hazards (`BuildingHazards`: an external heat function, a log intensity
+function, a `WaterFn`, the wind and the rain; `advance(dt, hazards)`).
+`material_hazard(SurfaceMaterial)` (mesh_parts.hpp) is the table: whether
+the material burns, its ignition heat and time and burn time, the heat
+threshold and time that damage a non-flammable one, its soak time, the
+mass that smashes it and the wind that strips it. A building's `BuildingState`
+holds an `ElementState` per `BuildingElement` (Walls, Roof, Windows, Door,
+Interior; `building_element_material(kind, element)` gives each its
+material or nullopt — the bungalow has no glass, only an enterable kind an
+interior), the flood depth over the floor, the scour seconds, roof_fallen,
+destroyed (+ by what), strikes and burn seconds. Each step samples the
+hazards once per building (heat at the centre, the door and the corners,
+plus the other buildings' intensity by footprint distance, `spread_heat` ×
+the building's own strongest flames for its other elements, a burning log's
+intensity on the roof; water at the door and corners for the surface over
+the floor and a torrent; then sub-steps of 0.25 s): a submerged element
+(walls over 0.3 m, windows 1 m, door 0.1 m, interior 0.05 m) is put out and
+soaks (damage at 1 / soak time); a flammable one past its ignition heat for
+its ignition time ignites, alight it burns at intensity × (1 + wind factor
+× wind) / (1 + rain / slowdown) / burn time and burns out at damage 1; a
+non-flammable one past its heat threshold takes 1 / heat damage time; the
+wind past the material's wind speed takes (wind / that)² / wind time. A
+roof at damage 1 falls (`roof_falls`: event RoofFell, the interior smashed
+by half and lit if the roof was burning); walls at damage 1 `destroy` the
+building (Collapsed with the walls' cause; WashedOut for a flood);
+`flood_scour_seconds` of torrent destroy it by "flood". `ignite(building,
+element, cause)` lights a flammable, present, dry, unlit element;
+`strike(x, z)` hits the tallest building within `strike_radius` of its
+walls (the roof lit or scorched by `strike_scorch`); `log_landed(tree, base,
+dir, length, burning, mass)` hits every building the trunk's line crosses
+(Liang–Barsky in the local frame): roof damage = tonnes / the roof
+material's impact mass, walls and windows half, and keeps the log for its
+heat. `exposure_at(x, z)` gives the burning buildings' heat (1 within 3 m
+of the footprint, 0 by `heat_reach`) and smoke; `sheltered(x, z)` is
+inside with a roof; `emit` puts flames over the burning roof's slopes, up
+the outside of burning walls, at burning windows, the door and in the
+room, a plume over any burning building and a smoulder over one that
+burned down. A destroyed building: `platform_height` is floor + 0.45 over
+the footprint at `rubble_speed_factor`, `inside` false, no wall or door
+obstacles (the chimney's post stays), no door. `build_meshes` chars the
+colours by damage (`charred`), draws burst windows as dark "burst" panes
+and a burned door as a dark doorway, leaves out a fallen roof and a
+burned-out room's furniture and ceiling, and draws a collapsed building as
+a "rubble" heap (black "ashes" after a fire) with a leaning wall slab and
+the chimney. `version()` bumps on every change of what is drawn, walked
+on or collided with (damage in tenths, roof fallen, windows burst, door
+gone, destroyed, reset); `door_version()` also when a door burns away.
+
 Doors. `DoorState{open 0..1, opening}` per building (`doors()`);
 `toggle_door(i)` sets an enterable building's door swinging the other way
 (false for a solid one), `advance(dt)` moves the swinging leaves at 1/0.6 s
@@ -2037,8 +2090,26 @@ rebuilt when `door_version()` changes; `advance()` on the engine clock
 beside the roads; `door_in_reach()` (an enterable building's door within
 2 m of the feet) puts `E: open the door` / `E: close the door` first among
 the interaction options and E calls `toggle_door`; the title says `inside
-the bungalow (door open|closed)` from `inside_of`. `--buildings-test` and
-`--interior-test` (README) and `terraflux-buildings-tests`.
+the bungalow (door open|closed)` from `inside_of`. The hazards:
+`advance_buildings(dt)` runs `advance` with the tree fire's `exposure_at`
+heat, the trees' intensities for the logs, `walk_env.water`, the weather's
+wind and the last rain, handles the events (messages; RoofFell / Collapsed
+/ WashedOut with the walker on the building's footprint → `pending_collapse`
+of `roof_fall_damage` / `collapse_damage`, knock-down and shake) and lights
+the nearest unburned standing tree within 8 m of a building every 3 s of
+its full blaze (`IgnitionSource::Radiation`); `logs_on_roads` passes every
+grounded trunk (with its mass) to `RoadNetwork::log_landed` and
+`BuildingSet::log_landed`; the lightning hook calls `strike` and, with the
+walker `sheltered`, skips the walker's own hazard ("sheltered inside");
+`gather_exposure` adds the buildings' heat and smoke and sets
+`Exposure::sheltered` (no rain soak under a roof); `fire_heat_at_hand`
+lets a branch be lit at a burning building; `torch_target` (the room the
+walker is in, else the walls beside it unless at the door) gives the torch
+its `E: set the …'s walls alight` option; the meshes and the obstacle field
+are re-uploaded / rebuilt when `version()` changes; `emit` joins the fire
+emitters; the title adds the building's state. `BUILDINGS_JSON` stays the
+placement report. `--buildings-test`, `--interior-test` and
+`--hazards-test` (README) and `terraflux-buildings-tests`.
 
 ### The city
 
