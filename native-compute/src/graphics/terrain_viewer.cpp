@@ -1480,6 +1480,22 @@ int main(int argc, char** argv) {
       door_obstacles_version=buildings?buildings->door_version():0;
     };
     rebuild_door_obstacles();
+    // The lift: the walker in its car (the building), or at a shaft door that could call it.
+    const auto lift_here=[&]()->std::optional<std::size_t> {
+      if(!buildings)return std::nullopt;
+      const auto i=buildings->inside_of(person.feet.x,person.feet.z);
+      if(i && buildings->in_lift(*i,person.feet.x,person.feet.z))return i;
+      return std::nullopt;
+    };
+    const auto lift_door_here=[&]()->std::optional<std::size_t> {
+      if(!buildings)return std::nullopt;
+      const auto i=buildings->lift_door_near(person.feet.x,person.feet.z,person.feet.y,2.0);
+      if(!i)return std::nullopt;
+      const auto state=buildings->lift_state(*i);
+      const int level=buildings->level_at(*i,person.feet.y);
+      if(!state || (!state->moving && state->open && state->floor==level))return std::nullopt;  // the car is here, open: walk in
+      return i;
+    };
     // The enterable building's door within arm's reach of the walker (from either side).
     const auto door_in_reach=[&]()->std::optional<std::size_t> {
       if(!buildings)return std::nullopt;
@@ -1624,7 +1640,9 @@ int main(int argc, char** argv) {
         };
         if(const auto room=buildings->inside_of(person.feet.x,person.feet.z)) {
           const char* where=buildings->room_at(*room,person.feet.x,person.feet.z,person.feet.y);
-          text<<" | inside the "<<terraflux::graphics::building_kind_name(buildings->buildings()[*room].kind)<<" ("<<(where?where:"inside")<<(buildings->doors()[*room].open>0.5?", door open)":", door closed)");
+          text<<" | inside the "<<terraflux::graphics::building_kind_name(buildings->buildings()[*room].kind)<<" (";
+          if(buildings->plan(*room).floors>2)text<<"floor "<<buildings->level_at(*room,person.feet.y)<<", ";
+          text<<(where?where:"inside")<<(buildings->doors()[*room].open>0.5?", door open)":", door closed)");
           building_state(*room);
         } else if(const auto door=buildings->entrance_near(person.feet.x,person.feet.z,4.0)) {
           text<<" | at the "<<terraflux::graphics::building_kind_name(buildings->buildings()[*door].kind)<<"'s door";
@@ -1987,9 +2005,19 @@ int main(int argc, char** argv) {
       door_renderer->set_parts(buildings->build_door_meshes());
       doors_uploaded_version=buildings->door_version();
     };
+    // The rooms and furniture are built for the buildings within this reach
+    // of the viewer (the walker's feet, or the orbit target): a city's towers
+    // are far too many rooms to carry all at once.
+    constexpr double kInteriorRadius=120.0;
+    std::vector<std::size_t> interiors_uploaded;
+    const auto interior_focus=[&]()->terraflux::math::Vec2 {
+      return view_mode==terraflux::graphics::CameraMode::FirstPerson?terraflux::math::Vec2{person.feet.x,person.feet.z}:terraflux::math::Vec2{scene_camera.target.x,scene_camera.target.z};
+    };
     const auto upload_buildings=[&] {
       if(!buildings || !building_renderer)return;
-      building_renderer->set_parts(buildings->build_meshes());
+      const auto focus=interior_focus();
+      interiors_uploaded=buildings->interiors_near(focus,kInteriorRadius);
+      building_renderer->set_parts(buildings->build_meshes(focus,kInteriorRadius));
       buildings_uploaded_version=buildings->version();
     };
     if(buildings) {
@@ -2192,6 +2220,16 @@ int main(int argc, char** argv) {
     };
     const auto interact_options=[&]()->std::string {
       const auto eye=person.eye(),fwd=look_forward();
+      if(const auto i=lift_here()) {
+        const auto state=*buildings->lift_state(*i);
+        if(state.moving)return "";
+        const int floors=buildings->plan(*i).floors;
+        std::string hint;
+        if(state.floor+1<floors)hint="E: ride up to floor "+std::to_string(state.floor+1);
+        if(state.floor>0)hint+=std::string(hint.empty()?"":" | ")+"Shift+E: ride down to floor "+std::to_string(state.floor-1);
+        return hint;
+      }
+      if(lift_door_here())return "E: call the lift";
       if(const auto door=door_in_reach()) {
         const auto& state=buildings->doors()[*door];
         const bool open=state.opening || state.open>=1.0;
@@ -2219,9 +2257,20 @@ int main(int argc, char** argv) {
       }
       return "E: drop the stone | Q: throw";
     };
-    const auto interact=[&]()->std::string {
+    const auto interact=[&](bool alternate=false)->std::string {
       const auto eye=person.eye(),fwd=look_forward();
       using terraflux::graphics::HeldKind;
+      if(const auto i=lift_here()) {
+        const auto state=*buildings->lift_state(*i);
+        if(state.moving)return "";
+        const int to=state.floor+(alternate?-1:1);
+        if(!buildings->ride_lift(*i,alternate?-1:1))return alternate?"the lift is at the ground floor":"the lift is at the top floor";
+        return std::string("took the lift ")+(alternate?"down":"up")+" to floor "+std::to_string(to);
+      }
+      if(const auto i=lift_door_here()) {
+        buildings->call_lift(*i,buildings->level_at(*i,person.feet.y));
+        return "called the lift";
+      }
       if(const auto door=door_in_reach()) {
         const bool was_open=buildings->doors()[*door].opening || buildings->doors()[*door].open>=1.0;
         buildings->toggle_door(*door);
@@ -3652,7 +3701,7 @@ int main(int argc, char** argv) {
           if(interact_key && !previous_interact_key) {
             std::string what;
             if(person.on_rope){if(rope.branch_tree<0 && person.rope_t_meters<=1e-6 && terraflux::graphics::step_off_rope_top(person,rope,walk_env,rope_rules))what="stepped off the rope onto the edge";}
-            else {what=use_tool();if(what.empty())what=interact();}
+            else {what=use_tool();if(what.empty())what=interact(glfwGetKey(window.get(),GLFW_KEY_LEFT_SHIFT)==GLFW_PRESS || glfwGetKey(window.get(),GLFW_KEY_RIGHT_SHIFT)==GLFW_PRESS);}
             if(!what.empty())std::cout<<(std::isupper(static_cast<unsigned char>(what[0]))?"":"You ")<<what<<'\n';
           }
           if(throw_key && !previous_throw_key && !person.on_rope){const auto what=throw_held();if(!what.empty())std::cout<<"You "<<what<<'\n';}
@@ -4711,6 +4760,93 @@ int main(int argc, char** argv) {
           pr.feet_y=person.feet.y;
           pr.door_distance=(terraflux::math::Vec2{person.feet.x,person.feet.z}-b.door).length();
           person.yaw=std::atan2(b.facing.x,b.facing.y);  // turn round and look back at the open door
+        } else if(rendered_frames>=9) {
+          // The skyscraper: in through its door into the gallery past the
+          // reception desk; into the lift and up a floor; into an apartment's
+          // living room and kitchen; down the stairwell to the ground floor.
+          std::optional<std::size_t> tower;
+          for(std::size_t i=0;i<buildings->size();++i)if(buildings->buildings()[i].kind==BuildingKind::Skyscraper){tower=i;break;}
+          if(!tower)throw std::runtime_error("interior test needs a skyscraper");
+          const auto& tb=buildings->buildings()[*tower];
+          const auto& plan=buildings->plan(*tower);
+          const auto tat=[&](double a,double bb){return tb.centre+tb.along*a+tb.facing*bb;};
+          const auto room=[&](){const char* r=buildings->room_at(*tower,person.feet.x,person.feet.z,person.feet.y);return std::string(r?r:"");};
+          const auto place=[&](terraflux::math::Vec2 p,double y,terraflux::math::Vec2 toward,double pitch){person.feet={p.x,y,p.y};person.grounded=true;person.yaw=std::atan2(-toward.x,-toward.y);person.pitch=pitch;person.velocity_mps={};person.gait_speed_mps=0;};
+          const auto& lift=*plan.lift;
+          const double storey=plan.floor_height;
+          if(rendered_frames==9) {
+            pr.target=*tower;
+            const auto start=tb.door+tb.facing*3.0;
+            const auto gg=ground_height(start.x,start.y);
+            const auto g=built_surface(start.x,start.y,gg.value_or(tb.floor_meters));
+            place(start,g?*g:gg.value_or(tb.floor_meters),tb.facing*-1.0,0.0);
+            (void)terraflux::graphics::settle(person,walk_env);
+            scripted_walk(60*3,1.0);
+            pr.at_door=door_in_reach()==*tower;
+            pr.hint=interact_options();
+            pr.did=interact();
+            scripted_walk(60,0.0);
+            scripted_walk(60*4,1.0);  // in, until the reception desk stops the walker
+            pr.inside=buildings->inside_of(person.feet.x,person.feet.z)==*tower;
+            pr.on_floor=person.on_platform && std::abs(person.feet.y-tb.floor_meters)<1e-6;
+            pr.room=room();
+            pr.feet_y=person.feet.y;pr.floor=tb.floor_meters;
+            const auto [ta,tbb]=std::pair{(terraflux::math::Vec2{person.feet.x,person.feet.z}-tb.centre).dot(tb.along),(terraflux::math::Vec2{person.feet.x,person.feet.z}-tb.centre).dot(tb.facing)};
+            pr.table_gap=tbb-(0.5*tb.spec.depth_meters-terraflux::graphics::kInteriorWallThickness-4.0);  // to the desk's line
+            (void)ta;
+            person.pitch=-0.15;
+          } else if(rendered_frames==10) {
+            // To the shaft door: the car waits open on the ground floor; in, and up a floor.
+            place(tat(lift.door_along,lift.b1+1.5),tb.floor_meters,tb.facing*-1.0,0.0);
+            pr.hint=interact_options();  // the car is here and open: nothing to call
+            scripted_walk(60*2,1.0);     // through the shaft door into the car
+            pr.inside=buildings->in_lift(*tower,person.feet.x,person.feet.z);
+            pr.room=room();
+            pr.did=interact();           // E: ride up a floor
+            for(int i=0;i<60*8 && buildings->lift_state(*tower)->moving;++i)scripted_walk(1,0.0);
+            pr.leaf_open=buildings->lift_state(*tower)->height;
+            pr.on_floor=person.on_platform && std::abs(person.feet.y-(tb.floor_meters+storey))<1e-6 && buildings->lift_state(*tower)->floor==1 && buildings->lift_state(*tower)->open;
+            pr.feet_y=person.feet.y;pr.floor=tb.floor_meters+storey;
+            place({person.feet.x,person.feet.z},person.feet.y,tb.facing,0.0);  // look out of the open car
+          } else if(rendered_frames==11) {
+            // Out into the first floor's hall and into the front-left apartment: its living room, then its kitchen.
+            place(tat(lift.door_along,lift.b1+0.5),tb.floor_meters+storey,tb.facing,0.0);
+            scripted_walk(60*2,1.0);
+            pr.room=room();pr.inside=buildings->level_at(*tower,person.feet.y)==1;
+            const terraflux::graphics::InteriorRoom* living=nullptr;
+            for(const auto& r:plan.rooms)if(std::string(r.name)=="living room" && r.level==1 && r.a1<0 && r.b0>0)living=&r;
+            if(!living)throw std::runtime_error("interior test found no apartment on the first floor");
+            place(tat(living->a1-1.5,living->b0-1.5),tb.floor_meters+storey,tb.facing,0.0);
+            scripted_walk(60*3,1.0);
+            pr.hint=room();  // the living room
+            place(tat(living->a0+1.0,0.5*(living->b0+living->b1)),tb.floor_meters+storey,tb.along*-1.0,0.0);
+            scripted_walk(60*4,1.0);
+            pr.did=room();   // the kitchen
+            const terraflux::graphics::InteriorRoom* kitchen=nullptr;
+            for(const auto& r:plan.rooms)if(std::string(r.name)=="kitchen" && r.level==1 && r.a1<0 && r.b0>0)kitchen=&r;
+            if(kitchen)place(tat(kitchen->a1-1.0,kitchen->b0+2.0),tb.floor_meters+storey,tb.along*-1.0+tb.facing*-0.35,-0.08);  // looking at the cooking area along the outer wall
+          } else if(rendered_frames==12) {
+            // Down the stairwell: through its door, down the flight to the landing, across, down the next to the ground floor.
+            const auto& flight_a=plan.flights[0];
+            const auto& flight_b=plan.flights[1];
+            place(tat(flight_b.head.x,flight_b.head.y+0.4),tb.floor_meters+storey,tb.facing*-1.0,-0.2);
+            scripted_walk(60*5,1.0);
+            pr.hint=room();  // the stairs (the landing)
+            const double landing_y=person.feet.y;
+            place({person.feet.x,person.feet.z},person.feet.y,tb.along*-1.0,0.0);
+            scripted_walk(60*2,1.0);
+            place({person.feet.x,person.feet.z},person.feet.y,tb.facing,-0.2);
+            scripted_walk(60*5,1.0);
+            pr.on_floor=std::abs(landing_y-(tb.floor_meters+0.5*storey))<0.1 && std::abs(person.feet.y-tb.floor_meters)<0.05 && buildings->level_at(*tower,person.feet.y)==0;
+            pr.feet_y=person.feet.y;pr.floor=tb.floor_meters;
+            place({person.feet.x,person.feet.z},person.feet.y,tb.along,0.0);  // across to the door's side of the stairwell
+            scripted_walk(60*1,1.0);
+            place({person.feet.x,person.feet.z},person.feet.y,tb.facing,0.0);  // and out through its door
+            scripted_walk(60*2,1.0);
+            pr.room=room();  // out of the stairwell into the gallery
+            pr.out=pr.room=="gallery";
+            (void)flight_a;
+          }
         } else if(rendered_frames>=5) {
           // The house: in through its door into the living room, through the
           // kitchen doorway, up the stairs to the bedroom, and down again.
@@ -4752,15 +4888,15 @@ int main(int argc, char** argv) {
             place({person.feet.x,person.feet.z},person.feet.y,hb.facing*0.3+hb.along*-1.0,-0.1);  // look at the cooking area
           } else if(rendered_frames==7) {
             // Up the stairs.
-            place(hat(-iw+0.5,plan.stair->foot.y+0.3),hb.floor_meters,hb.facing*-1.0,0.0);
+            place(hat(-iw+0.5,plan.stair()->foot.y+0.3),hb.floor_meters,hb.facing*-1.0,0.0);
             scripted_walk(60*6,1.0);
-            pr.feet_y=person.feet.y;pr.floor=hb.floor_meters+plan.upper_floor;
-            pr.on_floor=person.on_platform && std::abs(person.feet.y-pr.floor)<1e-6 && hlocal().second<plan.stair->head.y;
+            pr.feet_y=person.feet.y;pr.floor=hb.floor_meters+plan.floor_height;
+            pr.on_floor=person.on_platform && std::abs(person.feet.y-pr.floor)<1e-6 && hlocal().second<plan.stair()->head.y;
             pr.room=room();
-            place(hat(-iw+1.8,plan.stair->head.y-1.0),pr.floor,hb.along+hb.facing*-0.15,-0.12);  // by the head of the stairs, looking across the bedroom at the bed
+            place(hat(-iw+1.8,plan.stair()->head.y-1.0),pr.floor,hb.along+hb.facing*-0.15,-0.12);  // by the head of the stairs, looking across the bedroom at the bed
           } else if(rendered_frames==8) {
             // Down again, and out through the door.
-            place(hat(-iw+0.5,plan.stair->head.y-1.0),hb.floor_meters+plan.upper_floor,hb.facing,-0.3);
+            place(hat(-iw+0.5,plan.stair()->head.y-1.0),hb.floor_meters+plan.floor_height,hb.facing,-0.3);
             scripted_walk(60*8,1.0);
             pr.feet_y=person.feet.y;pr.floor=hb.floor_meters;
             pr.on_floor=person.on_platform && std::abs(person.feet.y-hb.floor_meters)<0.05;
@@ -5780,7 +5916,7 @@ int main(int argc, char** argv) {
       if(buildings && buildings->version()!=building_obstacles_version)rebuild_building_obstacles();
       if(buildings && buildings->door_version()!=door_obstacles_version)rebuild_door_obstacles();
       if(buildings && building_renderer && layer_visibility.terrain && buildings_visible) {
-        if(buildings->version()!=buildings_uploaded_version)upload_buildings();
+        if(buildings->version()!=buildings_uploaded_version || buildings->interiors_near(interior_focus(),kInteriorRadius)!=interiors_uploaded)upload_buildings();
         if(buildings->door_version()!=doors_uploaded_version)upload_doors();
         building_draws=building_renderer->draw(camera)+door_renderer->draw(camera);
         frame_draws+=static_cast<std::uint32_t>(building_draws);
@@ -6427,8 +6563,18 @@ int main(int argc, char** argv) {
           if(!pr.inside || pr.room!="kitchen")throw std::runtime_error("the walker did not get through the doorway into the kitchen");
         } else if(rendered_frames==7) {
           if(!pr.on_floor || pr.room!="bedroom")throw std::runtime_error("the walker did not climb the stairs to the bedroom");
-        } else {
+        } else if(rendered_frames==8) {
           if(!pr.on_floor || !pr.out)throw std::runtime_error("the walker did not come down the stairs and out of the house");
+        } else if(rendered_frames==9) {
+          if(!pr.at_door || pr.did!="opened the door" || !pr.inside || !pr.on_floor || pr.room!="gallery")throw std::runtime_error("the walker did not get into the skyscraper's gallery");
+          if(pr.table_gap<0.5 || pr.table_gap>1.5)throw std::runtime_error("the reception desk did not stop the walker");
+        } else if(rendered_frames==10) {
+          if(!pr.hint.empty() || !pr.inside || pr.room!="lift")throw std::runtime_error("the walker did not get into the open lift car");
+          if(pr.did!="took the lift up to floor 1" || !pr.on_floor)throw std::runtime_error("the lift did not carry the walker up a floor");
+        } else if(rendered_frames==11) {
+          if(pr.room!="hall" || !pr.inside || pr.hint!="living room" || pr.did!="kitchen")throw std::runtime_error("the walker did not get from the hall into the apartment's living room and kitchen");
+        } else {
+          if(pr.hint!="stairs" || !pr.on_floor || !pr.out)throw std::runtime_error("the walker did not come down the stairwell to the gallery");
         }
       }
       if(options.flood_test) {
@@ -7025,8 +7171,8 @@ int main(int argc, char** argv) {
           break;
         }
       }else if(options.interior_test) {
-        if(rendered_frames==9) {
-          std::cout<<"Interior passed: the bungalow's door stops the walker on the ramp at its threshold, E swings it open, the walker steps in onto the timber floor where the furniture stops it, the door closed from inside keeps it in, and opened again lets it out; in the house it crosses the living room, goes through the doorway into the kitchen, climbs the stairs to the bedroom and comes down and out again\n";
+        if(rendered_frames==13) {
+          std::cout<<"Interior passed: the bungalow's door stops the walker on the ramp at its threshold, E swings it open, the walker steps in onto the timber floor where the furniture stops it, the door closed from inside keeps it in, and opened again lets it out; in the house it crosses the living room, goes through the doorway into the kitchen, climbs the stairs to the bedroom and comes down and out again; in the skyscraper it crosses the gallery to the reception desk, rides the lift up a floor, walks into an apartment's living room and kitchen, and comes down the stairwell to the gallery\n";
           break;
         }
       }else if(options.buildings_test) {

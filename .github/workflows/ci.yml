@@ -606,6 +606,10 @@ jobs:
           grep -q '"room":"kitchen"' /tmp/terraflux-interior.log
           grep -q '"room":"bedroom"' /tmp/terraflux-interior.log
           grep -q '"room":"stairs"' /tmp/terraflux-interior.log
+          grep -q '"room":"gallery"' /tmp/terraflux-interior.log
+          grep -q '"did":"took the lift up to floor 1"' /tmp/terraflux-interior.log
+          grep -q '"room":"lift"' /tmp/terraflux-interior.log
+          grep -q '"hint":"living room","did":"kitchen","room":"hall"' /tmp/terraflux-interior.log
           if ./build-gl/terraflux-terrain-viewer --interior-test --smoke-test --buildings off > /tmp/terraflux-bad-interior-test.log 2>&1; then
             echo "the interior test ran without buildings" && exit 1
           fi

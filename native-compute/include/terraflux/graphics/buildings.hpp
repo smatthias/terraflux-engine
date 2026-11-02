@@ -141,40 +141,67 @@ std::vector<Building> place_buildings(const RoadNetwork& roads, std::span<const 
 // in a road network file (see roads.hpp). An absent key gives an empty list.
 std::vector<BuildingRequest> parse_building_requests(const std::string& json_text);
 
-// Interiors. The bungalow and the house are built hollow — their walls with
-// a doorway and real window holes, a timber floor, a ceiling — with a door
-// that swings open on its hinge and furnished rooms. The bungalow is one
-// room: a kitchen (cupboards, worktop, sink, stove and a wall cupboard)
-// along the back wall, a table with four chairs, a wardrobe and a bed. The
-// house has three rooms downstairs behind plaster partition walls with open
-// doorways — a living room inside the front door (a television on its
-// stand, a sofa, a low table), a kitchen at the back left (a cooking area
-// of cupboards, worktop, sink and stove, a tall kitchen cabinet, a table
-// with four chairs) and a bathroom at the back right (a toilet, a
-// washbasin, a cabinet) — and a straight wooden staircase up the left wall
-// of the living room to the bedroom that is the whole upper floor (a bed, a
-// wardrobe), with a handrail along the stair and a banister round the
-// stairwell. The walker opens the door (E), steps in onto the floor, walks
-// from room to room, climbs the stairs and bumps into the furniture; the
+// Interiors. The bungalow, the house and the skyscraper are built hollow —
+// their walls with a doorway and real window holes, timber floors, ceilings
+// — with a door that swings open on its hinge and furnished rooms. The
+// bungalow is one room: a kitchen (cupboards, worktop, sink, stove and a
+// wall cupboard) along the back wall, a table with four chairs, a wardrobe
+// and a bed. The house has three rooms downstairs behind plaster partition
+// walls with open doorways — a living room inside the front door (a
+// television on its stand, a sofa, a low table), a kitchen at the back left
+// (a cooking area of cupboards, worktop, sink and stove, a tall kitchen
+// cabinet, a table with four chairs) and a bathroom at the back right (a
+// toilet, a washbasin, a cabinet) — and a straight wooden staircase up the
+// left wall of the living room to the bedroom that is the whole upper floor
+// (a bed, a wardrobe), with a handrail along the stair and a banister round
+// the stairwell. The skyscraper's ground floor is a gallery with a
+// reception desk round a concrete core — a stairwell of switchback flights
+// and half landings up every storey behind its own door on each floor, and
+// a lift in its shaft (called from any floor, ridden up and down a floor at
+// a time) — and every floor above has four apartments in its corners off
+// the halls round the core, each a living room inside its door, a kitchen,
+// a bedroom and a bathroom furnished like the house's rooms. The walker
+// opens the door (E), steps in onto the floor, walks from room to room,
+// climbs the stairs, rides the lift and bumps into the furniture; the
 // other kinds stay solid.
 bool building_enterable(BuildingKind kind);
-// The rooms, partition walls, stair and rails of an enterable kind, in the
-// building's local frame (a along the front wall, b toward the road;
-// heights over the ground floor).
+// The rooms, partition walls, flights, landings, holes, rails and lift of an
+// enterable kind, in the building's local frame (a along the front wall, b
+// toward the road; heights over the ground floor).
 struct InteriorRoom { const char* name = ""; double a0 = 0, a1 = 0, b0 = 0, b1 = 0; int level = 0; };
-struct InteriorOpening { double along = 0, width = 0, height = 0; };          // a doorway: its centre along the wall from `from`
-struct InteriorWall { math::Vec2 from, to; double bottom = 0, top = 0; std::vector<InteriorOpening> openings; };  // a partition, kInteriorWallThickness thick
-struct InteriorStair { math::Vec2 foot, head; double width = 1.0, rise = 0; };  // a straight flight: the floor at `foot`, `rise` over it at `head`
-struct InteriorRail { math::Vec2 from, to; double bottom = 0, top = 0; };      // a handrail or banister: posts from bottom to top
+struct InteriorOpening { double along = 0, width = 0, height = 0, bottom = 0; };  // a doorway: its centre along the wall from `from`, its sill over the ground floor
+struct InteriorWall { math::Vec2 from, to; double bottom = 0, top = 0; std::vector<InteriorOpening> openings; double thickness = 0.25; SurfaceMaterial material = SurfaceMaterial::Plain; };
+struct InteriorStair { math::Vec2 foot, head; double width = 1.0, rise = 0, base = 0; };  // a straight flight: `base` over the floor at `foot`, `base + rise` at `head`
+struct InteriorPlatform { double a0 = 0, a1 = 0, b0 = 0, b1 = 0, height = 0; };  // a landing: a surface at this height over the ground floor
+struct InteriorHole { double a0 = 0, a1 = 0, b0 = 0, b1 = 0; int level = 0; };    // an opening in a floor slab (a stairwell, a shaft)
+struct InteriorRail { math::Vec2 from, to; double bottom = 0, top = 0; };       // a handrail or banister: posts from bottom to top
+struct InteriorLift {
+  double a0 = 0, a1 = 0, b0 = 0, b1 = 0;  // the shaft (plan)
+  double door_along = 0, door_width = 1.0, door_height = 2.1;  // the shaft door: at a = door_along in the shaft's wall at b1 (facing +b)
+  double speed_mps = 1.5;
+};
 struct InteriorPlan {
   std::vector<InteriorRoom> rooms;
   std::vector<InteriorWall> walls;
-  std::optional<InteriorStair> stair;
+  std::vector<InteriorStair> flights;
+  std::vector<InteriorPlatform> landings;
+  std::vector<InteriorHole> holes;
   std::vector<InteriorRail> rails;
-  double upper_floor = 0.0;   // the upper floor's height over the ground floor (0: one storey)
-  double slab = 0.25;         // the upper floor slab's thickness
+  std::optional<InteriorLift> lift;
+  int floors = 1;             // the levels, floor_height apart
+  double floor_height = 0.0;  // a storey (0: one floor)
+  double slab = 0.25;         // an upper floor slab's thickness
+  double level(int floor) const { return floor * floor_height; }
+  // The plan of the house's stair (its one flight), kept for convenience.
+  const InteriorStair* stair() const { return flights.empty() ? nullptr : &flights.front(); }
 };
 InteriorPlan interior_plan(const BuildingSpec& spec);
+// A lift's state: the car's height over the ground floor, where it is going, whether its doors stand open.
+struct LiftState {
+  double height = 0.0;
+  int floor = 0, target = 0;
+  bool moving = false, open = true;
+};
 struct DoorState {
   double open = 0.0;      // 0 closed .. 1 swung 90 degrees inward
   bool opening = false;   // the way it is moving (or resting)
@@ -307,8 +334,21 @@ class BuildingSet {
   // highest no more than the step height (0.5 m) above the feet.
   std::optional<double> platform_height(double x, double z) const;
   std::optional<double> platform_height(double x, double z, double feet_y) const;
-  // The room the point lies in at the feet's height ("kitchen", "stairs", ...), or nullptr.
+  // The room the point lies in at the feet's height ("kitchen", "stairs", ...), or nullptr; the floor the feet are on.
   const char* room_at(std::size_t building, double x, double z, double feet_y) const;
+  int level_at(std::size_t building, double feet_y) const;
+  // The lift (the skyscraper's): its state; whether a plan point is in its
+  // car (the shaft); the building whose shaft door is within `reach` of a
+  // point at the feet's level; calling it to a floor (it closes its doors
+  // and travels at its speed, opening on arrival); riding it a floor up or
+  // down from inside. call_lift / ride_lift return false when the building
+  // has no lift or the floor does not exist.
+  std::optional<LiftState> lift_state(std::size_t building) const;
+  bool in_lift(std::size_t building, double x, double z) const;
+  std::optional<std::size_t> lift_door_near(double x, double z, double feet_y, double reach_meters) const;
+  bool call_lift(std::size_t building, int floor);
+  bool ride_lift(std::size_t building, int floors_up);
+  const InteriorPlan& plan(std::size_t building) const { return plans_[building]; }
   // The path's speed factor on a footpath or a floor, 1 elsewhere.
   double speed_factor(double x, double z) const;
   // The building whose footprint (plus margin) covers the point, if any.
@@ -368,8 +408,11 @@ class BuildingSet {
   std::vector<Obstacle> door_obstacles() const;
   std::vector<MeshPart> build_door_meshes() const;
   // Geometry: foundations, walls, roofs, windows, painted doors, crosses, canopies,
-  // footpaths — and the rooms and furniture of the enterable buildings.
-  std::vector<MeshPart> build_meshes() const;
+  // footpaths — and the rooms and furniture of the enterable buildings (of
+  // those within `interior_radius` of `focus` when one is given: the rooms of
+  // a city's towers are only built near the viewer). interiors_near lists them.
+  std::vector<MeshPart> build_meshes(std::optional<math::Vec2> focus = std::nullopt, double interior_radius_meters = 0.0) const;
+  std::vector<std::size_t> interiors_near(math::Vec2 focus, double radius_meters) const;
 
  private:
   struct Leaf { math::Vec2 hinge, along; double width, height, bottom; };  // a door leaf's plan as it stands now
@@ -380,7 +423,9 @@ class BuildingSet {
   void roof_falls(std::size_t building);
   double external_heat_at(std::size_t building, const BuildingHazards& hazards) const;
   std::vector<Building> buildings_;
+  std::vector<InteriorPlan> plans_;
   std::vector<DoorState> doors_;
+  std::vector<LiftState> lifts_;
   std::vector<BuildingState> states_;
   std::vector<BuildingLog> logs_;
   std::vector<BuildingEvent> events_;

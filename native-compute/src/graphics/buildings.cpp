@@ -115,7 +115,7 @@ std::optional<BuildingKind> building_kind_from_name(const std::string& name) {
   return std::nullopt;
 }
 
-bool building_enterable(BuildingKind kind) { return kind == BuildingKind::Bungalow || kind == BuildingKind::House; }
+bool building_enterable(BuildingKind kind) { return kind == BuildingKind::Bungalow || kind == BuildingKind::House || kind == BuildingKind::Skyscraper; }
 
 namespace {
 // The house's plan: the stair up the left wall of the living room, the
@@ -140,6 +140,44 @@ HouseLayout house_layout(const BuildingSpec& spec) {
   h.split_a = std::min(1.0, h.iw - 3.0);
   return h;
 }
+// The skyscraper's plan: a concrete core in the middle — the stairwell (two
+// switchback flights a storey, a half landing between them) on its left,
+// the lift shaft on its right — halls in front of and behind the core,
+// corridors beside it, and an apartment in each corner of every floor above
+// the ground floor's gallery.
+struct TowerLayout {
+  double iw, id, storey;
+  double core_a0 = -3.0, core_a1 = 3.0, core_b0 = -4.0, core_b1 = 4.0;   // the core's outer faces
+  double stair_a0 = -3.0, stair_a1 = 0.0;                                  // the stairwell: two flights side by side ...
+  double flight_w = 1.4, spine_a = -1.5;                                   // ... each this wide, a thin wall between them
+  double flight_foot_b = 3.0, flight_head_b = -1.6, landing_b0 = -3.6;     // a flight runs from the door side to the back, the landing behind; half a metre of floor at the door side joins the strips
+  double shaft_a0 = 0.5, shaft_a1 = 3.0, shaft_b0 = 1.0, shaft_b1 = 4.0;   // the lift shaft, its door on the front face
+  double band_a = 4.5, band_b = 5.5;                                       // the halls and corridors round the core reach this far
+  double apt_w, apt_d;                                                     // an apartment's size (a, b)
+};
+TowerLayout tower_layout(const BuildingSpec& spec) {
+  TowerLayout t;
+  t.iw = 0.5 * spec.width_meters - kWall; t.id = 0.5 * spec.depth_meters - kWall; t.storey = spec.storey_height_meters;
+  t.apt_w = t.iw - t.band_a; t.apt_d = t.id - t.band_b;
+  return t;
+}
+// An apartment's corner: the signs of a and b (which quadrant it is in).
+struct Quadrant { double sa, sb; };
+constexpr Quadrant kQuadrants[4] = {{-1, 1}, {1, 1}, {-1, -1}, {1, -1}};  // front left, front right, back left, back right
+// A frame for laying an apartment out: u runs from the corridor-side wall
+// toward the exterior wall, v from the hall-side wall (the door's) toward
+// the back, both from the apartment's inner corner; mirrored per quadrant.
+struct AptFrame {
+  double a_in, b_in;  // the inner corner (the corridor side)
+  double sa, sb;      // u grows toward sa * a, v toward sb * b
+  math::Vec2 plan(double u, double v) const { return {a_in + sa * u, b_in + sb * v}; }
+};
+AptFrame apt_frame(const TowerLayout& t, const Quadrant& q) { return {q.sa * (t.band_a + kWall), q.sb * (t.band_b + kWall), q.sa, q.sb}; }
+// A wall segment of an apartment in its frame.
+InteriorWall apt_wall(const AptFrame& f, double u0, double v0, double u1, double v1, double bottom, double top, std::vector<InteriorOpening> openings = {}) {
+  InteriorWall w; w.from = f.plan(u0, v0); w.to = f.plan(u1, v1); w.bottom = bottom; w.top = top; w.openings = std::move(openings);
+  return w;
+}
 }  // namespace
 
 InteriorPlan interior_plan(const BuildingSpec& spec) {
@@ -147,137 +185,268 @@ InteriorPlan interior_plan(const BuildingSpec& spec) {
   InteriorPlan plan;
   if (!building_enterable(spec.kind)) return plan;
   const double iw = 0.5 * spec.width_meters - kWall, id = 0.5 * spec.depth_meters - kWall;
-  if (spec.kind == BuildingKind::Bungalow || spec.storeys < 2) {
+  if (spec.kind == BuildingKind::Bungalow || (spec.kind == BuildingKind::House && spec.storeys < 2)) {
     plan.rooms.push_back({"room", -iw, iw, -id, id, 0});
     return plan;
   }
-  const HouseLayout h = house_layout(spec);
+  if (spec.kind == BuildingKind::House) {
+    const HouseLayout h = house_layout(spec);
+    const DoorSize doorway{1.0, 2.1};
+    plan.floors = 2; plan.floor_height = h.upper;
+    plan.rooms.push_back({"living room", h.stair_a1, iw, h.back_b, id, 0});
+    plan.rooms.push_back({"stairs", h.stair_a0, h.stair_a1, h.stair_head_b, id, 0});
+    plan.rooms.push_back({"kitchen", -iw, h.split_a - 0.5 * kWall, -id, h.back_b - kWall, 0});
+    plan.rooms.push_back({"bathroom", h.split_a + 0.5 * kWall, iw, -id, h.back_b - kWall, 0});
+    plan.rooms.push_back({"bedroom", -iw, iw, -id, id, 1});
+    // The partition behind the living room, with the kitchen's and the bathroom's doorways; its centre line is half a wall behind the face.
+    InteriorWall back;
+    back.from = {-iw, h.back_b - 0.5 * kWall}; back.to = {iw, h.back_b - 0.5 * kWall}; back.bottom = 0.0; back.top = h.upper - plan.slab;
+    back.openings.push_back({(h.stair_a1 + 1.5) - (-iw), doorway.width, doorway.height, 0.0});                 // into the kitchen, a metre past the stair
+    back.openings.push_back({(0.5 * (h.split_a + 0.5 * kWall + iw)) - (-iw), doorway.width, doorway.height, 0.0});  // into the bathroom, mid-wall
+    plan.walls.push_back(std::move(back));
+    InteriorWall split;
+    split.from = {h.split_a, h.back_b - kWall}; split.to = {h.split_a, -id}; split.bottom = 0.0; split.top = h.upper - plan.slab;
+    plan.walls.push_back(std::move(split));
+    plan.flights.push_back(InteriorStair{{0.5 * (h.stair_a0 + h.stair_a1), h.stair_foot_b}, {0.5 * (h.stair_a0 + h.stair_a1), h.stair_head_b}, h.stair_a1 - h.stair_a0, h.upper, 0.0});
+    plan.holes.push_back({h.stair_a0, h.stair_a1, h.stair_head_b, id, 1});  // the stairwell: the stair's strip from its head to the front wall
+    // The handrail along the stair's open side runs on up as the banister round the stairwell.
+    plan.rails.push_back({{h.stair_a1, id}, {h.stair_a1, h.stair_head_b}, -0.5, h.upper + 1.0});
+    return plan;
+  }
+  // The skyscraper.
+  const TowerLayout t = tower_layout(spec);
+  plan.floors = static_cast<int>(spec.storeys); plan.floor_height = t.storey;
+  const double top = plan.floors * t.storey;
   const DoorSize doorway{1.0, 2.1};
-  plan.upper_floor = h.upper;
-  plan.rooms.push_back({"living room", h.stair_a1, iw, h.back_b, id, 0});
-  plan.rooms.push_back({"stairs", h.stair_a0, h.stair_a1, h.stair_head_b, id, 0});
-  plan.rooms.push_back({"kitchen", -iw, h.split_a - 0.5 * kWall, -id, h.back_b - kWall, 0});
-  plan.rooms.push_back({"bathroom", h.split_a + 0.5 * kWall, iw, -id, h.back_b - kWall, 0});
-  plan.rooms.push_back({"bedroom", -iw, iw, -id, id, 1});
-  // The partition behind the living room, with the kitchen's and the bathroom's doorways; its centre line is half a wall behind the face.
-  InteriorWall back;
-  back.from = {-iw, h.back_b - 0.5 * kWall}; back.to = {iw, h.back_b - 0.5 * kWall}; back.bottom = 0.0; back.top = h.upper - plan.slab;
-  back.openings.push_back({(h.stair_a1 + 1.5) - (-iw), doorway.width, doorway.height});                 // into the kitchen, a metre past the stair
-  back.openings.push_back({(0.5 * (h.split_a + 0.5 * kWall + iw)) - (-iw), doorway.width, doorway.height});  // into the bathroom, mid-wall
-  plan.walls.push_back(std::move(back));
-  InteriorWall split;
-  split.from = {h.split_a, h.back_b - kWall}; split.to = {h.split_a, -id}; split.bottom = 0.0; split.top = h.upper - plan.slab;
-  plan.walls.push_back(std::move(split));
-  plan.stair = InteriorStair{{0.5 * (h.stair_a0 + h.stair_a1), h.stair_foot_b}, {0.5 * (h.stair_a0 + h.stair_a1), h.stair_head_b}, h.stair_a1 - h.stair_a0, h.upper};
-  // The handrail along the stair's open side runs on up as the banister round the stairwell.
-  plan.rails.push_back({{h.stair_a1, id}, {h.stair_a1, h.stair_head_b}, -0.5, h.upper + 1.0});
+  // The core: concrete walls the full height. Its front face carries the
+  // stairwell's and the lift's doors on every floor; a wall parts the
+  // stairwell from the shaft; the thin spine wall stands between the flights.
+  const auto concrete_wall = [&](math::Vec2 from, math::Vec2 to, std::vector<InteriorOpening> openings = {}, double thickness = kWall) {
+    InteriorWall w; w.from = from; w.to = to; w.bottom = 0.0; w.top = top; w.openings = std::move(openings); w.thickness = thickness; w.material = SurfaceMaterial::Concrete;
+    return w;
+  };
+  {
+    std::vector<InteriorOpening> front_doors;
+    const double stair_door_a = 0.5 * (t.spine_a + 0.5 * 0.1 + t.stair_a1), shaft_door_a = 0.5 * (t.shaft_a0 + t.shaft_a1);
+    for (int k = 0; k < plan.floors; ++k) {
+      front_doors.push_back({stair_door_a - t.core_a0, doorway.width, doorway.height, plan.level(k)});
+      front_doors.push_back({shaft_door_a - t.core_a0, doorway.width, doorway.height, plan.level(k)});
+    }
+    plan.walls.push_back(concrete_wall({t.core_a0, t.core_b1 - 0.5 * kWall}, {t.core_a1, t.core_b1 - 0.5 * kWall}, std::move(front_doors)));  // the front face
+    plan.walls.push_back(concrete_wall({t.core_a0, t.core_b0 + 0.5 * kWall}, {t.core_a1, t.core_b0 + 0.5 * kWall}));  // the back face
+    plan.walls.push_back(concrete_wall({t.core_a0 + 0.5 * kWall, t.core_b0 + kWall}, {t.core_a0 + 0.5 * kWall, t.core_b1 - kWall}));  // the left face
+    plan.walls.push_back(concrete_wall({t.core_a1 - 0.5 * kWall, t.core_b0 + kWall}, {t.core_a1 - 0.5 * kWall, t.core_b1 - kWall}));  // the right face
+    plan.walls.push_back(concrete_wall({0.5 * (t.stair_a1 + t.shaft_a0), t.core_b0 + kWall}, {0.5 * (t.stair_a1 + t.shaft_a0), t.core_b1 - kWall}, {}, t.shaft_a0 - t.stair_a1));  // between the stairwell and the shaft
+    plan.walls.push_back(concrete_wall({t.shaft_a0, t.shaft_b0 - 0.5 * kWall}, {t.shaft_a1 - kWall, t.shaft_b0 - 0.5 * kWall}));  // the shaft's back
+    // The spine between the flights, from the landing to 0.6 m short of the
+    // door side: there the two flights are within a step of each other and
+    // the walker crosses between them to the door.
+    plan.walls.push_back(concrete_wall({t.spine_a, t.flight_head_b}, {t.spine_a, t.flight_foot_b - 0.6}, {}, 0.1));
+    plan.lift = InteriorLift{t.shaft_a0 + kWall, t.shaft_a1 - kWall, t.shaft_b0, t.shaft_b1 - kWall, shaft_door_a, doorway.width, doorway.height, 1.5};
+  }
+  // The flights: up the left strip from the door side to the back, the landing, back up the right strip to the next floor.
+  const double flight_a_left = 0.5 * (t.stair_a0 + t.spine_a - 0.05), flight_a_right = 0.5 * (t.spine_a + 0.05 + t.stair_a1);
+  for (int k = 0; k + 1 < plan.floors; ++k) {
+    const double base = plan.level(k), half = 0.5 * t.storey;
+    plan.flights.push_back(InteriorStair{{flight_a_left, t.flight_foot_b}, {flight_a_left, t.flight_head_b}, t.flight_w, half, base});
+    plan.landings.push_back({t.stair_a0, t.stair_a1, t.landing_b0, t.flight_head_b, base + half});
+    plan.flights.push_back(InteriorStair{{flight_a_right, t.flight_head_b}, {flight_a_right, t.flight_foot_b}, t.flight_w, half, base + half});
+    plan.holes.push_back({t.stair_a0, t.stair_a1, t.landing_b0, t.flight_foot_b, k + 1});  // the stairwell through the floor above
+    plan.holes.push_back({t.shaft_a0, t.shaft_a1, t.shaft_b0, t.shaft_b1, k + 1});         // the shaft
+  }
+  // The ground floor: the gallery round the core; every floor above: the
+  // halls, the corridors, and the four apartments in the corners.
+  plan.rooms.push_back({"stairwell", t.stair_a0, t.stair_a1, t.core_b0, t.core_b1, 0});
+  plan.rooms.push_back({"lift", t.shaft_a0, t.shaft_a1, t.shaft_b0, t.shaft_b1, 0});
+  plan.rooms.push_back({"gallery", -iw, iw, -id, id, 0});
+  for (int k = 1; k < plan.floors; ++k) {
+    plan.rooms.push_back({"stairwell", t.stair_a0, t.stair_a1, t.core_b0, t.core_b1, k});
+    plan.rooms.push_back({"lift", t.shaft_a0, t.shaft_a1, t.shaft_b0, t.shaft_b1, k});
+    plan.rooms.push_back({"hall", -t.band_a, t.band_a, t.core_b1, id, k});   // before the core (the apartments' doors open onto the side halls)
+    plan.rooms.push_back({"hall", -t.band_a, t.band_a, -id, t.core_b0, k});  // behind it
+    plan.rooms.push_back({"hall", -iw, t.core_a0, -t.band_b, t.band_b, k});  // beside it, left
+    plan.rooms.push_back({"hall", t.core_a1, iw, -t.band_b, t.band_b, k});   // and right
+    for (const auto& q : kQuadrants) {
+      const AptFrame f = apt_frame(t, q);
+      const double W = t.apt_w - kWall, D = t.apt_d - kWall;  // the rooms' extents (the apartment's own walls take kWall on its two inner sides)
+      const auto room = [&](const char* name, double u0, double v0, double u1, double v1) {
+        const math::Vec2 p0 = f.plan(u0, v0), p1 = f.plan(u1, v1);
+        plan.rooms.push_back({name, std::min(p0.x, p1.x), std::max(p0.x, p1.x), std::min(p0.y, p1.y), std::max(p0.y, p1.y), k});
+      };
+      room("living room", 0, 0, 0.5 * W, 0.5 * D);
+      room("kitchen", 0.5 * W, 0, W, 0.5 * D);
+      room("bedroom", 0, 0.5 * D, 0.5 * W, D);
+      room("bathroom", 0.5 * W, 0.5 * D, W, D);
+      const double bottom = plan.level(k), ceiling = plan.level(k + 1) - plan.slab;
+      // The apartment's walls to the hall (with its door) and to the corridor, a storey high; the partitions inside.
+      plan.walls.push_back(apt_wall(f, -kWall, -0.5 * kWall, W, -0.5 * kWall, bottom, ceiling, {{kWall + 1.5, doorway.width, doorway.height, bottom}}));
+      plan.walls.push_back(apt_wall(f, -0.5 * kWall, 0, -0.5 * kWall, D, bottom, ceiling));
+      plan.walls.push_back(apt_wall(f, 0.5 * W, 0, 0.5 * W, D, bottom, ceiling, {{0.15 * D, doorway.width, doorway.height, bottom}, {0.75 * D, doorway.width, doorway.height, bottom}}));  // living room to kitchen, bedroom to bathroom
+      plan.walls.push_back(apt_wall(f, 0, 0.5 * D, 0.5 * W, 0.5 * D, bottom, ceiling, {{0.4 * W, doorway.width, doorway.height, bottom}}));  // living room to bedroom
+    }
+  }
   return plan;
 }
+
+namespace {
+// Lays furniture out in a room's own frame: u and v from an origin along
+// two plan axes (each +a, -a, +b or -b), half sizes swapped when the axes
+// are turned; the pieces are kept when they fit between the building's walls.
+struct Placer {
+  std::vector<Furnishing>& out;
+  double iw, id, ceiling;
+  math::Vec2 origin;          // local (a, b)
+  math::Vec2 ua, va;          // unit axes in (a, b): u and v
+  double lift = 0.0;          // the floor's height over the ground floor
+  bool add(const char* what, double u, double v, double half_u, double half_v, double bottom, double height, math::Vec3 color,
+           SurfaceMaterial material, bool solid, bool drawn = true) const {
+    const math::Vec2 c = origin + ua * u + va * v;
+    const double half_a = std::abs(ua.x) > 0.5 ? half_u : half_v, half_b = std::abs(ua.x) > 0.5 ? half_v : half_u;
+    if (std::abs(c.x) + half_a > iw + 1e-9 || std::abs(c.y) + half_b > id + 1e-9 || lift + bottom + height > ceiling) return false;
+    out.push_back(Furnishing{what, c, half_a, half_b, lift + bottom, height, color, material, solid, drawn});
+    return true;
+  }
+};
+const math::Vec3 kTimber{0.50, 0.34, 0.20}, kDarkTimber{0.42, 0.28, 0.16}, kPaleTimber{0.56, 0.40, 0.24}, kSteel{0.75, 0.76, 0.78}, kIron{0.25, 0.25, 0.27};
+const math::Vec3 kStone{0.55, 0.55, 0.52}, kLinen{0.92, 0.92, 0.88}, kWool{0.30, 0.40, 0.65}, kPorcelain{0.94, 0.95, 0.95}, kFabric{0.30, 0.36, 0.48}, kBlack{0.06, 0.06, 0.07};
+// A table with chairs round it (a kitchen or dining table), its long side along u; `chairs` 2 (one each long side) or 4.
+void table_and_chairs(const Placer& p, double tu, double tv, int chairs = 4) {
+  if (!p.add("table", tu, tv, 0.7, 0.45, 0.0, 0.76, kPaleTimber, SurfaceMaterial::Timber, true, false)) return;
+  p.add("table", tu, tv, 0.7, 0.45, 0.72, 0.04, kPaleTimber, SurfaceMaterial::Timber, false);
+  for (const double su : {-1.0, 1.0})
+    for (const double sv : {-1.0, 1.0}) p.add("table", tu + su * 0.6, tv + sv * 0.35, 0.04, 0.04, 0.0, 0.72, kPaleTimber, SurfaceMaterial::Timber, false);
+  for (const double sv : {-1.0, 1.0})
+    for (const double su : (chairs >= 4 ? std::vector<double>{-1.0, 1.0} : std::vector<double>{0.0})) {
+      const double cu = tu + su * 0.4, cv = tv + sv * 0.75;
+      if (!p.add("chair", cu, cv, 0.21, 0.21, 0.0, 0.9, kTimber, SurfaceMaterial::Timber, true, false)) continue;
+      p.add("chair", cu, cv, 0.21, 0.21, 0.42, 0.04, kTimber, SurfaceMaterial::Timber, false);
+      for (const double lu : {-1.0, 1.0})
+        for (const double lv : {-1.0, 1.0}) p.add("chair", cu + lu * 0.18, cv + lv * 0.18, 0.02, 0.02, 0.0, 0.42, kTimber, SurfaceMaterial::Timber, false);
+      p.add("chair", cu, cv + sv * 0.19, 0.21, 0.02, 0.46, 0.44, kTimber, SurfaceMaterial::Timber, false);  // the backrest, away from the table
+    }
+}
+// A cooking area along a wall at v (the wall behind it at smaller v) from u0: a run of
+// cupboards under a worktop with a sink, a cupboard on the wall over it, a stove beside it.
+void cooking_area(const Placer& p, double u0, double v) {
+  if (p.add("cupboard", u0 + 1.5, v, 1.5, 0.3, 0.0, 0.85, kTimber, SurfaceMaterial::Timber, true)) {
+    p.add("worktop", u0 + 1.5, v, 1.52, 0.32, 0.85, 0.05, kStone, SurfaceMaterial::Stone, false);
+    p.add("sink", u0 + 0.7, v, 0.25, 0.2, 0.9, 0.1, kSteel, SurfaceMaterial::Metal, false);
+    p.add("cupboard", u0 + 1.1, v - 0.12, 0.9, 0.18, 1.5, 0.7, kTimber, SurfaceMaterial::Timber, false);  // on the wall
+  }
+  p.add("stove", u0 + 3.4, v, 0.3, 0.3, 0.0, 0.9, kIron, SurfaceMaterial::Metal, true);
+}
+// A bed, its head toward smaller v (the wall behind it).
+void bed(const Placer& p, double bu, double bv) {
+  if (p.add("bed", bu, bv, 0.7, 1.0, 0.0, 0.35, kTimber, SurfaceMaterial::Timber, false)) {
+    p.add("mattress", bu, bv, 0.66, 0.96, 0.35, 0.22, kLinen, SurfaceMaterial::Plain, true);
+    p.add("blanket", bu, bv + 0.36, 0.66, 0.6, 0.57, 0.05, kWool, SurfaceMaterial::Plain, false);
+    p.add("pillow", bu, bv - 0.7, 0.4, 0.22, 0.57, 0.12, kLinen, SurfaceMaterial::Plain, false);
+  }
+}
+// A toilet (its cistern toward smaller v) and a washbasin against the wall at smaller v.
+void bathroom_fixtures(const Placer& p, double tu, double tv, double su, double sv) {
+  if (p.add("toilet", tu, tv, 0.2, 0.35, 0.0, 0.85, kPorcelain, SurfaceMaterial::Plain, true, false)) {
+    p.add("toilet", tu, tv + 0.05, 0.2, 0.3, 0.0, 0.42, kPorcelain, SurfaceMaterial::Plain, false);   // the bowl
+    p.add("toilet", tu, tv - 0.25, 0.2, 0.1, 0.42, 0.43, kPorcelain, SurfaceMaterial::Plain, false);  // the cistern
+  }
+  if (p.add("washbasin", su, sv, 0.28, 0.22, 0.0, 0.95, kPorcelain, SurfaceMaterial::Plain, true, false)) {
+    p.add("washbasin", su, sv, 0.1, 0.1, 0.0, 0.8, kPorcelain, SurfaceMaterial::Plain, false);    // the pedestal
+    p.add("washbasin", su, sv, 0.28, 0.22, 0.8, 0.15, kPorcelain, SurfaceMaterial::Plain, false);  // the basin
+    p.add("tap", su, sv - 0.17, 0.02, 0.02, 0.95, 0.12, kSteel, SurfaceMaterial::Metal, false);
+  }
+}
+// A television on its stand against the wall at larger u, the sofa facing it over a low table (all at v).
+void living_room_set(const Placer& p, double tv_u, double v) {
+  if (p.add("television", tv_u, v, 0.25, 0.6, 0.0, 1.15, kBlack, SurfaceMaterial::Plain, true, false)) {
+    p.add("stand", tv_u, v, 0.25, 0.6, 0.0, 0.5, kTimber, SurfaceMaterial::Timber, false);
+    p.add("television", tv_u + 0.02, v, 0.04, 0.55, 0.5, 0.65, kBlack, SurfaceMaterial::Plain, false);
+  }
+  const double cu = tv_u - 1.18;
+  if (p.add("table", cu, v, 0.45, 0.3, 0.0, 0.55, kPaleTimber, SurfaceMaterial::Timber, true, false)) {
+    p.add("table", cu, v, 0.45, 0.3, 0.5, 0.05, kPaleTimber, SurfaceMaterial::Timber, false);
+    for (const double su : {-1.0, 1.0})
+      for (const double sv : {-1.0, 1.0}) p.add("table", cu + su * 0.38, v + sv * 0.23, 0.03, 0.03, 0.0, 0.5, kPaleTimber, SurfaceMaterial::Timber, false);
+  }
+  const double fu = tv_u - 2.58;
+  if (p.add("sofa", fu, v, 0.45, 1.1, 0.0, 0.9, kFabric, SurfaceMaterial::Plain, true, false)) {
+    p.add("sofa", fu, v, 0.45, 1.0, 0.1, 0.35, kFabric, SurfaceMaterial::Plain, false);           // the seat
+    p.add("sofa", fu - 0.35, v, 0.1, 1.0, 0.45, 0.45, kFabric, SurfaceMaterial::Plain, false);    // the backrest, away from the television
+    for (const double sv : {-1.0, 1.0}) p.add("sofa", fu, v + sv * 1.0, 0.45, 0.1, 0.0, 0.6, kFabric, SurfaceMaterial::Plain, false);  // the armrests
+  }
+}
+}  // namespace
 
 std::vector<Furnishing> furnish(const BuildingSpec& spec) {
   validate_building_spec(spec);
   std::vector<Furnishing> out;
   if (!building_enterable(spec.kind)) return out;
-  const double iw = 0.5 * spec.width_meters - kWall, id = 0.5 * spec.depth_meters - kWall;  // the room's half extents
+  const double iw = 0.5 * spec.width_meters - kWall, id = 0.5 * spec.depth_meters - kWall;  // the rooms' half extents
   const double ceiling = spec.storeys * spec.storey_height_meters - 0.1;
-  const double door_half = 0.5 * door_size(spec.kind).width + kDoorwayClearance;
-  const math::Vec3 timber{0.50, 0.34, 0.20}, dark_timber{0.42, 0.28, 0.16}, pale_timber{0.56, 0.40, 0.24}, steel{0.75, 0.76, 0.78}, iron{0.25, 0.25, 0.27};
-  const math::Vec3 stone{0.55, 0.55, 0.52}, linen{0.92, 0.92, 0.88}, wool{0.30, 0.40, 0.65}, porcelain{0.94, 0.95, 0.95}, fabric{0.30, 0.36, 0.48}, black{0.06, 0.06, 0.07};
-  // A piece is kept when it stands clear of the walls, the doorway and the ceiling.
-  const auto add = [&](const char* what, double a, double b, double half_a, double half_b, double bottom, double height, math::Vec3 color,
-                       SurfaceMaterial material, bool solid, bool drawn = true) {
-    if (std::abs(a) + half_a > iw + 1e-9 || std::abs(b) + half_b > id + 1e-9 || bottom + height > ceiling) return false;
-    if (b + half_b > id - 1.2 && std::abs(a) - half_a < door_half + 0.4) return false;  // keep the entrance clear
-    out.push_back(Furnishing{what, {a, b}, half_a, half_b, bottom, height, color, material, solid, drawn});
-    return true;
-  };
-  // A table with chairs round it (a kitchen or dining table).
-  const auto table_and_chairs = [&](double ta, double tb, double lift) {
-    if (!add("table", ta, tb, 0.7, 0.45, lift, 0.76, pale_timber, SurfaceMaterial::Timber, true, false)) return;
-    add("table", ta, tb, 0.7, 0.45, lift + 0.72, 0.04, pale_timber, SurfaceMaterial::Timber, false);
-    for (const double sa : {-1.0, 1.0})
-      for (const double sb : {-1.0, 1.0}) add("table", ta + sa * 0.6, tb + sb * 0.35, 0.04, 0.04, lift, 0.72, pale_timber, SurfaceMaterial::Timber, false);
-    for (const double sb : {-1.0, 1.0})
-      for (const double sa : {-1.0, 1.0}) {
-        const double ca = ta + sa * 0.4, cb = tb + sb * 0.75;
-        if (!add("chair", ca, cb, 0.21, 0.21, lift, 0.9, timber, SurfaceMaterial::Timber, true, false)) continue;
-        add("chair", ca, cb, 0.21, 0.21, lift + 0.42, 0.04, timber, SurfaceMaterial::Timber, false);
-        for (const double la : {-1.0, 1.0})
-          for (const double lb : {-1.0, 1.0}) add("chair", ca + la * 0.18, cb + lb * 0.18, 0.02, 0.02, lift, 0.42, timber, SurfaceMaterial::Timber, false);
-        add("chair", ca, cb + sb * 0.19, 0.21, 0.02, lift + 0.46, 0.44, timber, SurfaceMaterial::Timber, false);  // the backrest, away from the table
-      }
-  };
-  // A cooking area along a back wall from a0: a run of cupboards under a
-  // worktop with a sink, a cupboard on the wall over it, a stove beside it.
-  const auto cooking_area = [&](double a0, double b) {
-    if (add("cupboard", a0 + 1.5, b, 1.5, 0.3, 0.0, 0.85, timber, SurfaceMaterial::Timber, true)) {
-      add("worktop", a0 + 1.5, b, 1.52, 0.32, 0.85, 0.05, stone, SurfaceMaterial::Stone, false);
-      add("sink", a0 + 0.7, b, 0.25, 0.2, 0.9, 0.1, steel, SurfaceMaterial::Metal, false);
-      add("cupboard", a0 + 1.1, b - 0.12, 0.9, 0.18, 1.5, 0.7, timber, SurfaceMaterial::Timber, false);  // on the wall, clear of the window
-    }
-    add("stove", a0 + 3.4, b, 0.3, 0.3, 0.0, 0.9, iron, SurfaceMaterial::Metal, true);
-  };
-  // A bed against a back wall, its head to the wall.
-  const auto bed = [&](double ba, double bb, double lift) {
-    if (add("bed", ba, bb, 0.7, 1.0, lift, 0.35, timber, SurfaceMaterial::Timber, false)) {
-      add("mattress", ba, bb, 0.66, 0.96, lift + 0.35, 0.22, linen, SurfaceMaterial::Plain, true);
-      add("blanket", ba, bb + 0.36, 0.66, 0.6, lift + 0.57, 0.05, wool, SurfaceMaterial::Plain, false);
-      add("pillow", ba, bb - 0.7, 0.4, 0.22, lift + 0.57, 0.12, linen, SurfaceMaterial::Plain, false);
-    }
-  };
+  const Placer local{out, iw, id, ceiling, {0, 0}, {1, 0}, {0, 1}, 0.0};  // the building's own frame
   if (spec.kind == BuildingKind::House && spec.storeys >= 2) {
     const HouseLayout h = house_layout(spec);
-    const double kb = -id + 0.32;  // along the back wall, 2 cm off it
     // The kitchen (back left): the cooking area along the back wall, a tall cabinet against the left wall, the table with four chairs.
-    cooking_area(-iw + 0.25, kb);
-    add("cabinet", -iw + 0.32, -id + 1.3, 0.3, 0.45, 0.0, 2.0, dark_timber, SurfaceMaterial::Timber, true);  // between the cooking area and the window
-    table_and_chairs(h.split_a - 1.9, 0.5 * (h.back_b - kWall - id) + 0.2, 0.0);
+    cooking_area(local, -iw + 0.25, -id + 0.32);
+    local.add("cabinet", -iw + 0.32, -id + 1.3, 0.3, 0.45, 0.0, 2.0, kDarkTimber, SurfaceMaterial::Timber, true);  // between the cooking area and the window
+    table_and_chairs(local, h.split_a - 1.9, 0.5 * (h.back_b - kWall - id) + 0.2);
     // The bathroom (back right): a toilet and a washbasin against the back wall, a cabinet against the right wall.
-    {
-      const double ta = iw - 0.75, tb = -id + 0.4;
-      if (add("toilet", ta, tb, 0.2, 0.35, 0.0, 0.85, porcelain, SurfaceMaterial::Plain, true, false)) {
-        add("toilet", ta, tb + 0.05, 0.2, 0.3, 0.0, 0.42, porcelain, SurfaceMaterial::Plain, false);   // the bowl
-        add("toilet", ta, tb - 0.25, 0.2, 0.1, 0.42, 0.43, porcelain, SurfaceMaterial::Plain, false);  // the cistern
-      }
-      const double sa = h.split_a + 1.4, sb = -id + 0.3;
-      if (add("washbasin", sa, sb, 0.28, 0.22, 0.0, 0.95, porcelain, SurfaceMaterial::Plain, true, false)) {
-        add("washbasin", sa, sb, 0.1, 0.1, 0.0, 0.8, porcelain, SurfaceMaterial::Plain, false);    // the pedestal
-        add("washbasin", sa, sb, 0.28, 0.22, 0.8, 0.15, porcelain, SurfaceMaterial::Plain, false);  // the basin
-        add("tap", sa, sb - 0.17, 0.02, 0.02, 0.95, 0.12, steel, SurfaceMaterial::Metal, false);
-      }
-      add("cabinet", iw - 0.22, 0.5 * (h.back_b - kWall - id), 0.2, 0.45, 0.0, 1.8, timber, SurfaceMaterial::Timber, true);
+    bathroom_fixtures(local, iw - 0.75, -id + 0.4, h.split_a + 1.4, -id + 0.3);
+    local.add("cabinet", iw - 0.22, 0.5 * (h.back_b - kWall - id), 0.2, 0.45, 0.0, 1.8, kTimber, SurfaceMaterial::Timber, true);
+    // The living room (front): the television against the right wall, the sofa facing it over a low table.
+    living_room_set(local, iw - 0.27, 0.5 * (h.back_b + id) + 0.7);
+    // The bedroom upstairs: the bed against the back wall, the wardrobe in the front corner by the right wall.
+    Placer upstairs = local; upstairs.lift = h.upper;
+    bed(upstairs, iw - 2.75, -id + 1.05);
+    upstairs.add("wardrobe", iw - 0.32, id - 0.95, 0.3, 0.9, 0.0, 2.1, kDarkTimber, SurfaceMaterial::Timber, true);
+    return out;
+  }
+  if (spec.kind == BuildingKind::Skyscraper) {
+    const TowerLayout t = tower_layout(spec);
+    // The gallery: the reception desk inside the entrance, facing the door, and two sofas over low tables either side.
+    local.add("desk", 0.0, id - 4.0, 1.8, 0.4, 0.0, 1.1, kDarkTimber, SurfaceMaterial::Timber, true);
+    local.add("desk", 0.0, id - 4.0, 1.85, 0.45, 1.1, 0.05, kStone, SurfaceMaterial::Stone, false);  // its top
+    local.add("chair", 0.0, id - 4.9, 0.25, 0.25, 0.0, 0.9, kBlack, SurfaceMaterial::Plain, true, false);
+    local.add("chair", 0.0, id - 4.9, 0.25, 0.25, 0.45, 0.05, kBlack, SurfaceMaterial::Plain, false);
+    local.add("chair", 0.0, id - 5.1, 0.25, 0.04, 0.5, 0.45, kBlack, SurfaceMaterial::Plain, false);
+    for (const double side : {-1.0, 1.0}) {
+      const Placer side_frame{out, iw, id, ceiling, {side * 7.0, id - 3.0}, {0, -1}, {side, 0}, 0.0};  // u toward the back, v outward
+      living_room_set(side_frame, 3.0, 0.0);
     }
-    // The living room (front): a television on its stand against the right wall, the sofa facing it over a low table.
-    {
-      const double lb = 0.5 * (h.back_b + id) + 0.7;
-      if (add("television", iw - 0.27, lb, 0.25, 0.6, 0.0, 1.15, black, SurfaceMaterial::Plain, true, false)) {
-        add("stand", iw - 0.27, lb, 0.25, 0.6, 0.0, 0.5, timber, SurfaceMaterial::Timber, false);
-        add("television", iw - 0.25, lb, 0.04, 0.55, 0.5, 0.65, black, SurfaceMaterial::Plain, false);
+    // The apartments: the living room inside the door, the kitchen beside it, the bedroom behind, the bathroom in the far corner.
+    const double W = t.apt_w - kWall, D = t.apt_d - kWall;
+    for (int k = 1; k < static_cast<int>(spec.storeys); ++k)
+      for (const auto& q : kQuadrants) {
+        const AptFrame f = apt_frame(t, q);
+        Placer p{out, iw, id, ceiling, {f.a_in, f.b_in}, {f.sa, 0}, {0, f.sb}, k * t.storey};
+        // The living room: the television against the wall to the kitchen, the sofa before it, the door and the doorways clear.
+        living_room_set(p, 0.5 * W - 0.27, 0.5 * D - 1.6);
+        // The kitchen: the cooking area along the exterior wall, a table with two chairs.
+        {
+          const Placer kitchen{out, iw, id, ceiling, f.plan(W, 0.0), {0, f.sb}, {-f.sa, 0}, k * t.storey};  // u along the exterior wall from the hall side, v into the room
+          cooking_area(kitchen, 0.3, 0.32);
+          table_and_chairs(kitchen, 0.25 * D + 0.3, 2.6, 2);
+        }
+        // The bedroom: the bed against the corridor-side wall, the wardrobe against the back wall.
+        {
+          const Placer bedroom{out, iw, id, ceiling, f.plan(0.0, D), {0, -f.sb}, {f.sa, 0}, k * t.storey};  // u along the corridor wall from the back, v into the room
+          bed(bedroom, 1.0, 0.35 + 1.0);
+          bedroom.add("wardrobe", 0.25 * D + 1.2, 0.32, 0.9, 0.3, 0.0, 2.1, kDarkTimber, SurfaceMaterial::Timber, true);
+        }
+        // The bathroom: the toilet and the washbasin against the back wall, a cabinet beside them.
+        {
+          const Placer bathroom{out, iw, id, ceiling, f.plan(W, D), {-f.sa, 0}, {0, -f.sb}, k * t.storey};  // u along the back wall from the corner, v into the room
+          bathroom_fixtures(bathroom, 0.6, 0.4, 1.6, 0.3);
+          bathroom.add("cabinet", 2.6, 0.25, 0.4, 0.2, 0.0, 1.8, kTimber, SurfaceMaterial::Timber, true);
+        }
       }
-      const double ca = iw - 1.45;
-      if (add("table", ca, lb, 0.45, 0.3, 0.0, 0.55, pale_timber, SurfaceMaterial::Timber, true, false)) {
-        add("table", ca, lb, 0.45, 0.3, 0.5, 0.05, pale_timber, SurfaceMaterial::Timber, false);
-        for (const double sa : {-1.0, 1.0})
-          for (const double sb : {-1.0, 1.0}) add("table", ca + sa * 0.38, lb + sb * 0.23, 0.03, 0.03, 0.0, 0.5, pale_timber, SurfaceMaterial::Timber, false);
-      }
-      const double fa = iw - 2.85;
-      if (add("sofa", fa, lb, 0.45, 1.1, 0.0, 0.9, fabric, SurfaceMaterial::Plain, true, false)) {
-        add("sofa", fa, lb, 0.45, 1.0, 0.1, 0.35, fabric, SurfaceMaterial::Plain, false);           // the seat
-        add("sofa", fa - 0.35, lb, 0.1, 1.0, 0.45, 0.45, fabric, SurfaceMaterial::Plain, false);    // the backrest, away from the television
-        for (const double sb : {-1.0, 1.0}) add("sofa", fa, lb + sb * 1.0, 0.45, 0.1, 0.0, 0.6, fabric, SurfaceMaterial::Plain, false);  // the armrests
-      }
-    }
-    // The bedroom upstairs: the bed against the back wall, the wardrobe against the right wall.
-    bed(iw - 2.75, -id + 1.05, h.upper);
-    add("wardrobe", iw - 0.32, id - 0.95, 0.3, 0.9, h.upper, 2.1, dark_timber, SurfaceMaterial::Timber, true);  // in the front corner, clear of the window
     return out;
   }
   // The bungalow: one room.
-  cooking_area(-iw + 0.25, -id + 0.32);
-  table_and_chairs(std::min(1.6, iw - 1.6), 0.2, 0.0);
+  cooking_area(local, -iw + 0.25, -id + 0.32);
+  table_and_chairs(local, std::min(1.6, iw - 1.6), 0.2);
   // A wardrobe against the left wall, a bed against the right one.
-  add("wardrobe", -iw + 0.32, 1.5, 0.3, 0.6, 0.0, 2.0, dark_timber, SurfaceMaterial::Timber, true);
-  bed(iw - 0.72, -id + 1.65, 0.0);
+  local.add("wardrobe", -iw + 0.32, 1.5, 0.3, 0.6, 0.0, 2.0, kDarkTimber, SurfaceMaterial::Timber, true);
+  bed(local, iw - 0.72, -id + 1.65);
   return out;
 }
 
@@ -355,9 +524,8 @@ std::optional<SurfaceMaterial> building_element_material(BuildingKind kind, Buil
       switch (kind) {
         case BuildingKind::Bungalow: return M::Planks;
         case BuildingKind::House: return M::Stone;
-        case BuildingKind::Skyscraper: return M::Glass;
         case BuildingKind::Hangar: return M::Metal;
-        default: return M::Concrete;
+        default: return M::Concrete;  // the skyscraper stands on its concrete frame; its glass facade is its windows
       }
     case BuildingElement::Roof:
       switch (kind) {
@@ -368,7 +536,8 @@ std::optional<SurfaceMaterial> building_element_material(BuildingKind kind, Buil
       }
     case BuildingElement::Windows:
       switch (kind) {
-        case BuildingKind::Bungalow: case BuildingKind::Skyscraper: case BuildingKind::Hangar: return std::nullopt;  // open holes; the glass is the wall; none
+        case BuildingKind::Bungalow: case BuildingKind::Hangar: return std::nullopt;  // open holes; none
+        case BuildingKind::Skyscraper: return M::Glass;                              // the whole facade
         default: return M::Window;
       }
     case BuildingElement::Door:
@@ -677,26 +846,31 @@ bool crosses_footprint(const Building& b, math::Vec2 from, math::Vec2 to) {
 }
 // A colour darkened by damage (char, soot, rot).
 math::Vec3 charred(math::Vec3 color, double damage) { return color * (1.0 - 0.65 * std::clamp(damage, 0.0, 1.0)); }
-// The stair's height over the floor at a local point within its strip, if the point is on it.
-std::optional<double> stair_height_at(const InteriorStair& stair, double a, double b) {
-  const math::Vec2 run = stair.head - stair.foot;
+// A flight's height over the ground floor at a local point within its strip, if the point is on it.
+std::optional<double> flight_height_at(const InteriorStair& flight, double a, double b) {
+  const math::Vec2 run = flight.head - flight.foot;
   const double len = run.length();
   if (len < 1e-9) return std::nullopt;
   const math::Vec2 dir = run / len, side{-dir.y, dir.x};
-  const math::Vec2 d = math::Vec2{a, b} - stair.foot;
+  const math::Vec2 d = math::Vec2{a, b} - flight.foot;
   const double along = d.dot(dir), across = std::abs(d.dot(side));
-  if (across > 0.5 * stair.width || along < -1e-9 || along > len + 1e-9) return std::nullopt;
-  return stair.rise * (along / len);
+  if (across > 0.5 * flight.width || along < -1e-9 || along > len + 1e-9) return std::nullopt;
+  return flight.base + flight.rise * (along / len);
 }
-// Whether a local point lies over the stairwell (the stair's strip from its head to the wall it starts from).
-bool in_stairwell(const InteriorStair& stair, double a, double b, double id) {
-  const math::Vec2 run = stair.head - stair.foot;
-  const double len = run.length();
-  if (len < 1e-9) return false;
-  const math::Vec2 dir = run / len, side{-dir.y, dir.x};
-  const math::Vec2 d = math::Vec2{a, b} - stair.head;
-  const double back = d.dot(dir) * -1.0;  // toward the foot and beyond
-  return std::abs(d.dot(side)) <= 0.5 * stair.width && back >= -1e-9 && back <= len + id;  // to the wall behind the foot
+bool in_rect(double a, double b, double a0, double a1, double b0, double b1) { return a >= a0 - 1e-9 && a <= a1 + 1e-9 && b >= b0 - 1e-9 && b <= b1 + 1e-9; }
+// Whether a local point lies over a hole in a level's slab.
+bool in_hole(const InteriorPlan& plan, int level, double a, double b) {
+  for (const auto& h : plan.holes) if (h.level == level && in_rect(a, b, h.a0, h.a1, h.b0, h.b1)) return true;
+  return false;
+}
+// The surfaces of a plan at a local point (heights over the ground floor): the
+// floors outside their holes, the flights, the landings.
+std::vector<double> surfaces_at(const InteriorPlan& plan, double a, double b) {
+  std::vector<double> out;
+  for (int k = 0; k < std::max(1, plan.floors); ++k) if (!in_hole(plan, k, a, b)) out.push_back(plan.level(k));
+  for (const auto& f : plan.flights) if (const auto h = flight_height_at(f, a, b)) out.push_back(*h);
+  for (const auto& l : plan.landings) if (in_rect(a, b, l.a0, l.a1, l.b0, l.b1)) out.push_back(l.height);
+  return out;
 }
 // Posts along a line, the last one centred on `to`.
 void post_chain(std::vector<Obstacle>& out, math::Vec2 from, math::Vec2 to, double radius, double bottom, double top) {
@@ -721,6 +895,9 @@ BuildingSet::BuildingSet(std::vector<Building> buildings, StandingHeightFn groun
       throw std::invalid_argument("building frame must be finite with unit axes");
   }
   doors_.resize(buildings_.size());
+  lifts_.resize(buildings_.size());
+  plans_.reserve(buildings_.size());
+  for (const auto& b : buildings_) plans_.push_back(interior_plan(b.spec));
   states_.resize(buildings_.size());
   drawn_levels_.resize(buildings_.size());
   for (std::size_t i = 0; i < buildings_.size(); ++i) {
@@ -788,33 +965,91 @@ std::optional<double> BuildingSet::platform_height(double x, double z, double fe
   const auto i = inside_of(x, z);
   if (!i) return platform_height(x, z);
   const auto& b = buildings_[*i];
-  const InteriorPlan plan = interior_plan(b.spec);
-  if (plan.upper_floor <= 0) return b.floor_meters;
+  const InteriorPlan& plan = plans_[*i];
+  if (plan.floors <= 1 && plan.flights.empty()) return b.floor_meters;
   const auto [a, bb] = frame_of(b).local({x, z});
-  const double id = 0.5 * b.spec.depth_meters - kWall;
-  // The levels here: the ground floor, the stair, the upper floor outside the stairwell.
-  std::vector<double> levels{b.floor_meters};
-  if (plan.stair) {
-    if (const auto h = stair_height_at(*plan.stair, a, bb)) levels.push_back(b.floor_meters + *h);
-    if (!in_stairwell(*plan.stair, a, bb, id)) levels.push_back(b.floor_meters + plan.upper_floor);
-  } else levels.push_back(b.floor_meters + plan.upper_floor);
-  // The highest no more than the step height above the feet.
-  double best = levels[0];
-  for (const double level : levels) if (level <= feet_y + 0.5 + 1e-6 && level > best) best = level;
-  return best;
+  // The surfaces here — the floors outside their holes, the flights, the
+  // landings, the lift's car in its shaft — and of them the highest no more
+  // than the step height above the feet.
+  std::vector<double> levels;
+  if (plan.lift && in_rect(a, bb, plan.lift->a0, plan.lift->a1, plan.lift->b0, plan.lift->b1)) levels.push_back(lifts_[*i].height);
+  else levels = surfaces_at(plan, a, bb);
+  if (levels.empty()) levels.push_back(0.0);
+  double best = *std::min_element(levels.begin(), levels.end());
+  for (const double level : levels) if (b.floor_meters + level <= feet_y + 0.5 + 1e-6 && level > best) best = level;
+  return b.floor_meters + best;
+}
+
+int BuildingSet::level_at(std::size_t building, double feet_y) const {
+  if (building >= buildings_.size()) throw std::out_of_range("building index out of range");
+  const InteriorPlan& plan = plans_[building];
+  if (plan.floors <= 1 || plan.floor_height <= 0) return 0;
+  return std::clamp(static_cast<int>(std::floor((feet_y - buildings_[building].floor_meters + 0.25) / plan.floor_height)), 0, plan.floors - 1);
 }
 
 const char* BuildingSet::room_at(std::size_t building, double x, double z, double feet_y) const {
   if (building >= buildings_.size()) throw std::out_of_range("building index out of range");
   if (!inside(building, x, z)) return nullptr;
   const auto& b = buildings_[building];
-  const InteriorPlan plan = interior_plan(b.spec);
+  const InteriorPlan& plan = plans_[building];
   const auto [a, bb] = frame_of(b).local({x, z});
-  const int level = plan.upper_floor > 0 && feet_y >= b.floor_meters + 0.5 * plan.upper_floor ? 1 : 0;
-  if (level == 0 && plan.stair && stair_height_at(*plan.stair, a, bb) && stair_height_at(*plan.stair, a, bb) > 0.05) return "stairs";
+  const int level = level_at(building, feet_y);
+  const double over = feet_y - b.floor_meters;
+  if (plan.lift && in_rect(a, bb, plan.lift->a0, plan.lift->a1, plan.lift->b0, plan.lift->b1)) return "lift";
+  for (const auto& f : plan.flights)
+    if (const auto h = flight_height_at(f, a, bb); h && std::abs(*h - over) < 0.6 && *h > f.base + 0.05 && *h < f.base + f.rise - 0.05) return "stairs";
+  for (const auto& l : plan.landings) if (in_rect(a, bb, l.a0, l.a1, l.b0, l.b1) && std::abs(l.height - over) < 0.6) return "stairs";
   for (const auto& room : plan.rooms)
-    if (room.level == level && a >= room.a0 - 1e-9 && a <= room.a1 + 1e-9 && bb >= room.b0 - 1e-9 && bb <= room.b1 + 1e-9) return room.name;
+    if (room.level == level && in_rect(a, bb, room.a0, room.a1, room.b0, room.b1)) return room.name;
   return level ? "upstairs" : "inside";
+}
+
+std::optional<LiftState> BuildingSet::lift_state(std::size_t building) const {
+  if (building >= buildings_.size()) throw std::out_of_range("building index out of range");
+  if (!plans_[building].lift || states_[building].destroyed) return std::nullopt;
+  return lifts_[building];
+}
+
+bool BuildingSet::in_lift(std::size_t building, double x, double z) const {
+  if (building >= buildings_.size()) throw std::out_of_range("building index out of range");
+  const auto& l = plans_[building].lift;
+  if (!l || !inside(building, x, z)) return false;
+  const auto [a, bb] = frame_of(buildings_[building]).local({x, z});
+  return in_rect(a, bb, l->a0, l->a1, l->b0, l->b1);
+}
+
+std::optional<std::size_t> BuildingSet::lift_door_near(double x, double z, double feet_y, double reach) const {
+  if (!std::isfinite(x) || !std::isfinite(z) || !std::isfinite(feet_y) || !within(reach, 0, 100)) throw std::invalid_argument("lift query out of range");
+  for (std::size_t i = 0; i < buildings_.size(); ++i) {
+    const auto& l = plans_[i].lift;
+    if (!l || states_[i].destroyed || !inside(i, x, z)) continue;
+    const auto& b = buildings_[i];
+    const math::Vec2 door = frame_of(b).plan(l->door_along, l->b1 + kWall);  // just outside the shaft's wall
+    if ((door - math::Vec2{x, z}).length() > reach) continue;
+    const int level = level_at(i, feet_y);
+    if (std::abs(feet_y - b.floor_meters - plans_[i].level(level)) > 1.0) continue;  // on a floor, not on the stairs
+    return i;
+  }
+  return std::nullopt;
+}
+
+bool BuildingSet::call_lift(std::size_t building, int floor) {
+  if (building >= buildings_.size()) throw std::out_of_range("building index out of range");
+  const auto& plan = plans_[building];
+  if (!plan.lift || states_[building].destroyed || floor < 0 || floor >= plan.floors) return false;
+  auto& l = lifts_[building];
+  if (floor == l.target && (l.moving || l.open)) return true;  // already coming, or here with its doors open
+  l.target = floor;
+  l.open = false;
+  l.moving = true;
+  ++door_version_;
+  return true;
+}
+
+bool BuildingSet::ride_lift(std::size_t building, int floors_up) {
+  if (building >= buildings_.size()) throw std::out_of_range("building index out of range");
+  const auto& l = lifts_[building];
+  return call_lift(building, (l.moving ? l.target : l.floor) + floors_up);
 }
 
 double BuildingSet::speed_factor(double x, double z) const {
@@ -890,17 +1125,18 @@ std::vector<Obstacle> BuildingSet::obstacles() const {
     chain(frame.plan(mw, -md), frame.plan(-mw, -md));
     chain(frame.plan(-mw, -md), frame.plan(-mw, md));
     // The partitions (with their doorways open) and the rails, heights over the floor.
-    const InteriorPlan plan = interior_plan(b.spec);
+    const InteriorPlan& plan = plans_[i];
     for (const auto& w : plan.walls) {
       const math::Vec2 dir = (w.to - w.from) / std::max((w.to - w.from).length(), 1e-9);
+      const double radius = w.thickness >= kWall - 1e-9 ? kWallPostRadius : 0.5 * w.thickness + 0.1;  // a thin spine wall stands as thin posts
       std::vector<std::pair<double, double>> gaps;
-      for (const auto& o : w.openings) gaps.push_back({o.along - 0.5 * o.width - kWallPostRadius, o.along + 0.5 * o.width + kWallPostRadius});
+      for (const auto& o : w.openings) gaps.push_back({o.along - 0.5 * o.width - radius, o.along + 0.5 * o.width + radius});
       std::sort(gaps.begin(), gaps.end());
       double at = 0.0;
       const double len = (w.to - w.from).length();
       const auto local_chain = [&](double s0, double s1) {
         const math::Vec2 p0 = w.from + dir * s0, p1 = w.from + dir * s1;
-        post_chain(out, frame.plan(p0.x, p0.y), frame.plan(p1.x, p1.y), kWallPostRadius, b.floor_meters + w.bottom - 0.5, b.floor_meters + w.top);
+        post_chain(out, frame.plan(p0.x, p0.y), frame.plan(p1.x, p1.y), radius, b.floor_meters + w.bottom - 0.5, b.floor_meters + w.top);
       };
       for (const auto& gap : gaps) {
         if (gap.first > at) local_chain(at, gap.first);
@@ -988,6 +1224,7 @@ void BuildingSet::destroy(std::size_t i, const char* cause) {
   st.roof_fallen = true;
   for (auto& el : st.elements) { if (!el.present) continue; el.alight = false; el.intensity = 0.0; el.damage = 1.0; if (el.cause.empty()) el.cause = st.destroyed_by; }
   doors_[i] = DoorState{};
+  lifts_[i] = LiftState{};
   logs_.erase(std::remove_if(logs_.begin(), logs_.end(), [&](const BuildingLog& l) { return l.building == i; }), logs_.end());
   ++version_; ++door_version_;
   raise(st.destroyed_by == "flood" ? BuildingEvent::Kind::WashedOut : BuildingEvent::Kind::Collapsed, i, BuildingElement::Walls, -1, st.destroyed_by.c_str());
@@ -1068,6 +1305,7 @@ void BuildingSet::reset() {
     }
     states_[i] = std::move(fresh);
     doors_[i] = DoorState{};
+    lifts_[i] = LiftState{};
   }
   logs_.clear();
   events_.clear();
@@ -1104,6 +1342,16 @@ void BuildingSet::advance(double dt, const BuildingHazards& hazards) {
     if (d.open == target) continue;
     const double step = dt / kDoorSwingSeconds;
     d.open = d.opening ? std::min(1.0, d.open + step) : std::max(0.0, d.open - step);
+    ++door_version_;
+  }
+  // The lifts: travelling to their floor, opening on arrival.
+  for (std::size_t i = 0; i < lifts_.size(); ++i) {
+    auto& l = lifts_[i];
+    if (!l.moving) continue;
+    const auto& plan = plans_[i];
+    const double goal = plan.level(l.target), step = (plan.lift ? plan.lift->speed_mps : 1.5) * dt;
+    if (std::abs(goal - l.height) <= step) { l.height = goal; l.floor = l.target; l.moving = false; l.open = true; }
+    else l.height += goal > l.height ? step : -step;
     ++door_version_;
   }
   // The logs lying on the buildings: their fire goes on or out.
@@ -1292,9 +1540,21 @@ void BuildingSet::emit(std::vector<FireInstance>& flames, std::vector<FireInstan
 std::vector<Obstacle> BuildingSet::door_obstacles() const {
   std::vector<Obstacle> out;
   for (std::size_t i = 0; i < buildings_.size(); ++i) {
-    if (!door_present(i)) continue;
-    const Leaf leaf = door_leaf(i);
-    post_chain(out, leaf.hinge, leaf.hinge + leaf.along * leaf.width, kDoorPostRadius, leaf.bottom - 0.1, leaf.bottom + leaf.height);
+    if (door_present(i)) {
+      const Leaf leaf = door_leaf(i);
+      post_chain(out, leaf.hinge, leaf.hinge + leaf.along * leaf.width, kDoorPostRadius, leaf.bottom - 0.1, leaf.bottom + leaf.height);
+    }
+    // The lift's shaft doors: closed on every floor but the one the car stands open at.
+    const auto& plan = plans_[i];
+    if (!plan.lift || states_[i].destroyed) continue;
+    const auto& l = lifts_[i];
+    const Frame frame = frame_of(buildings_[i]);
+    for (int k = 0; k < plan.floors; ++k) {
+      if (!l.moving && l.open && l.floor == k) continue;
+      const double y = buildings_[i].floor_meters + plan.level(k);
+      post_chain(out, frame.plan(plan.lift->door_along - 0.5 * plan.lift->door_width, plan.lift->b1 + 0.5 * kWall),
+                 frame.plan(plan.lift->door_along + 0.5 * plan.lift->door_width, plan.lift->b1 + 0.5 * kWall), kDoorPostRadius, y - 0.5, y + plan.lift->door_height);
+    }
   }
   return out;
 }
@@ -1302,6 +1562,7 @@ std::vector<Obstacle> BuildingSet::door_obstacles() const {
 std::vector<MeshPart> BuildingSet::build_door_meshes() const {
   std::vector<MeshPart> parts;
   MeshPart leaves; leaves.color = {0.36, 0.24, 0.13}; leaves.what = "door"; leaves.material = SurfaceMaterial::Timber;
+  MeshPart glass_leaves; glass_leaves.color = {0.55, 0.70, 0.85}; glass_leaves.what = "door"; glass_leaves.material = SurfaceMaterial::Window;  // the tower's lobby door
   MeshPart handles; handles.color = {0.75, 0.72, 0.55}; handles.what = "handle"; handles.material = SurfaceMaterial::Metal;
   double worst = 0.0;
   for (std::size_t i = 0; i < buildings_.size(); ++i) if (door_present(i)) worst = std::max(worst, states_[i].element(BuildingElement::Door).damage);
@@ -1309,17 +1570,52 @@ std::vector<MeshPart> BuildingSet::build_door_meshes() const {
   for (std::size_t i = 0; i < buildings_.size(); ++i) {
     if (!door_present(i)) continue;
     const Leaf leaf = door_leaf(i);
+    const bool glass = material_hazard(states_[i].element(BuildingElement::Door).material).flammable == false;
     const math::Vec3 along = plan3(leaf.along), across = kUp.cross(along).normalized();
     const math::Vec3 centre = lift(leaf.hinge + leaf.along * (0.5 * leaf.width), leaf.bottom + 0.01 + 0.5 * (leaf.height - 0.02));
-    add_box(leaves, centre, along, kUp, across, {0.5 * leaf.width, 0.5 * (leaf.height - 0.02), 0.02});
+    add_box(glass ? glass_leaves : leaves, centre, along, kUp, across, {0.5 * leaf.width, 0.5 * (leaf.height - 0.02), 0.02});
     const math::Vec3 handle = lift(leaf.hinge + leaf.along * (leaf.width - 0.1), leaf.bottom + 1.0);
     for (const double side : {-1.0, 1.0}) add_box(handles, handle + across * (side * 0.05), along, kUp, across, {0.07, 0.015, 0.03});
   }
-  if (!leaves.indices.empty()) { parts.push_back(std::move(leaves)); parts.push_back(std::move(handles)); }
+  if (!leaves.indices.empty()) parts.push_back(std::move(leaves));
+  if (!glass_leaves.indices.empty()) parts.push_back(std::move(glass_leaves));
+  if (!handles.indices.empty()) parts.push_back(std::move(handles));
+  // The lifts: the car where it stands (a floor, three walls and a ceiling of brushed metal) and the closed shaft doors.
+  MeshPart cars; cars.color = {0.72, 0.73, 0.75}; cars.what = "lift"; cars.material = SurfaceMaterial::Metal;
+  MeshPart shaft_doors; shaft_doors.color = {0.55, 0.57, 0.60}; shaft_doors.what = "lift door"; shaft_doors.material = SurfaceMaterial::Metal;
+  for (std::size_t i = 0; i < buildings_.size(); ++i) {
+    const auto& plan = plans_[i];
+    if (!plan.lift || states_[i].destroyed) continue;
+    const auto& b = buildings_[i];
+    const auto& lf = *plan.lift;
+    const auto& l = lifts_[i];
+    const Frame frame = frame_of(b);
+    const math::Vec3 u3 = plan3(b.along), v3 = plan3(b.facing);
+    const double ca = 0.5 * (lf.a0 + lf.a1), cb = 0.5 * (lf.b0 + lf.b1), ha = 0.5 * (lf.a1 - lf.a0), hb = 0.5 * (lf.b1 - lf.b0), y = b.floor_meters + l.height;
+    const double car_h = 2.4;
+    add_box(cars, frame.at(ca, cb, y - 0.05), u3, kUp, v3, {ha, 0.05, hb});                       // the floor
+    add_box(cars, frame.at(ca, cb, y + car_h + 0.03), u3, kUp, v3, {ha, 0.03, hb});               // the ceiling
+    add_box(cars, frame.at(ca, lf.b0 + 0.03, y + 0.5 * car_h), u3, kUp, v3, {ha, 0.5 * car_h, 0.03});  // the back wall
+    for (const double side : {-1.0, 1.0}) add_box(cars, frame.at(ca + side * (ha - 0.03), cb, y + 0.5 * car_h), u3, kUp, v3, {0.03, 0.5 * car_h, hb});  // the sides
+    for (int k = 0; k < plan.floors; ++k) {
+      if (!l.moving && l.open && l.floor == k) continue;
+      add_box(shaft_doors, frame.at(lf.door_along, lf.b1 + 0.5 * kWall, b.floor_meters + plan.level(k) + 0.5 * lf.door_height), u3, kUp, v3, {0.5 * lf.door_width, 0.5 * lf.door_height, 0.03});
+    }
+  }
+  if (!cars.indices.empty()) { parts.push_back(std::move(cars)); if (!shaft_doors.indices.empty()) parts.push_back(std::move(shaft_doors)); }
   return parts;
 }
 
-std::vector<MeshPart> BuildingSet::build_meshes() const {
+std::vector<std::size_t> BuildingSet::interiors_near(math::Vec2 focus, double radius) const {
+  if (!finite(focus) || !within(radius, 0, 1e7)) throw std::invalid_argument("interior focus must be finite and the radius non-negative");
+  std::vector<std::size_t> out;
+  for (std::size_t i = 0; i < buildings_.size(); ++i)
+    if (building_enterable(buildings_[i].kind) && !states_[i].destroyed && footprint_distance(buildings_[i], focus) <= radius) out.push_back(i);
+  return out;
+}
+
+std::vector<MeshPart> BuildingSet::build_meshes(std::optional<math::Vec2> focus, double interior_radius) const {
+  if (focus && (!finite(*focus) || !within(interior_radius, 0, 1e7))) throw std::invalid_argument("interior focus must be finite and the radius non-negative");
   std::vector<MeshPart> parts;
   const math::Vec3 concrete{0.62, 0.60, 0.57}, path_color{0.70, 0.68, 0.65};
   MeshPart paths; paths.color = path_color; paths.what = "path"; paths.material = SurfaceMaterial::Pavement;
@@ -1362,9 +1658,10 @@ std::vector<MeshPart> BuildingSet::build_meshes() const {
         wall_material = SurfaceMaterial::Metal; roof_material = SurfaceMaterial::Metal; door_material = SurfaceMaterial::Metal; break;  // grey metal
     }
     const bool hollow = building_enterable(kind);
+    const bool detailed = !focus || footprint_distance(b, *focus) <= interior_radius;  // the rooms and furniture are built near the focus only
     const DoorSize door = door_size(kind);
     // Damage shows: char, soot, rot and dust darken what is damaged.
-    wall = charred(wall, walls_damage); roof = charred(roof, roof_damage); window = charred(window, windows_damage); door_color = charred(door_color, door_damage);
+    wall = charred(wall, kind == BuildingKind::Skyscraper ? std::max(walls_damage, windows_damage) : walls_damage); roof = charred(roof, roof_damage); window = charred(window, windows_damage); door_color = charred(door_color, door_damage);
     if (door_damage >= 1.0) { door_color = {0.05, 0.04, 0.03}; door_material = SurfaceMaterial::Plain; }  // burned away: the dark doorway
     const bool windows_burst = windows_damage >= 1.0;
     if (windows_burst) window = {0.05, 0.05, 0.06};  // burst: dark holes
@@ -1492,11 +1789,15 @@ std::vector<MeshPart> BuildingSet::build_meshes() const {
         add_box(ceiling, frame.at(0, 0, walls_top - 0.05), u3, kUp, v3, {hw - kWall + 0.02, 0.05, hd - kWall + 0.02});
         parts.push_back(std::move(ceiling));
       }
-      // The rooms: partitions with their doorways, the stair with its handrail, the upper floor round the stairwell.
-      const InteriorPlan plan = interior_plan(b.spec);
-      if (!plan.walls.empty()) {
+      // The rooms: partitions with their doorways, the flights and landings
+      // with their rails, the upper floors round their holes, the furniture
+      // — built for the buildings near the focus.
+      const InteriorPlan& plan = plans_[index];
+      if (detailed && !plan.walls.empty()) {
         MeshPart partitions; partitions.color = charred({0.90, 0.88, 0.82}, walls_damage); partitions.what = "partition"; partitions.material = SurfaceMaterial::Plain;
+        MeshPart core; core.color = charred({0.66, 0.65, 0.62}, walls_damage); core.what = "core"; core.material = SurfaceMaterial::Concrete;
         for (const auto& w : plan.walls) {
+          MeshPart& part = w.material == SurfaceMaterial::Concrete ? core : partitions;
           const math::Vec2 run = w.to - w.from;
           const double len = run.length();
           if (len < 1e-9) continue;
@@ -1505,51 +1806,68 @@ std::vector<MeshPart> BuildingSet::build_meshes() const {
           const auto piece = [&](double s0, double s1, double y0, double y1) {
             if (s1 - s0 < 1e-6 || y1 - y0 < 1e-6) return;
             const math::Vec2 c = w.from + dir * (0.5 * (s0 + s1));
-            add_box(partitions, frame.at(c.x, c.y, b.floor_meters + 0.5 * (y0 + y1)), along, kUp, normal, {0.5 * (s1 - s0), 0.5 * (y1 - y0), 0.5 * kWall});
+            add_box(part, frame.at(c.x, c.y, b.floor_meters + 0.5 * (y0 + y1)), along, kUp, normal, {0.5 * (s1 - s0), 0.5 * (y1 - y0), 0.5 * w.thickness});
           };
-          std::vector<InteriorOpening> holes = w.openings;
-          std::sort(holes.begin(), holes.end(), [](const InteriorOpening& x, const InteriorOpening& y) { return x.along < y.along; });
-          double at = 0.0;
-          for (const auto& hole : holes) {
-            const double h0 = std::max(at, hole.along - 0.5 * hole.width), h1 = std::min(len, hole.along + 0.5 * hole.width);
-            piece(at, h0, w.bottom, w.top);
-            piece(h0, h1, w.bottom + hole.height, w.top);
-            at = h1;
+          // Strips between the doorways' edges; in a strip the doorways (one per floor, maybe) cut it in height order.
+          std::vector<double> edges{0.0, len};
+          for (const auto& o : w.openings) { edges.push_back(std::clamp(o.along - 0.5 * o.width, 0.0, len)); edges.push_back(std::clamp(o.along + 0.5 * o.width, 0.0, len)); }
+          std::sort(edges.begin(), edges.end());
+          for (std::size_t k = 0; k + 1 < edges.size(); ++k) {
+            const double s0 = edges[k], s1 = edges[k + 1];
+            if (s1 - s0 < 1e-6) continue;
+            std::vector<std::pair<double, double>> cuts;
+            for (const auto& o : w.openings)
+              if (o.along - 0.5 * o.width <= s0 + 1e-9 && o.along + 0.5 * o.width >= s1 - 1e-9) cuts.push_back({o.bottom, o.bottom + o.height});
+            std::sort(cuts.begin(), cuts.end());
+            double y = w.bottom;
+            for (const auto& cut : cuts) { piece(s0, s1, y, cut.first); y = std::max(y, cut.second); }
+            piece(s0, s1, y, w.top);
           }
-          piece(at, len, w.bottom, w.top);
         }
-        parts.push_back(std::move(partitions));
+        if (!partitions.indices.empty()) parts.push_back(std::move(partitions));
+        if (!core.indices.empty()) parts.push_back(std::move(core));
       }
-      if (plan.stair && plan.upper_floor > 0) {
-        const InteriorStair& stair = *plan.stair;
-        MeshPart steps; steps.color = charred({0.55, 0.38, 0.22}, interior_damage); steps.what = "stair"; steps.material = SurfaceMaterial::Timber;
-        const math::Vec2 run = stair.head - stair.foot;
-        const double len = run.length();
-        const math::Vec2 dir = run / std::max(len, 1e-9);
-        const math::Vec3 along = plan3(b.along * dir.x + b.facing * dir.y), across = kUp.cross(along).normalized();
-        const int count = std::max(1, static_cast<int>(std::ceil(stair.rise / 0.19)));
-        const double riser = stair.rise / count, tread = len / count;
-        for (int k = 0; k < count; ++k) {
-          // A solid step from the floor up to its tread (a closed string stair).
-          const math::Vec2 c = stair.foot + dir * ((k + 0.5) * tread);
-          const double top = (k + 1) * riser;
-          add_box(steps, frame.at(c.x, c.y, b.floor_meters + 0.5 * top), along, kUp, across, {0.5 * tread, 0.5 * top, 0.5 * stair.width});
+      if (detailed && !plan.flights.empty()) {
+        const bool timber_stair = kind != BuildingKind::Skyscraper;
+        MeshPart steps; steps.color = timber_stair ? charred({0.55, 0.38, 0.22}, interior_damage) : charred({0.62, 0.61, 0.58}, walls_damage);
+        steps.what = "stair"; steps.material = timber_stair ? SurfaceMaterial::Timber : SurfaceMaterial::Concrete;
+        for (const auto& flight : plan.flights) {
+          const math::Vec2 run = flight.head - flight.foot;
+          const double len = run.length();
+          const math::Vec2 dir = run / std::max(len, 1e-9);
+          const math::Vec3 along = plan3(b.along * dir.x + b.facing * dir.y), across = kUp.cross(along).normalized();
+          const int count = std::max(1, static_cast<int>(std::ceil(flight.rise / 0.19)));
+          const double riser = flight.rise / count, tread = len / count;
+          // A solid step from the flight's base up to its tread (a closed string stair); a flight above another stands on a slab under its steps.
+          const double under = flight.base - (flight.base > 0 ? 0.3 : 0.0);
+          for (int k = 0; k < count; ++k) {
+            const math::Vec2 c = flight.foot + dir * ((k + 0.5) * tread);
+            const double top = flight.base + (k + 1) * riser;
+            add_box(steps, frame.at(c.x, c.y, b.floor_meters + 0.5 * (under + top)), along, kUp, across, {0.5 * tread, 0.5 * (top - under), 0.5 * flight.width});
+          }
         }
-        // The handrail on the open side: posts on every fourth step and a rail following the flight.
+        for (const auto& l : plan.landings)
+          add_box(steps, frame.at(0.5 * (l.a0 + l.a1), 0.5 * (l.b0 + l.b1), b.floor_meters + l.height - 0.15), u3, kUp, v3, {0.5 * (l.a1 - l.a0), 0.15, 0.5 * (l.b1 - l.b0)});
+        // The rails: posts every metre standing on whatever surface is under them, a rail following it.
+        const auto height_at = [&](math::Vec2 p) {
+          const auto here = surfaces_at(plan, p.x, p.y);
+          double best = 0.0;
+          for (const auto& f : plan.flights) if (const auto h = flight_height_at(f, p.x, p.y)) best = std::max(best, *h);
+          if (best > 0) return best;
+          for (const double h : here) best = std::max(best, h);
+          return best;
+        };
         for (const auto& r : plan.rails) {
           const math::Vec2 rd = r.to - r.from;
           const double rl = rd.length();
           if (rl < 1e-9) continue;
           const math::Vec2 rdir = rd / rl;
           const math::Vec3 rail_along = plan3(b.along * rdir.x + b.facing * rdir.y), rail_across = kUp.cross(rail_along).normalized();
-          const auto height_at = [&](math::Vec2 p) { const auto h = stair_height_at(stair, p.x, p.y); return h ? *h : (in_stairwell(stair, p.x, p.y, 0.5 * b.spec.depth_meters - kWall) && (p - stair.head).dot(dir) > 0 ? stair.rise : 0.0); };
           const int posts = std::max(2, static_cast<int>(std::ceil(rl / 1.0)));
           for (int k = 0; k <= posts; ++k) {
             const math::Vec2 p = r.from + rdir * (rl * k / posts);
-            const double base = height_at(p);
-            add_box(steps, frame.at(p.x, p.y, b.floor_meters + base + 0.45), rail_along, kUp, rail_across, {0.03, 0.45, 0.03});
+            add_box(steps, frame.at(p.x, p.y, b.floor_meters + height_at(p) + 0.45), rail_along, kUp, rail_across, {0.03, 0.45, 0.03});
           }
-          // The rail: straight segments between the posts, each tilted with the flight under it.
           for (int k = 0; k < posts; ++k) {
             const math::Vec2 p0 = r.from + rdir * (rl * k / posts), p1 = r.from + rdir * (rl * (k + 1) / posts);
             const math::Vec3 e0 = frame.at(p0.x, p0.y, b.floor_meters + height_at(p0) + 0.9), e1 = frame.at(p1.x, p1.y, b.floor_meters + height_at(p1) + 0.9);
@@ -1561,24 +1879,41 @@ std::vector<MeshPart> BuildingSet::build_meshes() const {
           }
         }
         parts.push_back(std::move(steps));
-        // The upper floor: a slab round the stairwell (its underside is the ground floor's ceiling).
+      }
+      if (detailed && plan.floors > 1) {
+        // The upper floors: slabs round their holes (their undersides the ceilings of the floors below).
         MeshPart upper; upper.color = charred({0.62, 0.46, 0.28}, interior_damage); upper.what = "floor"; upper.material = SurfaceMaterial::Planks;
-        const double slab_y = b.floor_meters + plan.upper_floor - 0.5 * plan.slab, half_slab = 0.5 * plan.slab;
         const double iw = hw - kWall, id = hd - kWall;
-        const double well_a0 = std::min(stair.foot.x, stair.head.x) - 0.5 * stair.width, well_a1 = std::max(stair.foot.x, stair.head.x) + 0.5 * stair.width;
-        const double well_b0 = std::min(stair.head.y, stair.foot.y);  // from the head to the front wall
-        // Three slabs: right of the well (full depth), left of it (none: the well runs to the left wall), behind the head.
-        add_box(upper, frame.at(0.5 * (well_a1 + iw), 0, slab_y), u3, kUp, v3, {0.5 * (iw - well_a1), half_slab, id});
-        if (well_a0 > -iw + 1e-6) add_box(upper, frame.at(0.5 * (-iw + well_a0), 0, slab_y), u3, kUp, v3, {0.5 * (well_a0 + iw), half_slab, id});
-        add_box(upper, frame.at(0.5 * (well_a0 + well_a1), 0.5 * (-id + well_b0), slab_y), u3, kUp, v3, {0.5 * (well_a1 - well_a0), half_slab, 0.5 * (well_b0 + id)});
+        struct Rect { double a0, a1, b0, b1; };
+        for (int k = 1; k < plan.floors; ++k) {
+          std::vector<Rect> slabs{{-iw, iw, -id, id}};
+          for (const auto& h : plan.holes) {
+            if (h.level != k) continue;
+            std::vector<Rect> next;
+            for (const auto& r : slabs) {
+              if (h.a1 <= r.a0 || h.a0 >= r.a1 || h.b1 <= r.b0 || h.b0 >= r.b1) { next.push_back(r); continue; }
+              const double ha0 = std::max(h.a0, r.a0), ha1 = std::min(h.a1, r.a1), hb0 = std::max(h.b0, r.b0), hb1 = std::min(h.b1, r.b1);
+              if (ha0 > r.a0) next.push_back({r.a0, ha0, r.b0, r.b1});
+              if (ha1 < r.a1) next.push_back({ha1, r.a1, r.b0, r.b1});
+              if (hb0 > r.b0) next.push_back({ha0, ha1, r.b0, hb0});
+              if (hb1 < r.b1) next.push_back({ha0, ha1, hb1, r.b1});
+            }
+            slabs = std::move(next);
+          }
+          const double slab_y = b.floor_meters + plan.level(k) - 0.5 * plan.slab;
+          for (const auto& r : slabs)
+            if (r.a1 - r.a0 > 1e-6 && r.b1 - r.b0 > 1e-6)
+              add_box(upper, frame.at(0.5 * (r.a0 + r.a1), 0.5 * (r.b0 + r.b1), slab_y), u3, kUp, v3, {0.5 * (r.a1 - r.a0), 0.5 * plan.slab, 0.5 * (r.b1 - r.b0)});
+        }
         parts.push_back(std::move(upper));
       }
       // The furniture, a part per kind of piece (gone once the room has burned out).
       const int char_level = static_cast<int>(std::floor(std::clamp(interior_damage, 0.0, 1.0) * 10.0 + 1e-9));
-      if (interior_damage < 1.0)
+      if (detailed && interior_damage < 1.0)
         for (const auto& f : furnish(b.spec)) {
           if (!f.drawn) continue;
-          const std::string key = std::string(f.what) + "#" + std::to_string(char_level);
+          const std::string key = std::string(f.what) + "#" + std::to_string(char_level) + "#" + surface_material_name(f.material) + "#" +
+                                  std::to_string(static_cast<int>(f.color.x * 255)) + "," + std::to_string(static_cast<int>(f.color.y * 255)) + "," + std::to_string(static_cast<int>(f.color.z * 255));
           auto it = std::find(furniture_keys.begin(), furniture_keys.end(), key);
           if (it == furniture_keys.end()) {
             MeshPart part; part.color = charred(f.color, interior_damage); part.what = f.what; part.material = f.material;

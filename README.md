@@ -947,7 +947,7 @@ beside a bridge:
 | Bungalow | 9 × 7 m, one storey | wooden planks | thatched gable (38°) | open holes | plank door **that opens** (see below) |
 | House | 11 × 9 m, two storeys | grey stone | red tiled gable (40°), a chimney | glass | wooden door **that opens** (see below) |
 | Hospital | 40 × 20 m, five storeys | white concrete | flat dark grey, parapet | glass | canopy over a double glass door, a **red cross** on the front and on the roof |
-| Skyscraper | 30 × 30 m, twenty storeys (80 m) | glass facade with floor bands and mullions | flat white with a plant room | — | glass lobby under a canopy |
+| Skyscraper | 30 × 30 m, twenty storeys (80 m) | glass facade with floor bands and mullions | flat white with a plant room | — | glass lobby door **that opens** (see below) |
 
 **Sites.** A building takes a plot the setback from the carriageway edge
 (6–14 m, the footpath's length). Placed automatically, each request takes the
@@ -1012,7 +1012,31 @@ steps off onto the upper floor) and come down again; upstairs furniture is
 no obstacle downstairs and vice versa; the partitions stop you, the
 doorways let you through, the banister keeps you out of the stairwell. The
 title names the room: `inside the house (kitchen, door open)`,
-`(stairs, …)`, `(bedroom, …)`. The other kinds stay solid.
+`(stairs, …)`, `(bedroom, …)`.
+
+**The skyscraper is entered too — all twenty floors.** Its ground floor is
+a **gallery** round a concrete **core**: a reception desk (with its
+receptionist's chair) faces the lobby door, two sofas with low tables stand
+either side. The core holds the **stairwell** — two concrete switchback
+flights a storey with a half landing between them, a spine wall between
+the flights, a door onto every floor — and the **lift** in its shaft, its
+door beside the stairwell's on every floor. Every floor above has **four
+apartments** in its corners off the halls round the core, each with its
+door from the hall into a **living room** (television on its stand, sofa,
+low table), a **kitchen** through a doorway (cooking area along the outer
+wall, a table with two chairs), a **bedroom** behind the living room (bed,
+wardrobe) and a **bathroom** off the bedroom (toilet, washbasin, cabinet)
+— the rooms of the house, 76 times over. You climb the stairwell floor by
+floor (the landings and the spine keep you on the flights) or **ride the
+lift**: at a shaft door `E: call the lift` brings the car (1.5 m/s, its
+doors closed on the way, opening on arrival — every other floor's shaft
+door stays shut); inside the car `E: ride up to floor n` and `Shift+E:
+ride down to floor n` take you a floor at a time, the car carrying you.
+The title says `inside the skyscraper (floor 7, kitchen, door open)`.
+Because a city's towers are hundreds of rooms each, the rooms and
+furniture are only built for the enterable buildings within 120 m of you
+(the walker or the orbit target); the walls, floors and the walker's
+collisions are always complete. The other kinds stay solid.
 
 ```bash
 ./build-gl/terraflux-terrain-viewer --roads demo --view first-person --view-x -805 --view-z -103 --view-yaw 0   # before the bungalow's door
@@ -1027,8 +1051,11 @@ until the stove stops it, walks at the table (the chairs stop it), closes
 the door from inside and fails to leave, then opens it again and walks out
 down the ramp; then it opens the house's door and crosses the living room,
 goes through the doorway into the kitchen, climbs the stairs to the
-bedroom, comes down and walks out; `INTERIOR_TEST_JSON` reports each frame
-with the room the walker is in.
+bedroom, comes down and walks out; then it enters the skyscraper's gallery
+(the reception desk stops it), walks into the open lift and rides it up a
+floor, walks into an apartment's living room and kitchen, and comes down
+the stairwell — flight, landing, flight — to the gallery;
+`INTERIOR_TEST_JSON` reports each frame with the room the walker is in.
 
 #### Hazards: fire, falling trees, flood, storm and lightning on the buildings
 
@@ -1045,6 +1072,11 @@ bungalow and the house) the interior — each of a **material** (`material_hazar
 | Tiles | no | a trunk of 0.6 t, wind from 38 m/s, extreme heat (0.95) |
 | Metal | no | extreme heat ≥ 0.8 (buckles in 2 min), a trunk of 2 t, wind from 50 m/s |
 | Stone, brick, concrete, pavement, asphalt | no | extreme heat ≥ 0.9 (spalls over 10–15 min; asphalt softens at 0.6), trunks of 3–8 t |
+
+(The skyscraper stands on its concrete frame — its walls element — while
+its glass facade is its windows element: a fire in an apartment bursts the
+glass, it does not bring the tower down. A building's interior is one
+element: when it burns, its rooms burn together.)
 | Paint (markings, the cross, the band) | no | heat ≥ 0.4 (blisters) |
 
 What happens (`BuildingSet::advance(dt, BuildingHazards)`, every frame in
@@ -1151,7 +1183,15 @@ furniture in its room, the levels by the feet's height, the rooms by
 position, a walker through the kitchen doorway, stopped by the blind
 partition, up the stairs to the bedroom, stopped by the wardrobe and held
 by the banister, down again, and the bed upstairs no obstacle downstairs
-while the sofa is one). `--buildings-test` shows the four from the
+while the sofa is one), and the tower (a level per storey, the gallery and
+four apartments of four rooms on every floor above, the flights, landings
+and holes storey over storey, the concrete core with a door a floor, the
+furniture, the levels and rooms by the feet, the lift called, travelling,
+arriving and ridden, its shaft doors shut elsewhere, a walker carried up in
+the car, up the stairs flight by flight to the first floor, through the
+stairwell door, into an apartment's living room and kitchen, the wall
+beside the door holding; and that interiors are only built near a focus).
+`--buildings-test` shows the four from the
 world view (hidden first as the reference), walks the hospital's footpath to
 its door, and hides them again: the reference exactly. The suite's hazards
 test covers the material table, the elements per kind, the fire (thatch
@@ -1822,7 +1862,7 @@ about the cameras feeds back into propagation or replay timing.
 | Ctrl | First person: crouch (hold) — lower, slower, under branches, a smaller target; afloat: dive |
 | Shift (afloat) | First person: swim the crawl — faster, more tiring |
 | Space | First person: jump (`--jump-height`, Earth gravity or `--gravity`), or let go of a rope; world view: pause/resume the wildfire replay |
-| E | First person: use the tool in hand (throw the rope or take hold of it, chop with the axe, hold to saw with the chainsaw), else interact — open or close the bungalow's door within reach, pick up the stone or branch you look at, take a burning branch at your feet, break a branch off the tree beside you, light a branch at a fire, set a tree alight with the torch, or put down what you hold (the title says which) |
+| E | First person: use the tool in hand (throw the rope or take hold of it, chop with the axe, hold to saw with the chainsaw), else interact — ride the lift up a floor (Shift+E: down) from inside its car, call the lift at its shaft door, open or close a building's door within reach, pick up the stone or branch you look at, take a burning branch at your feet, break a branch off the tree beside you, light a branch at a fire, set a tree alight with the torch, or put down what you hold (the title says which) |
 | Q | First person: throw what you hold (12 m/s along the look, lifted 12°); it lands as what it is |
 | 1 / 2 / 3 | First person: take the rope / the fire axe / the chainsaw in hand (the same key again puts it away; 1 near a rope lying or hanging out in the world pulls it in). What you held moves to the left hand |
 | W / S (on a rope) | Climb up / let yourself down; W at the top of a rope pegged at an edge steps off onto it; Space lets go |

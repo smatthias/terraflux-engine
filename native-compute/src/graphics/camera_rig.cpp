@@ -491,6 +491,11 @@ double walk(FirstPersonCamera& camera, const WalkInput& given, double dt, const 
       camera.velocity_mps = gait.enabled ? camera.gait_direction * camera.gait_speed_mps : math::Vec2{};
       camera.air_time_seconds = 0.0;
       rest_gait();
+    } else if (under && !camera.swimming && std::abs(camera.feet.y - *under) > 1e-9) {
+      // A support that moves under standing feet within the step height (a
+      // lift's car, a rising deck) carries them with it.
+      camera.feet.y = *under;
+      y = *under;
     }
   }
   if (camera.grounded && input.jump && env.physics.jump_height_meters > 0 && !camera.swimming && !camera.crouched) {

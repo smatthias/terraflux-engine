@@ -2065,11 +2065,15 @@ on or collided with (damage in tenths, roof fallen, windows burst, door
 gone, destroyed, reset); `door_version()` also when a door burns away.
 
 Rooms and levels (`interior_plan(spec)` → `InteriorPlan`: `InteriorRoom`s
-with a level, `InteriorWall` partitions (local plan segments,
-kInteriorWallThickness thick, bottom/top over the floor, `InteriorOpening`
-doorways by their centre along the wall), an optional `InteriorStair`
-(a straight flight from its foot to its head rising `rise`), `InteriorRail`
-post chains and `upper_floor` / `slab`). The bungalow is one room. The
+with a level, `InteriorWall` partitions (local plan segments with a
+thickness and a material, bottom/top over the ground floor,
+`InteriorOpening` doorways by their centre along the wall and their sill
+height — one per floor on the tower's core), `InteriorStair` flights (a
+straight flight from its foot to its head, `base` to `base + rise`),
+`InteriorPlatform` landings, `InteriorHole`s in the floor slabs (a
+stairwell, a shaft), `InteriorRail` post chains, an optional
+`InteriorLift` (its shaft, its door, its speed), `floors` / `floor_height`
+/ `slab`). The bungalow is one room. The
 house (`house_layout`): the stair's strip 1 m wide along the left wall from
 0.55 m inside the front wall toward the back, 1.4 × the storey height long
 (35°); the partition behind the living room at the stair's head with the
@@ -2079,32 +2083,67 @@ partition between the kitchen and the bathroom at a = min(1, iw − 3); the
 rooms living room / stairs / kitchen / bathroom on level 0 and the bedroom
 on level 1; one rail along the stair's open side from the front wall to the
 head, from −0.5 m to a metre over the upper floor (it is the banister too).
-`furnish` places the house's pieces per room (shared builders for the
-cooking area, a table with chairs and a bed; the toilet, washbasin, sofa,
-television and low table are drawn as parts and block as one undrawn box
-each; upstairs pieces carry the upper floor in `bottom`).
-`platform_height(x, z, feet_y)`: inside, the levels at the point — the
-ground floor, the stair as a linear ramp (`stair_height_at`), the upper
-floor outside the stairwell (`in_stairwell`: the stair's strip from its
-head to the front wall) — and the highest no more than 0.5 m over the feet
-is returned (the viewer's `built_surface` passes the feet, so a jump under
-the upper floor still lands on the ground floor and the rig climbs the
-ramp by its slope rule). `room_at` names the room by position and level
-(the stair where the ramp is over 5 cm up). `obstacles()` adds the
-partitions as 0.35 m post chains with the doorways open (from 0.5 m under
-the floor to the partition's top, so they do not reach the upstairs
-walker) and the rails as 0.08 m posts over their vertical extent (the
-handrail spans both storeys: it stops the ground-floor walker from walking
-under the flight, the stair walker from stepping off and the bedroom
-walker from the well); upstairs furniture posts start at the upper floor
-and do not block below. `build_meshes` draws the partitions as plaster
+The house's pieces stand per room (the toilet, washbasin, sofa, television
+and low table are drawn as parts and block as one undrawn box each;
+upstairs pieces carry the upper floor in `bottom`).
+
+The skyscraper (`tower_layout`): the core 6 × 8 m at the centre (concrete
+walls the full height: front face with the stairwell door and the lift
+door on every floor, back, sides, the wall between the stairwell and the
+shaft, the shaft's back, and a 0.1 m spine between the two flights that
+stops 0.6 m short of the door side, where the flights are within a step
+of each other and the walker crosses to the door); per storey two flights
+1.4 m wide (from 3.0 m inside the front face to −1.6 m, each climbing half
+a storey) with the landing behind them and a stairwell hole and a shaft
+hole through the floor above; the rooms: the gallery on the ground floor,
+and on every floor above the halls before, behind and beside the core,
+the stairwell and the lift, and four apartments of living room, kitchen,
+bedroom and bathroom in the corners (`AptFrame`: an apartment's own frame
+from its inner corner, mirrored per quadrant; its wall to the hall with
+the door 1.5 m from the corner, its wall to the side hall, a partition
+between the living room / bedroom and the kitchen / bathroom with two
+doorways, one between the living room and the bedroom). `furnish` lays
+the pieces out with a `Placer` (an origin and two unit axes in the local
+frame, the pieces' half sizes swapped when the axes are turned, a level
+lift) through shared builders — `cooking_area`, `table_and_chairs` (4 or
+2 chairs), `bed`, `bathroom_fixtures`, `living_room_set` — for the
+bungalow, the house, the gallery (desk, stone top, chair, two sofa sets)
+and the 76 apartments. Plans are cached per building (`plan(i)`).
+`platform_height(x, z, feet_y)`: inside, `surfaces_at` — every floor
+whose slab is not holed there, every flight (`flight_height_at`: a linear
+ramp), every landing — or, in the shaft, the lift car's height; the
+highest no more than 0.5 m over the feet is returned (the viewer's
+`built_surface` passes the feet, so a jump under a floor still lands on
+the floor below and the rig climbs a ramp by its slope rule). `level_at`
+is the floor the feet are on; `room_at` names the room by position and
+level (the lift in the shaft; the stairs on a flight or a landing within
+0.6 m of the feet). The lift (`LiftState`: height, floor, target, moving,
+open; `lift_state`, `in_lift`, `lift_door_near` (a shaft door within reach
+at the feet's floor), `call_lift(i, floor)` (closes and travels),
+`ride_lift(i, ±n)`; `advance` moves the car at its speed and opens it on
+arrival, bumping `door_version`); `door_obstacles` / `build_door_meshes`
+carry the shaft doors of every floor but the open one (0.08 m posts; metal
+panels) and the car (floor, three walls, ceiling). The rig: a support that
+moves under standing feet within the step height carries them (a lift's
+car, a rising deck). `obstacles()` adds the partitions as post chains with
+the doorways open (0.35 m for walls of the wall thickness, thickness / 2 +
+0.1 for a thin spine; from 0.5 m under the wall's bottom to its top, so a
+storey's partitions do not reach the floor above) and the rails as 0.08 m
+posts over their vertical extent (the house's handrail spans both
+storeys); furniture posts start at their floor. `build_meshes(focus,
+radius)` draws the rooms — partitions as plaster (or concrete, the core)
 pieces round their doorways (stacked holes — a window over the door, a
-storey over a storey — are cut by splitting the wall at every hole edge and
-cutting each strip's holes in height order), the stair as solid timber
-steps (0.19 m risers) with posts and a tilted rail, the upper floor as
-planks slabs round the stairwell (their underside the ground floor's
-ceiling), and glazed kinds get a pane in every hole (the bungalow's stay
-open).
+storey over a storey, a door a floor — are cut by splitting the wall at
+every hole edge and cutting each strip's holes in height order), flights
+as solid steps (0.19 m risers; timber in the house, concrete in the
+tower) with landings, the house's rail posts and tilted rail, every upper
+floor as planks slabs round its holes (their undersides the ceilings
+below), glazed kinds' panes in their holes (the bungalow's stay open),
+furniture merged into a part per kind, material, colour and char — only
+for the enterable buildings within `radius` of `focus` (`interiors_near`
+lists them; the viewer uses 120 m round the walker or the orbit target and
+re-uploads when the list or the version changes); the exteriors, floors
+and ceilings always.
 
 Doors. `DoorState{open 0..1, opening}` per building (`doors()`);
 `toggle_door(i)` sets an enterable building's door swinging the other way
