@@ -63,6 +63,73 @@ or physical-GPU certification.
 - Weather coupling: the wind raises the sea state and bends the trees, rain dimples the water and
   wets the ground, and a v3 simulation contract lets air temperature, humidity and rainfall drive
   the fire itself (heat dries the fuel, rain cools it) while the viewer mirrors the replay's weather
+- Two cameras: the orbiting world view and a first-person view standing at eye height on the
+  terrain (W/A/S/D walk, Shift runs, arrows/mouse look), switched with Tab in either direction
+  with the heading handed over, the feet following the ground, water and crags
+- Walking collision: grass and knee-high things are stepped over, tree trunks, imported assets
+  and ground steeper than the slope limit are solid — you slide around trunks and along cliff
+  feet, nothing is tunnelled through at running speed, and `--no-collision` lifts it all
+- Earth gravity for the walker: Space jumps to a configurable height with the analytic air
+  time, running jumps carry momentum, ledges are fallen from, landings dip the eye and recover,
+  rocks can be jumped over or landed on; the gravity constant is shared for later interaction
+- A gait instead of a glide: acceleration from rest, steps whose speed pulses from footfall to
+  push-off, head bob, sway and roll alternating with the stance foot, a jolt per landing foot,
+  and stops that finish the step on a footfall
+- A visible body: arms and hands posed for idling, walking, running, crouching, climbing, swimming,
+  crawling, diving and lying down; swimming in strokes with a crawl and a dive with breath
+- Hands with fingers that grip: stones lying on rock and scree are picked up (E), carried, dropped
+  or thrown (Q) under the same gravity; branches are broken off trees, burning ones taken from the
+  ground, lit at a fire into a torch that warms you and sets an unburned tree alight
+- Tools on the belt against the hazards (1/2/3): a rope thrown over a cliff hangs down the face to
+  be climbed down and up again, thrown into a crown it wraps round a branch and is climbed to a
+  perch; a fire axe chops a tree down in counted chops and a chainsaw saws it through on a tank of
+  fuel, both felling it away from you (a burning tree before it falls on you); branches are cut
+  in halves — and a trunk that does land on you knocks you down and can kill
+- Roads and bridges: a connected network of two-way roads draped over the ground (dashed centre
+  line, edge lines) and bridge decks on railings and piers spanning valleys and water, planned from
+  routes or authored in JSON (a bridge always joins a road at both ends); the walker goes faster on
+  a sound road or deck, loses the bonus where a fallen tree blocks the way, is slowed by rubble,
+  crosses the lake on the deck and falls from its edge; trees felled across a road block it and
+  crack it by their mass, burning ones damage it, a deck alight collapses, a flash flood at the
+  piers washes a bridge out and a torrent over a road washes it away — and a deck that gives way
+  under the walker hurts it and drops it
+- Hazards on the buildings, by material: thatch, planks and timber burn (from burning trees, a
+  trunk on the roof, lightning, a torch, the blaze next door), stone, concrete, glass and metal do
+  not — but glass bursts and masonry spalls in the heat, a falling trunk smashes tiles and cracks
+  walls, a flood rots what is organic and a torrent scours any foundation, a gale strips thatch and
+  tiles; roofs fall in (on whoever is inside), buildings collapse into rubble, and the walker is
+  sheltered from rain and lightning under a sound roof
+- Buildings beside the roads: a thatched wooden bungalow, a two-storey stone house under red tiles,
+  a five-storey white hospital with glass windows and a red cross, and a twenty-storey glass
+  skyscraper with a white roof — each with its door to the road and a footpath to the
+  carriageway, placed on flat dry plots automatically or at authored sites, solid to the walker
+- A city: a central business district of skyscrapers on a warped lattice of curving avenues and
+  streets, six suburbs of houses and bungalows with police stations, a hospital, an airport with
+  runway, taxiway, apron, terminal, control tower and hangars, and six-lane highways with medians
+  that fillet round their corners and cross the suburbs' avenues on viaducts at diamond
+  interchanges with curved ramps — every building on a lot beside a road, every zone joined to the
+  highways; planned deterministically from zones and corridors for the demo or any terrain
+- Procedural materials on everything built and grown, without image assets: thatch laid in courses
+  of straw, boards with the grain, rings and knots of the tree they came from, coursed stone and
+  brick masonry with mortar joints, overlapping roof tiles, pored and streaked concrete, aggregate
+  in the asphalt, panes in the glass, corrugated sheet; bark with fissures and grain on the trunks,
+  and leaves on the crowns — clusters of lighter and darker green, sunlit leaf tips and gaps through
+  which the branches (now modelled: limbs in a broadleaf crown, whorls under a conifer's tiers) show
+- A body to keep alive: health, body heat, strength and wetness bars; damage from lightning, fire,
+  smoke, falls, storm debris, drowning and cold; crouching, slipping on ice, a crosswind that turns
+  the heading; collapse and a fresh attempt
+- Climbing: faces too steep to walk are climbed at a climbing pace and at a cost of strength, as
+  steep as the surface allows (dry rock most, wet rock and soil less, snow little, ice and running
+  water or a running waterfall not at all)
+- Flash floods: storm rain runs down the drainage into channels with depth and current drawn as
+  muddy water; the walker wades, swims, is pushed, or is swept off its feet and carried
+- Storms from inside: gusts drift, slow and hurry the walker and uproot weak-rooted trees; lightning
+  splits and lights the tree it hits, starts fires in dry woods, and strikes down, staggers or
+  shakes a walker by distance
+- Tree-level wildfire on top of the grid front: every tree has its own mass, strength and fuel,
+  flames up, drops burning branches under gravity, chars, topples when burned through (onto the
+  ground or against a neighbour that holds it or breaks), keeps burning as a log until the fuel is
+  gone, lights neighbours by contact, embers and wind-driven radiant heat, and lies as an obstacle
 - OBJ/MTL and static glTF/GLB assets, textures and a direct-light PBR subset
 - Scene hierarchies, shared OBJ/glTF/GLB asset references and deterministic Spin/Motion
 - Scene pause/resume, single stepping and transactional asset unload/reload
@@ -328,6 +395,944 @@ and requires flames and smoke to be drawn, pixels to change well above the
 ground footprint, the effects to animate and the reference to be restored
 exactly. None of this feeds back into propagation or replay timing; smoke runs
 freeze the animation clock.
+
+### Trees in a wildfire: burning, falling, spreading
+
+From the world view a burning cell is a patch of flames; from the ground the
+fire has to happen to every tree. With a replay loaded the viewer runs a
+tree-level fire model (`terraflux/graphics/tree_fire.hpp`) on top of the grid:
+the simulation's front still decides *where* the fire arrives (a cell is active
+for one frame, then burned, exactly as before, and nothing here feeds back into
+propagation, the contracts or the fixtures), the model decides what each tree
+does from there, in replay seconds, deterministically:
+
+- **Every tree is its own**: a tapered trunk of its height and footprint with a
+  wood density by species (conifer‑like lighter than broadleaf‑like) and a
+  modulus of rupture, both varied per tree (±30 %), give it a mass, a breaking
+  strength, a standing lean and a fuel load (bigger and wetter trees burn
+  longer; the ground's fuel moisture is the tree's).
+- **Burning**: a tree in a cell the front reaches flames up after a moment,
+  is consumed over time (faster in wind) and **drops burning branches** from
+  its crown that fall under the same Earth gravity as the walker, burn on the
+  ground and can light the trees they land beside. The crown draws in and
+  chars as it is eaten.
+- **Falling**: the charred trunk's strength falls as the cube of the sound
+  wood left while the load on it grows (its lean, the weight shifting toward
+  the burn, the wind on the crown). Past that point it **topples** as a rigid
+  rod under gravity and the wind, toward its lean and downwind. A neighbour in
+  its way catches it: strong enough, the faller **leans against it** and lights
+  it by contact; too weak, the neighbour **breaks and falls too**, alight at
+  once. On the ground a trunk keeps burning until no fuel is left, lights what
+  it lies against, and lies there as a **log the walker has to step, jump or
+  walk around**.
+- **Spreading**: burning trees ignite neighbours by contact, by embers and by
+  radiant heat whose reach grows downwind with the wind — so among trees the
+  fire runs faster with the wind than the cell front alone would show.
+  `--tree-fire grid` keeps the trees strictly to their cells (they still burn,
+  drop branches and fall); `--tree-fire off` restores the flat cell look.
+- **Time** follows the replay: the model advances with the replay clock (2x
+  plays the fire at 2x), holds while paused, and starts over from the field
+  when the replay is wound back (trees in cells burned before the seek settle
+  as charred snags, about half of them down).
+
+```bash
+./build-gl/terraflux-terrain-viewer --request /tmp/terraflux-request.json \
+  --response /tmp/terraflux-response.json --view first-person --replay-speed 2
+./build-gl/terraflux-terrain-viewer --request ... --response ... --tree-fire grid
+LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a -s "-screen 0 1280x800x24" \
+  ./build-gl/terraflux-terrain-viewer --tree-fire-test --smoke-test \
+  --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json
+```
+
+`TREE_FIRE_JSON` reports the stages, what lit each tree (cell, contact,
+radiation, ember, collapse), the branches, and the mass and strength range.
+`terraflux-tree-fire-tests` verifies the bodies, burning, gravity on the
+branches, toppling against a neighbour that holds or breaks, logs as
+obstacles, wind-biased spread and determinism; `--tree-fire-test` runs it on
+the replay's own forest (time zero, three and eighteen replay seconds, reset
+restoring the reference exactly). See
+[the backend contract](docs/GRAPHICS_BACKENDS.md#tree-level-fire).
+
+### Storms from inside: gusts that push, lightning that strikes
+
+With the camera in the scene the weather is no longer scenery. Everything here
+runs on the weather the viewer already simulates (the gusting wind, the
+thunderstorm's squalls and strikes); nothing is staged.
+
+- **Wind on the walker.** Below 12 m/s you brace and stand. Above it a gust
+  drifts you downwind (0.02 × (speed − 12)² m/s, at most 4 m/s), slows you
+  walking into it, hurries you with it, and in the air drag on the body takes
+  you further downwind — a thunderstorm's gust front (up to +12 m/s over the
+  base wind) is felt; `--wind-max 30` makes it a storm you can barely stand in.
+- **Windthrow.** Every tree's roots hold a moment of `0.25 × m g h` (varied
+  ±30 %); a gust whose moment on the crown (plus the standing lean) exceeds it
+  uproots the tree, sound or charred, burning or not — about 2 % of a wood at
+  30 m/s, 15 % at 35, 40 % at 40, 85 % at 50 — and the falling trunk crushes
+  or props against its neighbours and lies as a log like any other.
+- **Lightning.** A strike (the weather's own, at its own place and time)
+  **splits and lights the nearest tree** within 12 m — alight at once and
+  coming down — and sets the dry trees within 25 m alight with a 50 % chance,
+  so a dry storm starts fires on its own (no replay needed). And it is a danger
+  to you: within **15 m** you are struck down (4 s on the ground, the view
+  shaking hard), within **50 m** knocked off your feet (1.5 s), within
+  **200 m** the shock wave shakes the view. While down, walking and jumping
+  do nothing; the title and the console say what happened and how far away.
+  (`LIGHTNING_JSON` per strike.)
+
+```bash
+./build-gl/terraflux-terrain-viewer --view first-person --weather cumulonimbus --hour 15 \
+  --wind-min 10 --wind-max 30            # a severe thunderstorm, in the woods
+LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a -s "-screen 0 1280x800x24" \
+  ./build-gl/terraflux-terrain-viewer --storm-test --smoke-test
+```
+
+`WindPush` and `lightning_effect` / `knock_down` / `shake` live in
+`camera_rig.hpp`, the anchorage and `strike` in `tree_fire.hpp`; all are pure
+and covered by the camera and tree fire suites. `--storm-test` raises a
+thunderstorm over the demo or replay terrain, stands you ten metres from a
+bright strike beside a tree (the tree split and alight and coming down, you
+struck down and shaking, a warning raised), six seconds later has you up and
+walking while the tree burns on the ground, and then sends a 36 m/s gust
+front through (trees uprooted but not the whole wood, the standing walker
+dragged downwind).
+
+### Flash floods: rain that runs down the mountains and takes you with it
+
+Rain does not only raise the lake. The drainage the weather already computes
+for the runoff shading and the waterfalls (the catchment above every point,
+the slope, the direction the water runs) now carries a **flood wave**
+(`terraflux/graphics/flood.hpp`): the wave rises toward `rain / 25 mm/h` with
+a quarter-hour time constant on the weather's accelerated clock and drains
+with an hour's, so a thunderstorm's downpour fills the channels within
+minutes while a drizzle never does. A channel's depth is
+`1.5 m × catchment² × wave` (nothing below a quarter of the largest catchment),
+its current runs down the drainage at Manning's speed (`depth^⅔ √slope / 0.04`,
+up to 8 m/s) — deepest and fastest where the mountains' water collects. The
+water is drawn as a muddy, opaque surface lying on the channels (the water
+shader now takes the depth per vertex) and the lake with its flood rise is
+the other water you meet; the deeper of the two counts.
+
+You no longer walk on water; you are in it:
+
+- **Wading**: the feet stay on the bed; you slow by 60 % per metre of depth;
+  past 25 cm the current pushes you (fully by 85 cm). Crossing a ford you are
+  carried downstream; walking upstream is a struggle.
+- **Swimming**: from 1.3 m the feet hang under the surface and the head above
+  it, you move at 1.2 m/s, cannot jump, and the current carries you entirely.
+  Step off a ledge into deep water and you land afloat, not on the bed.
+- **Swept away**: wading in a current of 2 m/s or more, half a metre deep or
+  more, knocks you off your feet: down for 1.5 s, carried downstream, the
+  title and console say so — and you cannot get up while the torrent holds
+  you. The lesson is the real one: stay out of the channels when the storm
+  rain comes; get to higher ground.
+
+```bash
+./build-gl/terraflux-terrain-viewer --view first-person --weather cumulonimbus --hour 14 \
+  --time-scale 10                       # watch the valley floor flood within a minute
+./build-gl/terraflux-terrain-viewer --view first-person --flash-flood 0.8       # the channels already running
+LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a -s "-screen 0 1280x800x24" \
+  ./build-gl/terraflux-terrain-viewer --flood-test --smoke-test
+```
+
+`--flash-flood 0..1` starts with the channels that full; `FLASH_FLOOD_JSON`
+reports the wave, the surface triangles, the wet vertices and the deepest and
+fastest water whenever the surface is rebuilt. `FloodModel` and `WaterRules`
+are pure and covered by `terraflux-flood-tests` (the wave's rise and drain,
+depth by catchment, Manning currents, waterfalls, the lake, the mesh; wading,
+the ford's push, swimming afloat with the head above water, no jumping,
+walking out, the ledge into the pool, the torrent's sweep). `--flood-test`
+stands you dry in the terrain's wettest channel (reference), runs half an hour
+of thunderstorm rain (surface drawn, standing in running water, swept if it
+is fast and deep), has you try to walk upstream (carried, or held well short
+of a dry walk), and drains the wave (reference restored exactly).
+
+### Climbing out: rock faces, strength, and what cannot be climbed
+
+Walking stops at 45°; climbing does not. Press **W** into a face that is too
+steep to walk and, if it can be climbed, you climb it: slowly (0.6 m/s along
+the face, so a 60° face gains about half a metre of height a second), and at a
+cost — forty seconds of continuous climbing exhaust you; exhausted, you hang
+where you are (you can always climb back down) until resting has restored
+half your strength (a full recovery takes twenty seconds). What the face is
+made of decides how steep a climb it allows:
+
+| Surface | Steepest climb |
+| --- | ---: |
+| Dry rock | 75° |
+| Wet rock (rain or runoff) | 62° |
+| Soil / vegetated ground | 55° (wet 48°) |
+| Snow | 40° |
+| Ice | none |
+| Running water in a channel, or a **waterfall that is running** | none |
+
+A waterfall is only a wall while water runs over it (after rain or with the
+flood wave up); dry, its rock is rock. The title shows `CLIMBING rock 63°`,
+your strength (`strength 48%`, `EXHAUSTED`), and why a face refused you
+(`cannot climb: waterfall`, `too steep`, `ice`, `exhausted`). Climbing,
+wading and swimming give you the way out of a burning, flooding valley: up
+the rock, not the stream bed.
+
+```bash
+./build-gl/terraflux-terrain-viewer --view first-person --view-x 240 --view-z -60 --view-yaw 300  # below the escarpment
+LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a -s "-screen 0 1280x800x24" \
+  ./build-gl/terraflux-terrain-viewer --climb-test --smoke-test
+```
+
+`ClimbRules`, `ClimbSurface` and the climb path of `walk` live in
+`camera_rig.hpp` (the viewer supplies the surface from the terrain material,
+the rain and runoff, and the flood model's waterfalls); `terraflux-camera-tests`
+covers a wall without climbing, a climb on rock at the climb speed with its
+surface and slope reported, refusal by steepness and by a waterfall with the
+reason, exhaustion after forty seconds, hanging, climbing down while spent,
+recovery and resumption, and the per-surface limits. `--climb-test` (demo
+terrain: it needs a rock face steeper than the walking limit) stands you below
+the steepest climbable rock facet, climbs it for twenty seconds (higher,
+strength spent, the view changed), stands you under the biggest waterfall with
+the flood wave running (the climb refused), and returns (reference restored
+exactly).
+
+### Staying alive: health, body heat, crouching, ice and falls
+
+The walker now has a body that the world acts on, shown as four bars at the
+bottom left in first person — **health** (red), **body heat** (orange, turning
+blue as it goes), **strength** (green) and **wetness** (blue, thin) — and in
+the title (`health 62% heat 80% wet (fire)`).
+
+- **Health** is lost to lightning (struck −60 %, knocked off your feet −15 %),
+  **fire** (12 %/s inside the flames of a burning tree or log or on burning
+  ground, fading out by 12 m), **smoke** (1.5 %/s at full density; it lies
+  downwind of the burning trees), **falls** (nothing up to 6 m/s of impact — a
+  1.8 m drop — lethal at 20 m/s, a 20 m fall), **wind-borne debris** above
+  32 m/s, **drowning** (swimming spends strength over 30 s; spent, 10 %/s), and
+  **cold** once the body heat is below 30 % (hypothermia). At zero you collapse
+  — the title says why — and Tab out to the world view and back starts a new
+  attempt with a fresh body.
+- **Body heat** drops below 18 °C, faster in wind (chill), faster soaked
+  (×2.5) and far faster in water (×4 more); it returns in warm air and beside
+  a fire at a distance — the same heat that burns you up close warms you at
+  12 m. **Wetness** rises in rain (a storm soaks you in 30 s), at once in
+  water, and dries in warm air (two minutes).
+- **Crouch** (hold **Ctrl**): the eye comes down 0.7 m, you walk at half
+  speed, cannot run, jump or climb, pass under low branches, and are a smaller
+  target for lightning (a strike counts as twice as far away).
+- **Ice and snow**: the ground's grip (ice 0.1, snow or a frozen fresh cover
+  0.5, wet rock 0.7) slows your starts and lengthens your stops (a stop from a
+  walk takes three metres on ice), on slopes over 5° you slide downhill, and a
+  slide faster than 2.5 m/s on ice is a **slip** that throws you down.
+- **Falls** report their impact; a **crosswind** above 15 m/s turns your
+  heading downwind (0.02 rad/s per m/s over), so holding a course across a
+  gale takes steering, and walking into it is slow (see the storm section).
+
+```bash
+./build-gl/terraflux-terrain-viewer --view first-person --weather cumulonimbus --hour 15   # survive a storm
+LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a -s "-screen 0 1280x800x24" \
+  ./build-gl/terraflux-terrain-viewer --vitals-test --smoke-test
+```
+
+`vitals.hpp` (`VitalsStyle`, `Exposure`, `advance_vitals`, `hazard_for`),
+`CrouchRules`, `GripRules` and `HeadingPush` in `camera_rig.hpp`, and the
+`Hud` program / `HudRenderer` (`hud.hpp`, screen-space bars) are pure or
+validated and covered by `terraflux-vitals-tests` and the camera suite.
+`--vitals-test` stands you fresh on a mild day (bars drawn), two metres from a
+tree it sets alight (health burned, the bar changed), through half a minute of
+freezing rain, wind and water (soaked, chilled toward hypothermia), a
+twelve-metre fall and a direct strike (collapsed, down), and out to the world
+view and back (fresh).
+
+### Your own hands, and swimming
+
+In first person you now have a body you can see: two arms — sleeves and
+hands — posed for what you are doing (`terraflux/graphics/body_view.hpp`):
+they hang at your sides and come into view when you look down, pump with
+the stride when you run (the arm opposite the planted foot swings forward,
+driven by the gait's own phase), reach up alternately when you climb, sweep
+out and back with each breaststroke, reach ahead alternately in the crawl,
+go forward together when you dive, and lie out in front of you when you are
+down. They are simple blocks on two-segment arms (an elbow found by IK from a
+hand target per activity) drawn with the object program just in front of the
+eye; `--no-arms` hides them.
+
+Swimming is a proper skill now. Afloat (1.3 m and deeper) you swim in
+**strokes**: a breaststroke every 1.4 s at 1.2 m/s, the speed surging with
+each pull and gliding between, the head lifting a little with the stroke.
+**Shift** swims the **crawl** — 1.7× faster, 1.7× the strength cost (strength
+drains over 30 s of swimming; spent, you are drowning). **Ctrl** **dives**:
+the eye goes 1.2 m under the surface (a green-blue veil over everything), the
+breath runs out in 25 s and you surface by yourself; at the surface it returns
+in 8 s, and you need half a breath to dive again. Under water neither the
+flames nor the smoke reach you — diving under a burning shore is a real
+escape — but the cold does, faster. `--view-pitch` now also sets the
+first-person look (−85..85) so a view down at your hands can be reproduced.
+
+```bash
+./build-gl/terraflux-terrain-viewer --view first-person --view-pitch -57   # look down at your hands
+LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a -s "-screen 0 1280x800x24" \
+  ./build-gl/terraflux-terrain-viewer --body-test --smoke-test
+```
+
+`terraflux-body-view-tests` covers the poses (lengths, mirroring, hanging
+hands that come into view looking down, the running pump against the stance
+foot, the alternating climb, the breaststroke sweep, the crawl, the dive, the
+collapse, reach limits and smoothness), the state reduction and the box/basis
+geometry; the flood suite covers the strokes, the crawl's speed and cost,
+diving, breath and surfacing. `--body-test` (demo, or a replay with
+`--water-level`) renders the hanging hands looking down (skin in the lower
+half of the image), hides them, runs, climbs, swims (a stroke counted) and
+dives (eye under the surface, breath spent), and restores the reference exactly.
+
+### Fingers, stones, branches and a torch
+
+The hands are hands now: each is a palm, a two-segment thumb set opposed and
+four two-segment fingers, thirteen boxes per arm (`kArmSegments`), posed by a
+`HandShape` — how far the fingers curl (open to a fist), how far they spread
+and how the thumb curls — that `hand_shapes` chooses for what you are doing
+(open and spread swimming, hooked over a hold climbing, loose at your sides,
+closed around whatever you carry) and that `body_pose` blends smoothly, so the
+hands close on a stone — a pebble in a fist, a big stone in an open grasp under
+the palm — and open again when you let it go. A branch or torch is carried
+thumb-up in a fist at the waist, the forearm turned so the stick stands up out
+of it. The held thing is drawn in the right hand as a twenty-seventh segment
+(`kHeldSegment`).
+
+Things in the world can be picked up (`terraflux/graphics/items.hpp`):
+
+- **Stones** lie where the ground is rock, scree or bare (`place_stones`: a
+  jittered 7 m grid, kept by the material's chance — rock 55 %, ridge 75 %,
+  bare 25 %, soil 3 % — never on water, snow or ice, 6–32 cm, deterministic
+  from the terrain; `--no-stones` leaves them out; `STONES_JSON` counts them).
+  Those within 90 m are drawn (`PropRenderer`), the small ones stepped over,
+  the large ones walked round. Look at one within 2.3 m and **E** picks it
+  up: it is gone from the ground and in your hand. **E** again puts it down
+  at your feet; **Q** throws it — 12 m/s along your look lifted 12°, flown
+  under the walker's gravity — and it lands as a stone again, to be picked
+  up where it fell (`throw_velocity`, `advance_projectile`).
+- **Branches** are broken off the tree beside you (**E** within 1.4 m of a
+  trunk) or picked up where they lie; a branch the fire dropped burning can
+  be taken up burning (within 1.8 m, as long as it has left to burn). Holding
+  a branch where a tree's fire is hot enough (heat ≥ 0.3, a pace from the
+  flames) **E** lights it into a **torch** that burns for 90 s (the title
+  counts it down), warms you without burning (heat 0.18, drying and holding
+  off the cold), carries its own flame, and — **E** beside an unburned tree —
+  sets it alight (ignition source `ember`, so it spreads like any other tree
+  fire). Burned out it is a branch again. Put down or thrown, a torch lands
+  as a burning branch on the ground — and lights the trunk it lies beside —
+  while a branch lands as a branch.
+- The title shows what you hold and what **E** would do here
+  (`holding torch (72 s) | E: set the tree alight | Q: throw`). `--hold
+  stone|branch|torch` starts you holding one.
+
+```bash
+./build-gl/terraflux-terrain-viewer --view first-person --view-x 42 --view-z 12 --view-yaw -106 --view-pitch -35   # a stone at your feet: E
+./build-gl/terraflux-terrain-viewer --view first-person --hold torch --view-x -350 --view-z 250          # a torch into the lakeside forest
+LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a -s "-screen 0 1280x800x24" \
+  ./build-gl/terraflux-terrain-viewer --items-test --smoke-test
+```
+
+`terraflux-items-tests` covers stone placement (rock against grass, the
+water line, determinism, the seed, the style limits), the obstacles, reach
+(the nearest in front, taken stones skipped, branches, trunks from the feet),
+the throw velocity and the flight (landing where ballistics says, then at
+rest), the props (nearest first, bounded) and burning branches put down and
+taken up again with their remaining burn time — a burning branch laid beside
+a trunk lights it. The body-view suite covers the hands (skin fingers a
+finger's length from the palm, the thumb apart, a gripping hand curling in, a
+stone lying in the palm, a branch held at its length and rising up through the
+fist with the thumb on top). `--items-test` (demo,
+or a replay with trees) stands you before a stone, picks it up (in the hand,
+gone from the ground), throws it (landed ahead as a stone), breaks a branch off
+a tree, lights it at that tree burning (a torch, the warmth measured), sets an
+unburned tree alight with it and throws the torch to land burning.
+
+### Tools against the hazards: rope, fire axe, chainsaw
+
+You always carry three tools (`terraflux/graphics/tools.hpp`); **1**, **2**
+and **3** take the rope, the fire axe or the chainsaw in the right hand (the
+same key again puts it away), and whatever you were holding — a stone, a
+branch, a torch — moves to the left hand. **E** uses the tool; with nothing
+for it to do, E interacts as before (so you can pick up a stone with the axe
+out). The title shows the tool, the chainsaw's fuel and what E would do.
+
+- **Rope** (20 m, `--rope-length 2..200`). **E** throws the coil along your
+  look, lifted 12°, at 10 m/s; it flies like a thrown stone, pays the rope out
+  behind it and can go no further than the rope's length. Where the coil
+  comes down the ground between your feet and it is walked in quarter-metre
+  steps: if it falls away steeper than 45° for at least 2 m, the rope lies to
+  that **lip**, **hangs down the face** to its foot (pegged at the lip — the
+  title says so; there is no anchor to place) and lies on from there. On
+  gentle ground it only lies there ("nothing to climb down here"). Thrown
+  **up into a crown** (within a quarter of the tree's height of a standing
+  trunk, between 30 % and 95 % of its height) it **wraps round a branch** and
+  hangs straight down to the ground. A hung rope is drawn as a line; **E**
+  within 1.5 m of it — at the lip, under its end, or beside the line — takes
+  hold. On the rope **W** climbs up at 0.8 m/s (spending strength: a minute
+  from fresh to exhausted; hanging still costs a third), **S** lets you down
+  (free), **Space** lets go (you fall from there), and an **exhausted**
+  climber slides to the bottom at 4 m/s. Letting down onto ground within
+  0.5 m of the feet — the foot of the face, or a ledge the rope runs over for
+  a metre — steps off onto it; at the top of a pegged rope **W** (or E)
+  steps back onto the edge; at the top of a branch rope you hang in the
+  crown, a **perch** out of a flood or a ground fire (a burning tree is no
+  refuge). **1** within reach of either end pulls the rope in — not while
+  anyone is on it. The arms pull hand over hand.
+- **Fire axe**. Beside a standing trunk (within 1.6 m of the feet) **E**
+  swings: the chop lands halfway through the 0.7 s swing (presses during it
+  are ignored) and cuts 6 cm of the diameter; at **70 % of the diameter** the
+  tree is **felled** — it topples at once **away from you** (the side you cut
+  from), burning or not, a log on the ground like any fallen tree (an
+  obstacle, contact fire, all of it). The hint counts the chops (a 0.5 m
+  trunk takes six; the demo's big conifers up to eighteen). A trunk cut part
+  way is weaker — a burning one breaks at the cut, the cut's way, before its
+  uncut neighbour. On a **branch** lying in reach (or a burning one at your
+  feet) the axe **cuts it in two**; pieces halve down to a quarter metre
+  ("too short to cut"). Both hands are on the haft unless the left holds
+  something.
+- **Chainsaw** (`--chainsaw-fuel 1..36000` s, 300 by default). Hold **E**
+  beside a trunk: it saws 10 cm of diameter per second (a 0.5 m trunk in
+  3.5 s; the hint says how long), burns fuel only while it cuts, pushes
+  forward and trembles in the hands, and fells the tree the same way; on a
+  branch it cuts through in half a second. Out of fuel it is a weight.
+- **A tree on you.** Any trunk that lands on you — felled toward yourself,
+  windthrown, or toppled by the fire — knocks you down for three seconds and
+  costs health by its mass (100 kg a tenth, a tonne and more all of it:
+  `crush_damage`, cause `crushed`). Up a rope above the log you are clear.
+
+```bash
+./build-gl/terraflux-terrain-viewer --view first-person --tool rope --view-x 253 --view-z 502 --view-yaw 128 --view-pitch -30   # atop the escarpment: E throws it over
+./build-gl/terraflux-terrain-viewer --view first-person --tool axe --view-x -350 --view-z 250 --view-yaw 20      # in the lakeside forest: 2 chops, 3 saws
+LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a -s "-screen 0 1280x800x24" \
+  ./build-gl/terraflux-terrain-viewer --tools-test --smoke-test
+TERRAFLUX_SCREENSHOT_EVERY_FRAME=1 LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a -s "-screen 0 1280x800x24" \
+  ./build-gl/terraflux-terrain-viewer --tools-test --smoke-test --screenshot tools.ppm        # tools-0.ppm .. tools-8.ppm
+```
+
+`terraflux-tools-tests` covers the belt, the chop and saw counts, and the rope
+on a cliff (thrown, pegged at the lip with the span the face's height, taken
+hold of from the edge and from the bottom, let down at the climbing speed at no
+cost, climbed up at a cost, stepped off at the top and the foot, the slide when
+spent, letting go, pulling in, a rope on a gentle slope only lying, a short rope
+paying out its length) and up a tree (caught by the crown, hanging to the
+ground, climbed to a perch with nothing to step off onto, dropping whoever
+hangs on it when pulled in, drawn as a line and a coil); the tree-fire suite
+covers cutting (the depth per chop, the count to fell, the fall the cut's way,
+unlit for a sound tree and alight for a burning one, the saw's continuous cut,
+the weakened trunk breaking first, burning branches split in halves down to a
+quarter metre); the body-view suite covers the tools in the hands (both on the
+haft, the swing raised then down and forward and smooth, the chainsaw's handles,
+bar, push and tremble, the torch in the left hand beside the axe, the coil
+hanging from the hand, nothing in hand while climbing). `--tools-test` (demo,
+or a replay — on a terrain without a face the rope is thrown on the flat and
+only lies there) ropes down the tallest face it finds and back, chops a tree
+down in its counted chops, saws one through in its time and fuel (both falling
+away), cuts a branch into halves and refuses a quarter, ropes up into a crown
+to a perch, lets go, and has a tree felled toward the walker land on it.
+
+### Roads and bridges: infrastructure to use, and to lose
+
+Fixed infrastructure lies over the terrain now (`terraflux/graphics/roads.hpp`):
+a **road network** of plan nodes joined by segments, each a *road* (a
+two-way carriageway — one 3 m lane each way with 0.5 m shoulders, a dashed
+centre line and solid edge lines — draped over the ground at 2.5 m spacing,
+12 cm above it) or a *bridge* (a straight deck between its two ends at the
+ground height of each, 0.6 m thick, on railings 1.1 m high with posts every
+4 m and on piers every 20 m down to whatever lies below: the valley floor,
+the channel, the lake bed). Every network is validated the way road nets are
+built: **a bridge joins a road at both of its ends — there is no stand-alone
+bridge — and everything is connected**, so a network in two pieces, a bridge
+at a dead end or two bridges end to end with nothing beyond are rejected.
+
+The network comes from **routes** (plan polylines) that a planner walks at
+the sample spacing: where the ground along a route rises or falls faster
+than 18 %, or lies under the water, the road cannot go, and a **bridge is
+planned** from the last good point to the first point beyond the trouble at
+which a deck of at most 6 % grade lands on a road's worth of good ground
+with the ground nowhere above the deck — as long as the span is within the
+limit (400 m by default; the viewer allows 1000 m for the demo lake) and
+worth it (ground at least 2 m under the deck somewhere, or water, in which
+case both ends stand 1.5 m of freeboard above it). Routes that share a
+waypoint join there. Or it is **authored**: `--roads file.json` takes either
+`{"version": 1, "routes": [[[x, z], ...], ...]}` to plan or
+`{"version": 1, "nodes": [{"x":..,"z":..}, ...], "segments": [{"from": i,
+"to": j, "kind": "road"|"bridge"}, ...]}` as drawn, positions in metres from
+the terrain centre (x east, z south, like `--view-x`/`--view-z`); see
+`examples/roads/demo_routes.json` and `examples/roads/lake_bridge.json`.
+Interactive runs on the demo terrain get the demo network (`--roads auto`,
+the default; `demo` asks for it in smoke runs too, `off` leaves it out): a
+road west to east across the lowland and **over the lake on an 870 m bridge**
+to the foot of the escarpment, crossed by a road north to south through the
+western lowland; on replay data `demo` plans two routes through the centre.
+Nothing grows on the carriageways (the plants there are cleared).
+
+The walker uses them:
+
+- **Surfaces to stand on.** A road surface and a sound deck are platforms
+  the feet rest on (`PlatformFn` in the walk environment): a deck high over
+  the ground carries you across however steep the ground under it, and its
+  edge — or the broken end of a destroyed span — is a ledge you fall from.
+  Under the bridge you walk on the valley floor or swim in the lake; the
+  piers are solid and the railings keep you on the deck. Entering first
+  person over a deck starts on it.
+- **Speed.** Walking is faster on a sound road (×1.3) and a sound deck
+  (×1.25) than on open ground (`SurfaceSpeedFn`; wading in water still slows
+  you as before). Within 6 m along the road of a trunk lying across it the
+  bonus is gone (and the log itself has to be stepped, jumped or walked
+  around); a damaged surface gives less of a bonus; the rubble of a
+  destroyed road is slow (×0.7). The title says `on the road x1.30`, `on the
+  bridge (ALIGHT 40%)`, `on the road (blocked by a fallen tree)`.
+- **Damage.** Every trunk the fire, the wind, the lightning or your axe
+  brings down is checked against the network: lying across a road it
+  **blocks** it where it lies (`A tree fell across the road`) and **cracks
+  it by its mass** as it lands — asphalt and concrete do not burn, but they
+  break: a trunk's tonnes over `impact_tonnes` (12 t for a road, 8 t for a
+  deck) of damage, so a 3 t trunk cracks a road by a quarter and a huge one
+  smashes a deck outright; **burning**, it damages the surface at 2 %/s of
+  its intensity (`damaged`, darkening, rubble at 100 %). A trunk lying on a
+  deck — where the deck is at ground level, at the abutments — sets **the
+  bridge alight** (5 %/s, flames and a plume) and at full damage **the
+  bridge collapses**: the span between two 6 m stubs is gone, the slabs lie
+  tilted below, the piers stand. A **flash flood** running at a pier (3 m/s
+  and 1 m deep for 45 s) **washes a bridge out**; a torrent **over a road's
+  surface** (a channel's running water, not a lake standing on it) for
+  twice that **washes the road away**. `RoadNetwork::destroy` does it
+  outright. A deck that gives way
+  **under you** costs 35 % of your health at once (cause `collapse`), knocks
+  you down, and then you fall with it — into the valley (a fall's impact) or
+  the water (swimming). Clearing a log off a road and rebuilding are not
+  modelled: a blocked or destroyed segment stays so until the network is
+  reset. Nothing here feeds back into the fire simulation, the contracts or
+  the fixtures.
+
+```bash
+./build-gl/terraflux-terrain-viewer --view first-person --view-x -600 --view-z -100 --view-yaw -90   # on the road toward the lake bridge
+./build-gl/terraflux-terrain-viewer --roads examples/roads/lake_bridge.json --view first-person --view-x -300 --view-z 60
+./build-gl/terraflux-terrain-viewer --roads off
+LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a -s "-screen 0 1280x800x24" \
+  ./build-gl/terraflux-terrain-viewer --roads-test --smoke-test
+```
+
+Roads, bridges and buildings are drawn from shared `MeshPart`s
+(`mesh_parts.hpp`: boxes, quads, triangles, a `MeshPartRenderer`) with the
+`Structure` program, the Object geometry lit with a sky ambient so shaded
+walls stay light. `ROADS_JSON` reports nodes, roads, bridges, lengths, the longest span and
+highest deck, what is blocked, damaged and destroyed, the parts and triangles
+drawn and the railing and pier obstacles; `VEGETATION_JSON` counts the
+plants cleared. `terraflux-roads-tests` covers the style and the network
+rules (the stand-alone bridge, the dead-end bridge, the network in two
+pieces), the planner on a synthetic plain with a steep valley, a steep-banked
+lake and a gently banked pond (bridged for the water alone, a road when
+dry; a valley wider than the span limit crossed on the ground; routes that
+meet join, routes that do not are rejected; deterministic), the JSON forms,
+sampling and the speed factor, the railings and piers as obstacles, the
+walker (faster on the road, carried over the valley at the deck's height,
+held by the railing, walking under the bridge and round a pier, falling when
+the deck is destroyed under it and off a stub's broken end), blockages and
+fire damage (Damaged once, rubble, the deck alight and collapsing, flames
+and smoulder), the washout (counting, recovering, washed out), the meshes
+(parts, stubs and rubble, reset restoring them exactly), the renderer, the
+vegetation clearing and the collapse damage. `--roads-test` (demo) shows the
+roads over the bridge (hidden first, as the reference), walks the road
+against the same walk on open ground, crosses the deck and strafes into the
+railing, fells a burning tree across a road, destroys the bridge under the
+walker, and resets: the reference exactly.
+
+### Buildings: a bungalow, a house, a hospital and a skyscraper
+
+Settlement follows the roads (`terraflux/graphics/buildings.hpp`). Four kinds
+of building are built, every one **beside a road, its front wall parallel to
+it, its door facing it, and a paved footpath from the door to the edge of the
+carriageway** — there is no building without a road to reach it, and none
+beside a bridge:
+
+| Kind | Size | Walls | Roof | Windows | Entrance |
+| --- | --- | --- | --- | --- | --- |
+| Bungalow | 9 × 7 m, one storey | wooden planks | thatched gable (38°) | open holes | plank door **that opens** (see below) |
+| House | 11 × 9 m, two storeys | grey stone | red tiled gable (40°), a chimney | glass | wooden door **that opens** (see below) |
+| Hospital | 40 × 20 m, five storeys | white concrete | flat dark grey, parapet | glass | canopy over a double glass door, a **red cross** on the front and on the roof |
+| Skyscraper | 30 × 30 m, twenty storeys (80 m) | glass facade with floor bands and mullions | flat white with a plant room | — | glass lobby door **that opens** (see below) |
+
+**Sites.** A building takes a plot the setback from the carriageway edge
+(6–14 m, the footpath's length). Placed automatically, each request takes the
+suitable candidate (every 5 m along every road, both sides, 20 m clear of the
+junctions) nearest to a preferred point; a site is suitable when the ground
+under the footprint varies no more than the kind allows (2.5–6 m: the
+foundation takes up the fall, the floor sits on the ground at the door so the
+entrance is at grade and the ground may rise no more than 1.8 m (2.5–3.5 m for the big footprints) over the
+floor behind it — the bungalow and the house, which are entered, instead
+raise their floor over the highest ground under them and their footpath
+ramps up to the door, at most 1.65–1.95 m, at 3:10), every corner is above
+the water, nothing lies on a
+carriageway and the other buildings and their paths are clear. The demo and
+replay networks get all four (nearest to where the demo routes cross; the
+tower and the hospital first so they find the flat land); a network file
+lists its own under `"buildings"`: a kind name is placed automatically,
+`{"kind": "hospital", "segment": 2, "along": 120, "side": "left"}` is an
+authored site (checked the same way; an unsuitable one is an error). The
+plants on the plots and paths are cleared. `--buildings off` leaves them out.
+
+**For the walker** the buildings are solid: the walls are obstacles from the
+foundation to the roof (the doors are painted on, closed), so you walk along
+the wall or round the building; the footpath is a surface you walk on at the
+road's pace and it takes you to the door, where the title says `at the
+hospital's door`. What the fire, a falling tree, the flood, the wind and
+lightning do to them is below (Hazards).
+
+**The bungalow is entered.** It is built hollow: four plank walls 0.25 m
+thick with a doorway and real window holes (you look out, and in), a timber
+plank floor, a ceiling under the thatch, a stone skirt round the foot of the
+walls. Its door is a leaf hinged on the right-hand jamb that **swings 90°
+inward in 0.6 s** — stand within 2 m of it, from either side, and the title
+offers `E: open the door` / `E: close the door`; the leaf is an obstacle
+wherever it stands, so the closed door stops you on the ramp at the
+threshold and, from inside, keeps you in. Through the open door you step
+onto the floor (the title says `inside the bungalow (door open)`), a surface
+walked at the footpath's pace, among the furniture: a kitchen along the back
+wall (a run of cupboards under a stone worktop with a steel sink, an iron
+stove beside it, a cupboard on the wall), a table with four chairs to the
+right of the door, a wardrobe against the left wall and a bed (frame,
+mattress, blanket, pillow) against the right one. The solid pieces — the
+cupboards, stove, table, chairs, wardrobe and mattress — are obstacles you
+bump into (never climbed: each stands higher than the step height); the
+worktop, sink and wall cupboard are over the counter and the blanket and
+pillow lie on the bed.
+
+**The house is entered too**, and it has rooms. Downstairs, behind the
+front door, three rooms are parted by plaster partition walls with open
+doorways: the **living room** inside the door (a television on its stand
+against the right wall, a sofa facing it across a low table), the
+**kitchen** at the back left through a doorway (a cooking area along the
+back wall — cupboards, worktop, sink, stove, a wall cupboard — a tall
+kitchen cabinet against the left wall, a kitchen table with four chairs)
+and the **bathroom** at the back right through its own doorway (a toilet
+and a washbasin against the back wall, a cabinet). A straight **wooden
+staircase** runs up the left wall of the living room, a handrail on its
+open side, to the **bedroom** that is the whole upper floor (a bed against
+the back wall, a wardrobe in the front corner), the banister round the
+stairwell. Every wall has glazed windows, upstairs too. You walk from room
+to room, climb the stairs (a 35° flight; the walker rises with it and
+steps off onto the upper floor) and come down again; upstairs furniture is
+no obstacle downstairs and vice versa; the partitions stop you, the
+doorways let you through, the banister keeps you out of the stairwell. The
+title names the room: `inside the house (kitchen, door open)`,
+`(stairs, …)`, `(bedroom, …)`.
+
+**The skyscraper is entered too — all twenty floors.** Its ground floor is
+a **gallery** round a concrete **core**: a reception desk (with its
+receptionist's chair) faces the lobby door, two sofas with low tables stand
+either side. The core holds the **stairwell** — two concrete switchback
+flights a storey with a half landing between them, a spine wall between
+the flights, a door onto every floor — and the **lift** in its shaft, its
+door beside the stairwell's on every floor. Every floor above has **four
+apartments** in its corners off the halls round the core, each with its
+door from the hall into a **living room** (television on its stand, sofa,
+low table), a **kitchen** through a doorway (cooking area along the outer
+wall, a table with two chairs), a **bedroom** behind the living room (bed,
+wardrobe) and a **bathroom** off the bedroom (toilet, washbasin, cabinet)
+— the rooms of the house, 76 times over. You climb the stairwell floor by
+floor (the landings and the spine keep you on the flights) or **ride the
+lift**: at a shaft door `E: call the lift` brings the car (1.5 m/s, its
+doors closed on the way, opening on arrival — every other floor's shaft
+door stays shut); inside the car `E: ride up to floor n` and `Shift+E:
+ride down to floor n` take you a floor at a time, the car carrying you.
+The title says `inside the skyscraper (floor 7, kitchen, door open)`.
+Because a city's towers are hundreds of rooms each, the rooms and
+furniture are only built for the enterable buildings within 120 m of you
+(the walker or the orbit target); the walls, floors and the walker's
+collisions are always complete. The other kinds stay solid.
+
+```bash
+./build-gl/terraflux-terrain-viewer --roads demo --view first-person --view-x -805 --view-z -103 --view-yaw 0   # before the bungalow's door
+LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a -s "-screen 0 1280x800x24" \
+  ./build-gl/terraflux-terrain-viewer --interior-test --smoke-test
+```
+
+`--interior-test` walks the footpath to the closed door (the ramp carries
+the walker up to the floor's level, the leaf stops it at the threshold,
+`E: open the door` is offered), opens it with E and walks in onto the floor
+until the stove stops it, walks at the table (the chairs stop it), closes
+the door from inside and fails to leave, then opens it again and walks out
+down the ramp; then it opens the house's door and crosses the living room,
+goes through the doorway into the kitchen, climbs the stairs to the
+bedroom, comes down and walks out; then it enters the skyscraper's gallery
+(the reception desk stops it), walks into the open lift and rides it up a
+floor, walks into an apartment's living room and kitchen, and comes down
+the stairwell — flight, landing, flight — to the gallery;
+`INTERIOR_TEST_JSON` reports each frame with the room the walker is in.
+
+#### Hazards: fire, falling trees, flood, storm and lightning on the buildings
+
+The buildings live in the same weather as the roads. Each one is a set of
+**elements** — the walls, the roof, the windows, the door and (in the
+bungalow and the house) the interior — each of a **material** (`material_hazard` in
+`mesh_parts.hpp`), and **not every material burns**:
+
+| Material | Burns | Otherwise damaged by |
+| --- | --- | --- |
+| Thatch | yes — catches at a spark (heat 0.25 for 1 s), burns through in 25 s | water (rots in 20 min), a trunk of 0.3 t, wind from 28 m/s |
+| Planks, timber, fabrics | yes — heat 0.45–0.5 for 2–3 s, 30–60 s to burn through | water (rots in 10–15 min), a trunk of 0.5–1 t |
+| Glass, window panes | no | **heat** ≥ 0.5 (bursts in 8 s), a trunk of 0.2 t, debris from 40 m/s |
+| Tiles | no | a trunk of 0.6 t, wind from 38 m/s, extreme heat (0.95) |
+| Metal | no | extreme heat ≥ 0.8 (buckles in 2 min), a trunk of 2 t, wind from 50 m/s |
+| Stone, brick, concrete, pavement, asphalt | no | extreme heat ≥ 0.9 (spalls over 10–15 min; asphalt softens at 0.6), trunks of 3–8 t |
+
+(The skyscraper stands on its concrete frame — its walls element — while
+its glass facade is its windows element: a fire in an apartment bursts the
+glass, it does not bring the tower down. A building's interior is one
+element: when it burns, its rooms burn together.)
+| Paint (markings, the cross, the band) | no | heat ≥ 0.4 (blisters) |
+
+What happens (`BuildingSet::advance(dt, BuildingHazards)`, every frame in
+the viewer with the tree fire's heat, the flood's water, the weather's wind
+and rain):
+
+- **Fire.** Heat at a building — from burning trees and logs beside it
+  (`TreeFireModel::exposure_at`), a burning trunk lying on its roof,
+  another building ablaze within 12 m, a lightning strike, a torch — lights
+  a flammable element once it has had its ignition heat for its ignition
+  time. Alight, the element's flames ramp up over 2 s, it burns through in
+  its material's time (faster in wind by 6 %/m/s, halved by a storm's rain),
+  and it heats the building's **other elements at 0.85**: a thatch roof
+  lights the plank walls in 3 s, the walls light the door and the room. A
+  burning building's heat reaches the walker (1 inside or at its walls,
+  fading out by 12 m; smoke too) and **the trees beside it** (the nearest
+  standing tree within 8 m every 3 s of a full blaze), and its flames and
+  plume are drawn. What does not burn is damaged by heat above its
+  threshold: the house's **glass bursts** from its own burning door, its
+  **stone only spalls** a little. A roof burned through **falls in**; walls
+  burned through bring the building down.
+- **Impact.** A trunk the fire, the wind or an axe brings down across a
+  footprint (`log_landed`, with the trunk's mass from the tree model) hits
+  the building: the **roof takes the mass** (a 2 t trunk smashes tiles and
+  thatch outright — the roof falls in — and dents concrete by a quarter),
+  the walls and windows half of it; a burning trunk stays on the roof and
+  heats it while it burns. The trunk itself lies where it fell (it is not
+  stopped by the building).
+- **Flood.** Water over the floor (`flood_depth`, from the flood model's
+  channels and the lake's rise) **soaks** the interior (above 5 cm), the
+  door (10 cm) and the walls (30 cm): organic materials rot through in
+  their soak time, stone and concrete stand in it; water over a burning
+  element **puts it out**; a **torrent at the walls** (3 m/s, 1 m deep, for
+  60 s) **scours the foundation** and the building goes, whatever it is
+  made of (`washed out`). Inside a flooded bungalow you wade.
+- **Wind.** A gale tears at the roof and the windows: thatch from 28 m/s
+  (stripped in a minute at 35), tiles from 38, glass from 40, plank walls
+  from 45; a stripped roof leaves the walls standing, open to the sky.
+- **Lightning.** A strike within 15 m of a building's walls (the
+  **tallest** it reaches draws the bolt) **strikes** it: a thatched roof is
+  alight, another is scorched (5 %). **Inside a building under a sound
+  roof you are sheltered** from the bolt and from the rain.
+
+Damage is drawn: char, soot and rot darken what is damaged (in tenths), a
+fallen roof is gone (the gable ends stand), burst windows are dark holes,
+a burned door a dark doorway, a burned-out room is bare; a collapsed
+building is a **heap of rubble** (black when it burned down, a few slabs
+leaning in it, the chimney standing) that you walk over slowly (×0.7) and
+that smoulders if it burned. The title says `ALIGHT`, `(no roof)`,
+`flooded 0.4 m`, `(damaged)`, `(burned down)`, `(washed out)`; the
+messages name every event (`THE BUNGALOW'S ROOF FELL IN ON YOU`). A roof
+falling in on you costs 35 % of your health and knocks you down, a
+building coming down on you 60 %. With a **torch** in hand, E beside a
+building's wall offers `E: set the bungalow's walls alight` (inside, the
+room; at the door, E opens the door instead; a stone wall takes no
+torch). Every event is reported and `BuildingSet::reset` restores
+everything. Fighting a fire, shoring a wall and rebuilding are not
+modelled.
+
+```bash
+./build-gl/terraflux-terrain-viewer --roads demo --hold torch --view first-person --view-x -802 --view-z -108 --view-yaw 0   # beside the bungalow's wall with a torch
+LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a -s "-screen 0 1280x800x24" \
+  ./build-gl/terraflux-terrain-viewer --hazards-test --smoke-test
+```
+
+`--hazards-test` lights the bungalow's walls with a torch and watches the
+fire take the thatch, the door and the room (its heat at the walker, the
+flames drawn, a tree beside it lit), stands inside as the roof falls in
+(hurt, knocked down), watches the walls burn through and the bungalow
+collapse into rubble walked over slowly, lights the house's door (the
+glass bursts in the heat, the stone does not burn) and drops a two-tonne
+trunk on it (the tiles smashed, the roof fallen in, the walls cracked a
+little), strikes the skyscraper with lightning (scorched, not lit) and
+scours the hospital with a torrent (washed out), then resets;
+`HAZARDS_TEST_JSON` reports each frame.
+
+```bash
+./build-gl/terraflux-terrain-viewer --view first-person --view-x -850 --view-z -70 --view-yaw -90 --view-pitch 12   # the hospital across the road
+./build-gl/terraflux-terrain-viewer --roads examples/roads/lake_bridge.json          # authored sites
+./build-gl/terraflux-terrain-viewer --buildings off
+LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a -s "-screen 0 1280x800x24" \
+  ./build-gl/terraflux-terrain-viewer --buildings-test --smoke-test
+```
+
+`BUILDINGS_JSON` lists the kinds, storeys, heights and sites.
+`terraflux-buildings-tests` covers the specs (a hospital of at least five
+storeys, a skyscraper of at least twenty and seventy metres), placement (all
+four along the roads, doors facing the road and paths meeting the
+carriageway, no corner on a road, no overlap, determinism, the dry side of a
+lake, the flat side of a hill, the downhill side of a slope with the door at
+grade, nothing on a shore, authored sites and their rejections), the JSON
+forms, the set (footpath surface and pace, plots, entrances, the walls as
+posts, a walker stopped at the door), the meshes (parts and materials per
+kind, the cross red and on the hospital, heights, doors at the entrances),
+the vegetation clearing and the interior (the furniture within the walls
+and clear of the entrance, the floor and the doorway as surfaces, the ramp
+and a walker climbing it, the doorway open in the walls and shut by the
+leaf, the door's swing and its version, the leaf's posts and meshes open
+and closed, a walker stopped by the closed door, in through the open one
+onto the floor, stopped by the chairs and held by the walls, and kept in by
+the door closed from inside), and the house (five rooms on two levels, the
+partitions and their doorways, the stair and its rail, every piece of
+furniture in its room, the levels by the feet's height, the rooms by
+position, a walker through the kitchen doorway, stopped by the blind
+partition, up the stairs to the bedroom, stopped by the wardrobe and held
+by the banister, down again, and the bed upstairs no obstacle downstairs
+while the sofa is one), and the tower (a level per storey, the gallery and
+four apartments of four rooms on every floor above, the flights, landings
+and holes storey over storey, the concrete core with a door a floor, the
+furniture, the levels and rooms by the feet, the lift called, travelling,
+arriving and ridden, its shaft doors shut elsewhere, a walker carried up in
+the car, up the stairs flight by flight to the first floor, through the
+stairwell door, into an apartment's living room and kitchen, the wall
+beside the door holding; and that interiors are only built near a focus).
+`--buildings-test` shows the four from the
+world view (hidden first as the reference), walks the hospital's footpath to
+its door, and hides them again: the reference exactly. The suite's hazards
+test covers the material table, the elements per kind, the fire (thatch
+first, planks and door after their delay, the room from the building's own
+flames, the glass burst and the stone spalled by heat, exposure and
+emitters, the roof falling in, the collapse into rubble — a slow surface,
+no room, no door, the chimney the only obstacle, smouldering — the house
+standing with its door gone, rain and wind, reset), ignition by hand and
+the jump to the bungalow next door but not across the road, impact (tiles
+smashed, stone cracked by half the mass, concrete dented, a burning log
+spalling it, a huge trunk flattening a house), the flood (extinguishing,
+soaking in the material's time, stone and concrete standing, the plank
+walls rotting through, the torrent scouring the hospital), the wind
+(thatch stripped at 35 m/s, tiles and glass at 42) and lightning (thatch
+lit, tiles scorched, a miss, shelter, destroy).
+
+### The city: CBD, suburbs, highways and an airport
+
+The road network and the buildings scale up to a city (`terraflux/graphics/city.hpp`),
+planned deterministically from a `CityPlan` of zones and highway corridors:
+
+- **Road classes.** A segment now has a class: `street` (two lanes), `avenue`
+  (four lanes, a double yellow centre line), `highway` (six lanes, 21 m wide,
+  a raised median between the carriageways, yellow inner lines, dashed lane
+  lines), `ramp`, and the airport's `runway` (45 m, centreline dashes and
+  threshold stripes), `taxiway` (20 m, a yellow centreline) and `apron`
+  (60 m). Widths, markings, sampling, obstacles and the buildings' setbacks
+  all follow the class; the title says `on the highway, 6 lanes`.
+- **Curves.** Streets and highway arcs are polylines of short legs; where
+  exactly two segments of one width meet the ribbon is **mitred**, so a curve
+  reads as one road without notches. `ROADS_JSON` counts the `curve_joints`.
+- **Viaducts and interchanges.** A node may carry a **lift**: the deck of a
+  bridge chain passes that high over the ground (a road can never reach a
+  lifted node; a chain of bridges must still come down to roads at two of its
+  nodes). Where a zone's avenue meets a straight run of highway a **diamond
+  interchange** is built: the highway rises 7 m on a viaduct over the avenue
+  (no pier ever stands on the road below) and four quadratic-Bézier **ramps**
+  join the highway 110 m either side of the crossing to the avenue 60 m
+  either side of it; against the terrain's edge it is a half diamond. A
+  highway ending on another's straight run joins it at a T; one ending at an
+  arc is snapped to it. Where there is no room (near a T, another
+  interchange, a highway's end or water) the zone joins the nearest dry
+  highway waypoint, interchange or already connected zone by an avenue at
+  grade. With a height, `RoadNetwork::sample(x, z, feet_y)` and
+  `platform_height(x, z, feet_y)` give the deck to whoever stands on it and
+  the avenue to whoever walks under it.
+- **Zones.** The **CBD** is a lattice of avenues (every third line) and
+  streets on 120 m blocks, gently warped; every block edge is parcelled into
+  **skyscraper** lots on both sides, and a hospital and a police station are
+  placed near its centre. A **suburb** is a smaller lattice (100 m blocks,
+  warped by up to 14 m so the streets wander) parcelled into houses and
+  bungalows; every other suburb gets a police station. The **airport** is a
+  runway with a parallel taxiway joined at both ends, an apron off the
+  taxiway with the terminal, control tower and two hangars on its far side,
+  the airfield cleared of plants, and the apron's end as its road connection.
+  Lots that are uneven, wet, on a carriageway or on another building stay
+  empty (`CITY_JSON` counts why); every building that stands has its door
+  and footpath to the road it was parcelled from.
+- **Plans.** The demo terrain gets `demo_city_plan`: the CBD "Central" in
+  the north-western lowland, the suburbs Hillcrest (on the hill north of the
+  lake), Westfield, Lakeside, Southbank, Riverside and Eastgate, the airport
+  in the south with its runway east–west, a western ring highway north to
+  south, the lake crossing east, and a southern link that turns toward the
+  airport. Any other terrain gets `generic_city_plan`: a CBD at the centre,
+  five suburbs and an airport around it, and a hexagonal ring highway between
+  them whose sides face the suburbs. `--roads city` asks for it (the default
+  of interactive runs); `--roads demo` keeps the earlier two routes and four
+  buildings.
+
+New building kinds: a **police station** (two storeys, light walls with a
+blue band and a blue lamp at the door, a flat dark roof with a beacon mast),
+an airport **terminal** (two tall storeys, white under continuous glass bands,
+a long canopy), a **control tower** (a concrete shaft with a wider glazed
+cab) and a **hangar** (one tall storey of grey metal under a shallow gable, a
+20 m sliding door). Overlap between buildings is now judged on their
+rectangles (a terrace of houses fits), and a city's lots are offered with
+`skip_unsuitable_sites` rather than thrown.
+
+```bash
+./build-gl/terraflux-terrain-viewer                                          # the city, from the air
+./build-gl/terraflux-terrain-viewer --view first-person --view-x -740 --view-z -600 --view-yaw 0   # a CBD avenue
+./build-gl/terraflux-terrain-viewer --view-x -1000 --view-z -660 --view-zoom 0.12 --view-pitch 35 --view-yaw 300   # the Central interchange
+./build-gl/terraflux-terrain-viewer --view-x -275 --view-z 930 --view-zoom 0.18 --view-pitch 35 --view-yaw 160      # the airport
+LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a -s "-screen 0 1280x800x24" \
+  ./build-gl/terraflux-terrain-viewer --city-test --smoke-test
+```
+
+`CITY_JSON` reports the zones, the interchanges and at-grade junctions, the
+lots parcelled and placed and why the rest stayed empty. `terraflux-city-tests`
+covers the plan validation, a seven-zone city on a rolling plain with a lake
+(a CBD, five suburbs and an airport all joined, at least three diamonds with
+their crest nodes and viaduct chains, avenues under the crests, a T-junction
+onto a filleted ring, hundreds of lots, a CBD that is mostly skyscrapers, the
+hospital, police stations and airport buildings, every building beside a road
+with its path on the carriageway, the airfield clearing, determinism), a lone
+zone, two zones joined by a link road and the generic plan; the roads suite
+covers the classes, widths, lifts, viaduct validation, mitred curves,
+pier placement and the JSON forms. `--city-test` shows the CBD from the air,
+stands on a four-lane avenue among the towers, on the crest of an
+interchange's viaduct with the avenue beneath, and on the runway, and
+returns to the reference exactly.
+
+### Materials: the surfaces things are made of
+
+Nothing built or grown is a flat colour any more. Every mesh part carries a
+`SurfaceMaterial` (`mesh_parts.hpp`) that the `Structure` program textures
+**procedurally in world space** — no image assets, nothing to load, stable
+on the surface and fading out where it would shimmer at a distance — as a
+small height field over a frame fitted to the face (across it and up its
+slope) that both shades the surface and bends its normal:
+
+| Material | What you see |
+| --- | --- |
+| thatch | bundles of straw laid down the slope in 45 cm courses, each strand its own gold or grey, the course's lower edge in shadow, ragged butts |
+| planks | horizontal boards, each with the grain of the tree it came from: rings that wander as the tree grew and lie tight or wide by the board (good and lean years), a knot with its own rings every couple of metres, dark seams, grey weathering where the rain runs |
+| stone | coursed rubble with mortar joints, every stone its own tone and a rough face |
+| brick | stretcher bond, pale mortar, warm and dark bricks |
+| tiles | overlapping rows of pantiles, shadow under every lip |
+| concrete | pores, a rough grain, mottling and faint streaks running down the face |
+| asphalt | fine aggregate and patches |
+| pavement | concrete slabs with joints, stained |
+| glass / window | panes with the sky brighter toward their tops; a single pane for a window |
+| metal | corrugated sheet with rust at the laps |
+| timber | vertical boards with grain (doors) |
+| paint | worn road markings |
+
+The bungalow gained its **masonry**: a course of fieldstone the timber walls
+stand on and a brick chimney; the house's chimney is brick too.
+
+The trees have their own detail in the vegetation program: **bark** with
+fissures running up the trunk (ridged noise stretched along the height) and
+grain between them, bending the lighting; **leaves** — clusters of lighter
+and darker green about a metre across, single leaves of a hand's breadth,
+sunlit leaf tips on the lit side, and **gaps** in the canopy through which
+the branches and the sky show (the back of the canopy is lit two-sided, so
+the inside reads as leaves in shadow). The tree meshes carry **branches**
+now: a broadleaf tree forks into five to seven limbs that reach up and out
+through its crown, a conifer carries a whorl of branches under each tier
+whose tips show at the edge, and a few dead stubs on the bare trunk.
+Grass is left plain. Detail terms fade with the pixel footprint
+(`terrainDetailFade`), so distant forests and roofs stay calm.
 
 ### Water: level, depth, transparency, reflection and waves
 
@@ -667,11 +1672,179 @@ cloud shadows on assets, thunder, hail, wet specular ground, lee-wave clouds
 and temporal filtering of the cloud march remain future work. See
 [the backend contract](docs/GRAPHICS_BACKENDS.md#weather).
 
+### World view and first person: Tab, W/A/S/D
+
+The viewer has two cameras and **Tab** switches between them at any time:
+
+- **World view** (the default): the orbit camera of the overview. Arrow keys
+  orbit, + / - zoom, **W/A/S/D** pan the target over the ground (it follows the
+  terrain, the water and now also the crag relief, so the camera never sinks
+  into a displaced rock face).
+- **First person**: you stand on the ground at eye height (1.7 m above the
+  measured surface, or above the water surface over a flooded or submerged
+  cell, plus the rock relief a crag may be displaced by). **W/S** walk forward
+  and back along the way you look, **A/D** strafe, **Shift** runs (3x), the
+  **arrow keys** and the **mouse** (the cursor is captured while in first
+  person and released on leaving it) look around, pitch limited to 85 degrees
+  up and down, and **+ / -** change the walking speed (1..60 m/s, default 2.5,
+  a brisk walk; `--walk-speed` sets it; Shift runs at three times the walking
+  speed). Diagonal movement is not faster. The feet follow
+  the surface, so a flood rising under you lifts you with it; holes in the
+  measured data and the edge of the terrain stop you instead of letting you
+  fall through. A/D walk even with a scene file loaded: the node attach/detach
+  keys are suspended in first person and work again in the world view.
+
+The two views hand over to each other: entering first person stands you on the
+ground under the world view's target, level with the horizon and looking the
+way the orbit camera looked (if the target is over a hole the nearest ground
+is used; with none in reach the switch is refused and the world view kept).
+Returning puts the world view's target where you stood, behind the way you
+were looking, at the orbit pitch and zoom you left with — so Tab, Tab without
+moving restores the world view exactly. `--view first-person` starts on the
+ground (combine with `--view-x`, `--view-z` and `--view-yaw` to pick the spot
+and the heading); `CAMERA_JSON` reports every switch.
+
+```bash
+./build-gl/terraflux-terrain-viewer --view first-person --view-x -350 --view-z 250 --view-yaw 20   # in the lakeside forest
+./build-gl/terraflux-terrain-viewer --view first-person --walk-speed 20 --weather cumulus
+LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a -s "-screen 0 1280x800x24" \
+  ./build-gl/terraflux-terrain-viewer --first-person-test --smoke-test
+```
+
+**Walking in steps.** The walker does not glide: it moves in steps. From rest
+it accelerates (20 m/s²) into its first step; each step is
+0.45 m + 0.22 m × speed long (1 m at the 2.5 m/s default walk, 2.1 m at the
+7.5 m/s run, never shorter than a 4.5 steps/s cadence allows), and within a
+step the ground speed pulses ±20 % — slowest as the swing foot lands (double
+support), fastest as the stance foot pushes off mid‑step — so you feel where
+every step begins and ends. The head rises over the stance leg (2–3 cm walking,
+up to 7 cm running), shifts and rolls toward the stance foot (±1.5–4 cm,
+±0.6°) alternating left and right as the feet alternate, and takes a small
+jolt as each foot lands (harder at a run). Releasing the keys does not halt
+you: the walker brakes uniformly so that it stops exactly on the next footfall
+(or the one after when that would take more than 40 m/s² of braking), finishing
+the step and planting the foot, and the head comes to rest exactly at eye
+height. The step counter and the stance foot are tracked (`footfalls`,
+`stance_foot`), so footstep sound or prints can be hung on them later. A jump
+from a walk carries the gait's mean speed; landing starts the walk again from
+rest. `--no-gait` restores the constant‑speed glide; `--walk-speed` sets the
+pace (default 2.5 m/s, a brisk walk; Shift runs at three times that).
+
+```bash
+./build-gl/terraflux-terrain-viewer --view first-person                      # walk: feel the steps
+./build-gl/terraflux-terrain-viewer --view first-person --walk-speed 1.4     # a stroll
+./build-gl/terraflux-terrain-viewer --view first-person --no-gait            # the old glide
+LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a -s "-screen 0 1280x800x24" \
+  ./build-gl/terraflux-terrain-viewer --gait-test --smoke-test
+```
+
+`GaitStyle` in `camera_rig.hpp` holds the step, pulse, acceleration, braking,
+bob, sway, roll and jolt constants (validated). `--gait-test` renders four
+frames: standing (reference), mid‑step after two seconds of walking along the
+most level heading clear of trunks (the walking speed reached, the per‑step
+speed pulse, the footfall count and the bob/sway measured, the head up and to
+the side, a different image), a second after releasing the keys (stopped on a
+footfall within two step lengths, speed and phase zero, eye exactly at eye
+height) and back at the start (image restored **exactly**).
+
+**Collision.** Walking is solid: you step over grass and anything lower than
+knee height (0.5 m above the feet — a stone, a tuft, a low ledge), but you
+cannot walk through trees, imported assets or the mountainside. The walker is
+a 0.35 m body at eye height; every placed tree is a vertical cylinder with the
+footprint of its mesh at the base (the trunk of a procedural conifer or
+broadleaf, the base of a custom OBJ) scaled by the tree's height, every
+imported OBJ/glTF instance is the cylinder around its bounding sphere where it
+is drawn this frame (so Spin/Motion objects move out of, or into, your way),
+and ground that rises more steeply than `--max-slope` (default 45 degrees) is a
+wall: cliffs, the escarpment's crag faces (which also carry the rock relief
+allowance, so craggy rock blocks from about 30 degrees) and the steep flanks
+of the ridge stop you, while soil slopes below the limit are climbed and any
+slope can be descended. Motion is sub-stepped so nothing is tunnelled through
+even at the running speed, you slide around trunks you hit off-centre and
+along the foot of a cliff you walk into diagonally, holes in the data and the
+terrain edge stop you, and entering first person among trees steps you clear
+of the nearest trunk. `--no-collision` turns all of it off (a ghost walk for
+inspection); `COLLISION_JSON` reports the trunk count and the body whenever
+the vegetation is (re)placed.
+
+```bash
+./build-gl/terraflux-terrain-viewer --view first-person --max-slope 60       # a scrambler
+./build-gl/terraflux-terrain-viewer --view first-person --no-collision       # walk through everything
+LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a -s "-screen 0 1280x800x24" \
+  ./build-gl/terraflux-terrain-viewer --collision-test --smoke-test
+```
+
+**Gravity and jumping.** The walker is under Earth gravity (9.81 m/s²,
+`--gravity` for other worlds). Walking keeps you on the ground — steps up to
+the step height and any downhill slope are walked — but stepping off a ledge
+deeper than the step height starts a real fall: the feet leave the ground at
+their height, keep the walking momentum, and drop with gravity (semi‑implicit
+Euler at 120 Hz, terminal velocity 60 m/s) until they meet the support.
+**Space** jumps (in first person; in the world view Space still pauses the
+wildfire replay): a standing jump leaves the ground at √(2gh) and peaks at
+`--jump-height` (default 1 m, 0 disables) after exactly the analytic air time
+(0.90 s on Earth), a running jump carries the run through the air (about 2 m
+at walking pace, 7 m at a run), and mid‑air steering is limited to 25 %/s of
+the momentum, so you cannot turn round in flight. Landing dips the eye in
+proportion to the impact speed (≈ 0.23 m from a 1 m jump, up to 0.5 m from a
+fall) and the dip recovers exponentially over a few tenths of a second. While
+airborne the feet are higher, so the same blocking rule lets you clear rocks
+up to the jump height plus the step height, land on top of anything whose top
+is within the step height of your feet (a wide rock, a ledge), and walk off it
+again into a fall. Walls still stop you in the air (the momentum dies and you
+drop), trunks are as solid as on the ground, and holes in the data are never
+fallen into.
+
+```bash
+./build-gl/terraflux-terrain-viewer --view first-person --jump-height 2        # an athlete
+./build-gl/terraflux-terrain-viewer --view first-person --gravity 1.62         # the Moon
+LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a -s "-screen 0 1280x800x24" \
+  ./build-gl/terraflux-terrain-viewer --jump-test --smoke-test
+```
+
+`WalkerPhysics` in `camera_rig.hpp` holds the constants (gravity, jump
+height, air control, terminal velocity, landing dip and recovery) so later
+environment interaction shares the same gravity. `--jump-test` renders five
+frames: standing (reference), the apex of a standing jump (feet at the jump
+height ± 5 cm, a different image), the landing (back on the ground after the
+analytic air time ± one tick, eye dipped), two seconds later (dip gone, image
+restored **exactly**) and a running jump along the most level clear heading
+(carry within 80..110 % of speed × air time).
+
+The collision model lives in `terraflux/graphics/collision.hpp` (obstacles,
+the walker body, a plan-space obstacle hash, tree and asset obstacle
+builders, push-out) and the walker in `camera_rig.hpp` (`WalkEnvironment`,
+`walk`, `settle`), both pure and covered by `terraflux-collision-tests`.
+`--collision-test` runs on the real placement: it stands six metres from a
+tree on gentle open ground and runs at it (must stop touching the trunk at body
+radius), stands three metres below the terrain's steepest facet and walks up
+(must not climb; skipped with a note on terrain with no facet steeper than the
+limit), walks through a grass tuft in the open (must pass), and repeats the run
+at the trunk with collision disabled (must pass through and render a different
+image).
+
+The camera rig lives in `terraflux/graphics/camera_rig.hpp` as pure functions
+over an `OrbitCamera` and a `FirstPersonCamera` (directions, walking over a
+standing-height function, look clamping, speed limits, ground placement and
+the two transitions) with its own native test suite. `--first-person-test`
+renders the world view with its target on the ground, enters first person and
+checks the eye stands at eye height on the standing height directly under the
+target with the same heading, that ground fills the bottom of the image, that a
+quarter turn and a second of running change the image and move the feet by the
+walked distance along the ground, and that returning restores the orbit camera
+and the reference image exactly. It requires demo or replay smoke mode starting
+in the world view with visible terrain and no assets or other scripted test;
+tiled, resident and offscreen paths are allowed. In first-person frames a smoke
+run does not require the fire to be visible (it may be behind you). Nothing
+about the cameras feeds back into propagation or replay timing.
+
 ### Viewer controls
 
 | Key | Action |
 | --- | --- |
-| Arrow keys / + / - | Orbit camera / zoom |
+| Tab | Switch between the world view (orbit) and first person |
+| Arrow keys / + / - | World view: orbit camera / zoom. First person: look around / walking speed |
+| Mouse | First person: look around (cursor captured until Tab returns to the world view) |
 | P | Pause/resume OBJ demo or scene Spin/Motion; camera and fire replay continue |
 | N | Advance one 1/60-second scene tick and remain paused |
 | [ / ] | Select the previous / next scene binding, including inactive nodes |
@@ -679,12 +1852,20 @@ and temporal filtering of the cloud march remain future work. See
 | A | Activate the selected inactive node if residency budgets permit |
 | U | Unload the imported asset/scene; retain terrain and wildfire playback |
 | R | Reload the original asset/scene; failed loads preserve the current asset |
-| Space | Pause/resume wildfire replay |
+| Space | Pause/resume wildfire replay (world view; jumps in first person) |
 | Home | Reset wildfire replay to its first frame and pause |
 | Comma / period | Previous / next wildfire frame, pausing replay |
 | V / B / G | Cycle vegetation density / tree meshes / grass distance |
 | C / J / K / X / O | Cycle the cloud form / solar clock an hour back / forward / wind presets / toggle weather |
-| W / A / S / D | Pan the camera target over the ground (A/D only without a scene file) |
+| W / A / S / D | World view: pan the camera target over the ground (A/D only without a scene file). First person: walk and strafe; W into a face too steep to walk climbs it if the surface allows |
+| Shift | First person: run (trees, assets and slopes above `--max-slope` still stop you; `--no-collision` lifts that) |
+| Ctrl | First person: crouch (hold) — lower, slower, under branches, a smaller target; afloat: dive |
+| Shift (afloat) | First person: swim the crawl — faster, more tiring |
+| Space | First person: jump (`--jump-height`, Earth gravity or `--gravity`), or let go of a rope; world view: pause/resume the wildfire replay |
+| E | First person: use the tool in hand (throw the rope or take hold of it, chop with the axe, hold to saw with the chainsaw), else interact — ride the lift up a floor (Shift+E: down) from inside its car, call the lift at its shaft door, open or close a building's door within reach, pick up the stone or branch you look at, take a burning branch at your feet, break a branch off the tree beside you, light a branch at a fire, set a tree alight with the torch, or put down what you hold (the title says which) |
+| Q | First person: throw what you hold (12 m/s along the look, lifted 12°); it lands as what it is |
+| 1 / 2 / 3 | First person: take the rope / the fire axe / the chainsaw in hand (the same key again puts it away; 1 near a rope lying or hanging out in the world pulls it in). What you held moves to the left hand |
+| W / S (on a rope) | Climb up / let yourself down; W at the top of a rope pegged at an edge steps off onto it; Space lets go |
 | Escape | Exit |
 
 P/N are edge-triggered: holding a key does not repeat it. Paused wall time
@@ -1351,7 +2532,7 @@ resolution, serializable Motion,
 shared mixed-format scene assets, isolated
 GPU asset lifetimes, unload/reload with failure recovery, and independent
 scene pause/resume and single-step controls. The mixed-format example includes
-OBJ, glTF, GLB, transparent materials and repeated model references. Native testing comprises 19
+OBJ, glTF, GLB, transparent materials and repeated model references. Native testing comprises 31
 CTest suites and 71 simulation parity fixtures; CI also exercises the viewer
 under Mesa/Xvfb. See the branch's CI results for validation of each commit.
 
@@ -1367,7 +2548,7 @@ validated pass handles/extents, shared byte-budget admission, telemetry and scop
 cleanup. OpenGL creation checks framebuffer completeness and rolls back partial
 allocations. A dedicated Mesa test covers clear/load, depth occlusion, geometry,
 target switching, budget rejection and repeated cleanup. Native CTest now comprises
-19 display-independent suites; the extra GL test runs explicitly under Xvfb.
+28 display-independent suites; the extra GL test runs explicitly under Xvfb.
 Offscreen color now exposes a borrowed sampled texture view, with no duplicate
 byte charge and invalidation when its target is destroyed. The reusable
 `FullscreenComposite` helper copies it into a separate offscreen/window pass
@@ -1446,7 +2627,38 @@ or any OBJ), placed from the fuel data with per-plant size and color variation,
 wind sway and run-time switchable meshes and densities. Fire is now animated:
 fuel-gated flames and smoke rise from burning cells, trees carry crown fires and
 char, and rock, water, snow and bare soil never show fire; native testing grows
-to 19 suites. Terrain renderer planning
+to 19 suites. The viewer now has a first-person camera beside the orbiting
+world view (Tab switches, W/A/S/D walk, Shift runs, arrows and mouse look),
+standing at eye height on the ground, water and crag relief with the heading
+handed over in both directions; walking collides with tree trunks, imported
+assets and ground steeper than a slope limit while stepping over grass and
+knee-high obstacles; the walker is under Earth gravity — Space jumps with the
+analytic air time, running jumps carry momentum, ledges are fallen from and
+landings dip the eye; walking is a gait of discrete steps with a per-step
+speed pulse, head bob, sway, roll and footfall jolts that stops on a footfall;
+the camera rig and the collision model are pure modules
+with their own suites; a tree-level fire model makes every tree burn, drop
+burning branches, char, topple (onto the ground or a neighbour), lie as a
+burning log and light its neighbours, driven by the replay front and clock
+(31 native CTest suites) with Mesa first-person, collision, jump, gait,
+tree fire, storm, flood, climb, vitals, body, items, tools, roads, buildings and city tests; the walker sees its
+own arms and hands and swims in strokes, crawls and dives; it picks up stones
+and branches, lights a torch and sets trees alight with it; it carries a rope
+(down a cliff, up into a crown), a fire axe and a chainsaw that fell trees
+away from it and cut branches in pieces, and a trunk that lands on it crushes it;
+a connected network of two-way roads and bridges lies over the terrain, used by
+the walker (faster on them, carried over the lake on a deck) and lost to it
+(trunks block and burn the roads, a deck alight or scoured by a flood
+collapses, under the walker too); a bungalow, a house, a hospital and a
+skyscraper stand beside the roads with their doors and footpaths to them, and
+a whole city is planned from zones: a CBD of towers, suburbs, police stations,
+an airport and multi-lane highways with diamond interchanges on viaducts;
+the walker has health, body
+heat and wetness, crouches, slips on ice and is turned by crosswinds; storms reach the walker (gust drift,
+windthrow, lightning that splits trees and strikes people down), storm
+rain floods the drainage channels the walker wades, swims or is swept in,
+and the walker climbs out over rock faces as steep as the surface allows.
+Terrain renderer planning
 estimate rises from ~92% to ~93%. Overall estimates remain ~93% desktop / ~64%
 full roadmap; weighting remains undocumented.
 See the [prioritized gaps and acceptance criteria](docs/ENGINE_BASELINE.md#remaining-renderer-work-in-priority-order). GPU meshes are created on demand; CPU model data

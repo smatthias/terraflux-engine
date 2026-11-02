@@ -294,6 +294,7 @@ ShaderLayout shader_program_layout(ShaderProgramId program) {
     case ShaderProgramId::Terrain:return terrain_shader_layout();
     case ShaderProgramId::Wildfire:return wildfire_shader_layout();
     case ShaderProgramId::Object:return object_shader_layout();
+    case ShaderProgramId::Structure:return object_shader_layout();  // the same geometry and object uniform, lit for built things
     case ShaderProgramId::TexturedObject:return textured_object_shader_layout();
     case ShaderProgramId::InstancedTexturedObject:return instanced_textured_object_shader_layout();
     case ShaderProgramId::PbrObject:return pbr_textured_object_shader_layout(false);
@@ -305,6 +306,7 @@ ShaderLayout shader_program_layout(ShaderProgramId program) {
     case ShaderProgramId::Precipitation:return precipitation_shader_layout();
     case ShaderProgramId::Lightning:return lightning_shader_layout();
     case ShaderProgramId::Spray:return spray_shader_layout();
+    case ShaderProgramId::Hud:return {24,{{"POSITION",0,VertexFormat::Float2,0},{"COLOR",1,VertexFormat::Float4,8}},{}};
     default:throw std::invalid_argument("shader program has no built-in layout");
   }
 }
@@ -313,7 +315,9 @@ void validate_pipeline_desc(const PipelineDesc& desc,bool allow_contract_only) {
   if(desc.program==ShaderProgramId::Composite &&
      (desc.depth_test || desc.depth_write || desc.alpha_blend))
     throw std::invalid_argument("composite pipeline requires disabled depth and blend state");
-  if(desc.alpha_blend && (!desc.depth_test || desc.depth_write ||
+  if(desc.program==ShaderProgramId::Hud && (desc.depth_test || desc.depth_write || !desc.alpha_blend))
+    throw std::invalid_argument("hud pipeline requires no depth test or write and alpha blending");
+  if(desc.alpha_blend && desc.program!=ShaderProgramId::Hud && (!desc.depth_test || desc.depth_write ||
      (desc.program!=ShaderProgramId::PbrObject && desc.program!=ShaderProgramId::Water && desc.program!=ShaderProgramId::Fire &&
       desc.program!=ShaderProgramId::Precipitation && desc.program!=ShaderProgramId::Lightning && desc.program!=ShaderProgramId::Spray)))
     throw std::invalid_argument("transparent pipeline requires noninstanced PBR, water, fire, precipitation, lightning or spray, depth testing and no depth writes");

@@ -669,7 +669,7 @@ void test_render_pass_contract() {
 void test_explicit_shader_identity() {
   ValidatingRenderDevice device;
   device.begin_render_pass({{640,480}});
-  const std::array programs{ShaderProgramId::Terrain,ShaderProgramId::Wildfire,ShaderProgramId::Object,
+  const std::array programs{ShaderProgramId::Terrain,ShaderProgramId::Wildfire,ShaderProgramId::Object,ShaderProgramId::Structure,
       ShaderProgramId::TexturedObject,ShaderProgramId::InstancedTexturedObject,
       ShaderProgramId::PbrObject,ShaderProgramId::PbrInstanced};
   for(const auto program:programs) {

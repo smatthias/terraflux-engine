@@ -92,13 +92,17 @@ struct VegetationFireGrid {
 //   params:     sway amplitude, grass fade start, grass fade end, tree fade end
 //   eye:        camera position, 0
 //   fireGrid:   cell size, width, height, present (1/0)
-//   fireOrigin: origin offset x, origin offset y, 0, 0
+//   fireOrigin: origin offset x, origin offset y, instance fire (1: trees take fall/char/glow
+//               from their instance records instead of the cell lookup), 0
 inline constexpr std::uint32_t kVegetationStyleSlot = 13;
 inline constexpr std::uint32_t kVegetationFireSlot = 5;  // PlantFireState storage buffer
 inline constexpr std::size_t kVegetationStyleBytes = 96;
 using VegetationStyleUniform = std::array<float, 24>;
 VegetationStyleUniform pack_vegetation_style(const VegetationStyle& style, math::Vec3 eye, double time_seconds,
                                              const VegetationFireGrid& fire = {});
+// The same block with trees driven by their instance fire records.
+VegetationStyleUniform pack_vegetation_style(const VegetationStyle& style, math::Vec3 eye, double time_seconds,
+                                             const VegetationFireGrid& fire, bool instance_fire);
 // CPU twin of the shader's cell lookup: state (0 unburned, 1 burned, 2 active,
 // 3 absent) of the field cell under a world position, 0 when not present or outside.
 std::uint32_t vegetation_fire_state(const VegetationFireGrid& fire, const std::vector<std::uint32_t>& states,
@@ -108,8 +112,10 @@ std::uint32_t vegetation_fire_state(const VegetationFireGrid& fire, const std::v
 // Atmosphere at slot 15 (both stages) and the OrographicField texture at slot 1.
 ShaderLayout vegetation_shader_layout();
 
-// One placed plant: std430 layout of three vec4s (48 bytes), consumed by the
-// Vegetation shader through the InstanceData storage buffer.
+// One placed plant: std430 layout of five vec4s (80 bytes), consumed by the
+// Vegetation shader through the InstanceData storage buffer. The last two
+// records are written by the tree fire model (see tree_fire.hpp): placement
+// leaves them zero (standing, unburned).
 struct VegetationInstance {
   float position[3];
   float scale;      // metres of height
@@ -119,8 +125,14 @@ struct VegetationInstance {
   float kind;       // tree mesh slot (0 conifer-like, 1 broadleaf-like); grass 0
   float tint[3];   // multiplier on tintable vertex colors (species and per-plant variation)
   float pad = 0.0f;
+  float fall_direction[2] = {1.0f, 0.0f};  // unit plan direction the trunk tilts toward
+  float fall_angle = 0.0f;                 // radians from vertical: 0 standing, ~pi/2 on the ground
+  float consumed = 0.0f;                   // 0 .. 1 of the crown and wood burned away
+  float char_amount = 0.0f;                // 0 living .. 1 charred
+  float glow = 0.0f;                       // 0 .. 1 flames on the plant (self-lit embers)
+  float reserved[2] = {0.0f, 0.0f};
 };
-inline constexpr std::size_t kVegetationInstanceBytes = 48;
+inline constexpr std::size_t kVegetationInstanceBytes = 80;
 static_assert(sizeof(VegetationInstance) == kVegetationInstanceBytes);
 
 // ---------------------------------------------------------------------------
@@ -188,6 +200,9 @@ class VegetationRenderer {
   void set_placement(VegetationPlacement placement, double grass_distance_meters, double grass_spacing_meters);
   std::size_t grass_capacity() const { return grass_capacity_; }
   const VegetationPlacement& placement() const { return placement_; }
+  // The tree fire model writes per-instance fall/char/glow here every frame;
+  // the chunk bounds already allow for a tree lying down.
+  VegetationPlacement& placement_mutable() { return placement_; }
   const std::vector<VegetationMesh>& tree_meshes() const { return tree_meshes_; }
   VegetationDrawStats draw(PipelineHandle pipeline, BufferHandle camera, BufferHandle style, BufferHandle fire_states,
                            const AtmosphereBinding& atmosphere, const Frustum& frustum, math::Vec3 eye,

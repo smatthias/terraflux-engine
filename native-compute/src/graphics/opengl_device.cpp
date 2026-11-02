@@ -113,6 +113,19 @@ out vec4 fragColor;
 void main() {fragColor=texture(SourceColor,uv);}
 )GLSL";
 
+// HUD: screen-space colored quads (bars), blended over the finished frame.
+constexpr char kHudVertexShader[] = R"GLSL(#version 430 core
+layout(location=0) in vec2 POSITION;
+layout(location=1) in vec4 COLOR;
+out vec4 color;
+void main() {color=COLOR;gl_Position=vec4(POSITION,0.0,1.0);}
+)GLSL";
+constexpr char kHudFragmentShader[] = R"GLSL(#version 430 core
+in vec4 color;
+out vec4 fragColor;
+void main() {fragColor=color;}
+)GLSL";
+
 // Ground color shared by the terrain and wildfire fragment shaders. The CPU
 // reference terrain_material()/terrain_surface_color() in terrain_shading.cpp
 // mirrors terrainHeightTint()/terrainMaterial()/terrainBaseColor() exactly,
@@ -1060,7 +1073,7 @@ void main() {
   bedGradient = BED_GRADIENT;
   // A long swell (six wave lengths) lifts the coarse surface mesh itself; it
   // dies out toward the shore so the water never climbs onto the land.
-  float depth = max(surface.x - BED, 0.0);
+  float depth = max(POSITION.y - BED, 0.0);  // per vertex: a flood surface lies on its channel, the lake is flat
   float k = kTwoPi / (surface.z * 6.0);
   float swell = 0.5 * surface.y * sin(dot(POSITION.xz, travel.xy) * k - surface.w * k * travel.z);
   vec3 displaced = POSITION;
@@ -1121,7 +1134,7 @@ vec3 rainRings(vec2 p, float t, float rate, float dropMm) {
 }
 void main() {
   atmosphereJitter = atmosphereDither(gl_FragCoord.xy);
-  float depth = surface.x - bedHeight;
+  float depth = surfacePosition.y - bedHeight;
   if (depth <= 0.001) discard;            // land corners of shoreline triangles
   vec2 p = surfacePosition.xz;
   float time = travel.z, height = surface.y, chop = eye.w;
@@ -1239,7 +1252,8 @@ layout(std140, binding = 13) uniform VegetationStyle {
   vec4 fireGrid;   // cell size, width, height, present
   vec4 fireOrigin; // origin offset x, origin offset y
 };
-struct PlantInstance { vec4 positionScale; vec4 motion; vec4 tint; }; // motion: rotation, phase, bend, kind
+// motion: rotation, phase, bend, kind; fall: tilt direction (x, z), tilt angle, consumed; fire: char, glow
+struct PlantInstance { vec4 positionScale; vec4 motion; vec4 tint; vec4 fall; vec4 fire; };
 layout(std430, binding = 4) readonly buffer InstanceData { PlantInstance plants[]; };
 layout(std430, binding = 5) readonly buffer PlantFireState { uint plantFireStates[]; };
 out vec3 worldNormal;
@@ -1247,6 +1261,9 @@ out vec3 worldPosition;
 out vec3 plantColor;
 out float plantFlex;
 out float plantBurn;   // 0 unburned, 1 burned (charred), 2 burning (glowing)
+out float plantFoliage; // 1 foliage, 0 wood
+out float plantGrass;   // 1 a grass tuft
+out float plantSeed;    // per-plant phase, for the leaf pattern
 )GLSL") + kNoiseGlsl + R"GLSL(
 // The plant's burn state follows the same ragged front field as the ground
 // and the flames (CPU twins: fire_front_at, fire_edge_noise): 2 burning, 1 charred.
@@ -1280,26 +1297,56 @@ void main() {
   bool isGrass = plant.positionScale.w < 3.5;
   float fadeStart = isGrass ? params.y : params.w * 0.8, fadeEnd = isGrass ? params.z : params.w;
   float presence = 1.0 - smoothstep(fadeStart, fadeEnd, distanceToEye);
-  plantBurn = fireStateAt(plant.positionScale.xz);
-  // Burned grass is reduced to stubble; burned trees keep most of their charred size.
-  if (plantBurn > 0.5 && plantBurn < 1.5) presence *= isGrass ? 0.25 : 0.9;
+  // Trees under the tree fire model carry their own fall, char and glow; everything
+  // else (grass, trees without the model) follows the cell front.
+  bool instanceFire = fireOrigin.z > 0.5 && !isGrass;
+  float charAmount = 0.0, glow = 0.0, consumed = 0.0, tilt = 0.0;
+  if (instanceFire) {
+    charAmount = plant.fire.x; glow = plant.fire.y; consumed = plant.fall.w; tilt = plant.fall.z;
+    plantBurn = glow > 0.05 ? 2.0 : (charAmount > 0.5 ? 1.0 : 0.0);
+  } else {
+    plantBurn = fireStateAt(plant.positionScale.xz);
+    // Burned grass is reduced to stubble; burned trees keep most of their charred size.
+    if (plantBurn > 0.5 && plantBurn < 1.5) presence *= isGrass ? 0.25 : 0.9;
+  }
   float scale = plant.positionScale.w * presence;
-  vec3 local = rotation * (POSITION * scale);
+  vec3 model = POSITION;
+  // The fire eats the crown: foliage draws in toward the trunk and shortens as the
+  // tree is consumed, leaving charred branch stubs on a snag.
+  model.xz *= mix(1.0, 0.22, smoothstep(0.15, 0.95, consumed) * TINT_WEIGHT);
+  model.y *= mix(1.0, 0.55, smoothstep(0.4, 1.0, consumed) * TINT_WEIGHT);
+  vec3 local = rotation * (model * scale);
+  vec3 localNormal = rotation * NORMAL;
+  if (tilt > 0.0) {
+    // Toppling: the whole tree rotates about its base toward the fall direction.
+    vec3 axis = normalize(vec3(plant.fall.y, 0.0, -plant.fall.x));
+    float ct = cos(tilt), st = sin(tilt);
+    local = local * ct + cross(axis, local) * st + axis * dot(axis, local) * (1.0 - ct);
+    localNormal = localNormal * ct + cross(axis, localNormal) * st + axis * dot(axis, localNormal) * (1.0 - ct);
+  }
   // Wind: the tip leads, the base stays anchored; gusts vary along the wind direction.
   float gust = sin(wind.w * (0.6 + 0.25 * wind.z) + plant.motion.y + dot(plant.positionScale.xz, wind.xy) * 0.05);
   // Sway grows faster than the wind (drag goes with its square) and a gale adds a fast flutter.
   float strength = 0.02 + 0.012 * wind.z + 0.0007 * wind.z * wind.z;
   float flutter = smoothstep(8.0, 20.0, wind.z) * 0.35 * sin(wind.w * 6.5 + plant.motion.y * 3.1 + FLEX * 4.0);
   float sway = params.x * strength * scale * FLEX * FLEX * (gust + 0.35 * sin(wind.w * 2.3 + plant.motion.y * 1.7) + flutter);
+  sway *= 1.0 - smoothstep(0.0, 0.6, tilt);  // a falling or fallen tree no longer sways
   vec3 offset = vec3(wind.x, 0.0, wind.y) * sway + vec3(-wind.y, 0.0, wind.x) * sway * 0.3;
   offset += vec3(wind.x, 0.0, wind.y) * plant.motion.z * 0.08 * scale * FLEX;  // permanent lean on steep ground
   // Storm bending: the whole crown leans downwind, up to a quarter of the height in a gale.
   offset += vec3(wind.x, 0.0, wind.y) * (0.012 * max(wind.z - 6.0, 0.0)) * scale * FLEX * FLEX;
   vec3 world = plant.positionScale.xyz + local + offset;
-  worldNormal = rotation * NORMAL;
+  worldNormal = localNormal;
   vec3 living = COLOR * mix(vec3(1.0), plant.tint.rgb, TINT_WEIGHT);
   vec3 charred = vec3(0.05, 0.045, 0.04) + 0.06 * COLOR;
-  if (plantBurn > 1.5) {
+  if (instanceFire) {
+    // Under the tree fire model: wood and foliage char by the consumed amount and
+    // the flames' glow lights the foliage and the wood beneath them.
+    float flicker = 0.75 + 0.25 * sin(wind.w * 9.0 + plant.motion.y * 5.0 + FLEX * 6.0);
+    vec3 ember = mix(vec3(0.6, 0.12, 0.02), vec3(1.0, 0.55, 0.12), FLEX) * flicker;
+    vec3 body = mix(living, charred, charAmount);
+    plantColor = mix(body, ember, glow * (0.35 + 0.45 * FLEX) * (0.4 + 0.6 * TINT_WEIGHT));
+  } else if (plantBurn > 1.5) {
     // Burning: foliage glows and flickers orange, wood darkens.
     float flicker = 0.75 + 0.25 * sin(wind.w * 9.0 + plant.motion.y * 5.0 + FLEX * 6.0);
     vec3 ember = mix(vec3(0.6, 0.12, 0.02), vec3(1.0, 0.55, 0.12), FLEX) * flicker;
@@ -1310,17 +1357,29 @@ void main() {
     plantColor = living;
   }
   plantFlex = FLEX;
+  plantFoliage = TINT_WEIGHT;
+  plantGrass = isGrass ? 1.0 : 0.0;
+  plantSeed = plant.motion.y;
   worldPosition = world;
   gl_Position = viewProjection * vec4(world, 1.0);
 }
 )GLSL";
 
+// Plants carry their own surface detail: bark with fissures and grain on the
+// wood, and leaves on the foliage — clumps of lighter and darker green, sunlit
+// leaf tips, and gaps in the canopy through which the branches and the sky
+// show (the back of the canopy is lit two-sided, so the inside reads as
+// leaves in shadow). Everything is world-space noise, so it holds still on
+// the tree and fades out where it would shimmer in the distance.
 const std::string kVegetationFragmentShader = std::string(R"GLSL(#version 430 core
 in vec3 worldNormal;
 in vec3 worldPosition;
 in vec3 plantColor;
 in float plantFlex;
 in float plantBurn;
+in float plantFoliage;
+in float plantGrass;
+in float plantSeed;
 layout(std140, binding = 13) uniform VegetationStyle {
   vec4 wind;
   vec4 light;
@@ -1331,13 +1390,60 @@ layout(std140, binding = 13) uniform VegetationStyle {
 };
 out vec4 fragColor;
 )GLSL") + kNoiseGlsl + kAtmosphereGlsl + R"GLSL(
+float plantFbm(vec2 p) {
+  return 0.5 * terrainNoise(p).x + 0.3 * terrainNoise(p * 2.07 + vec2(5.1, 2.3)).x + 0.2 * terrainNoise(p * 4.3 + vec2(1.7, 8.9)).x;
+}
+// Triplanar noise: the three axis-aligned planes blended by the normal, so the
+// pattern has no stretch on any face of a crown.
+float leafNoise(vec3 p, vec3 w, float scale, vec2 shift) {
+  return w.y * terrainNoise(p.xz * scale + shift).x + w.x * terrainNoise(p.zy * scale + shift).x + w.z * terrainNoise(p.xy * scale + shift).x;
+}
+float leafFbm(vec3 p, vec3 w, float scale, vec2 shift) {
+  return 0.5 * leafNoise(p, w, scale, shift) + 0.3 * leafNoise(p, w, scale * 2.07, shift + vec2(5.1, 2.3)) + 0.2 * leafNoise(p, w, scale * 4.3, shift + vec2(1.7, 8.9));
+}
 void main() {
   atmosphereJitter = atmosphereDither(gl_FragCoord.xy);
   vec3 n = normalize(worldNormal);
+  vec3 p = worldPosition;
+  float pixel = length(fwidth(p));  // metres per pixel on this surface
+  vec3 albedo = plantColor;
+  float occlusion = 0.72 + 0.28 * plantFlex;              // darker toward the base
+  if (plantFoliage < 0.5) {
+    // Bark: fissures run up the trunk (ridged noise stretched along y), grain between them.
+    float fade = terrainDetailFade(pixel, 8.0);
+    vec2 barkUv = vec2((p.x + p.z) * 9.0 + plantSeed * 3.0, p.y * 1.1);
+    vec3 fissure = ridgedNoise(barkUv);
+    float grain = terrainNoise(vec2((p.x - p.z) * 30.0, p.y * 6.0)).x;
+    float relief = mix(1.0, 0.62 + 0.48 * fissure.x + 0.12 * (grain - 0.5), fade);
+    albedo *= relief;
+    // The fissures bend the normal: their walls face sideways.
+    vec3 tangent = normalize(vec3(n.z, 0.0, -n.x) + vec3(1e-4));
+    n = normalize(n + tangent * (fissure.y * 0.06 * fade));
+  } else if (plantGrass < 0.5) {
+    // Leaves: clumps of lighter and darker green, lit tips, and gaps in the canopy.
+    float fade = terrainDetailFade(pixel, 1.5);
+    vec3 w = abs(n); w /= (w.x + w.y + w.z);
+    vec3 q = p + vec3(plantSeed);
+    float clump = leafFbm(q, w, 0.9, vec2(0.0));                  // leaf clusters about a metre across
+    float leaf = leafNoise(q, w, 9.0, vec2(3.7, 1.9));            // single leaves, about 11 cm
+    float gap = leafFbm(q, w, 1.2, vec2(11.0, 4.0));              // holes between the clusters
+    if (plantFlex > 0.25 && plantBurn < 0.5 && gap < 0.40 - 0.12 * (1.0 - fade)) discard;
+    vec3 warm = vec3(1.22, 1.14, 0.70), cool = vec3(0.72, 0.84, 1.08);
+    albedo *= mix(vec3(1.0), mix(cool, warm, smoothstep(0.3, 0.7, clump)), 0.75 * fade);
+    albedo *= mix(1.0, 0.70 + 0.6 * leaf, fade);
+    // Leaf tips catch the light: a scatter of bright flecks on the sunward side.
+    float fleck = smoothstep(0.70, 0.84, leafNoise(q, w, 16.0, vec2(7.3, 2.1))) * fade;
+    albedo += fleck * 0.3 * max(dot(n, atmosphereLightDirection(light.xyz)), 0.0);
+    // The clusters bulge: tilt the normal by the cluster's slope so each catches its own light.
+    float dx = leafFbm(q + vec3(0.15, 0.0, 0.0), w, 0.9, vec2(0.0)) - clump;
+    float dy = leafFbm(q + vec3(0.0, 0.15, 0.0), w, 0.9, vec2(0.0)) - clump;
+    float dz = leafFbm(q + vec3(0.0, 0.0, 0.15), w, 0.9, vec2(0.0)) - clump;
+    n = normalize(n + vec3(dx, dy, dz) * (6.0 * fade));
+    occlusion *= 0.8 + 0.2 * clump;
+  }
   // Two-sided, wrapped lighting: thin blades and cone skins never go black.
   float diffuse = 0.35 + 0.65 * abs(dot(n, atmosphereLightDirection(light.xyz)));
-  float occlusion = 0.72 + 0.28 * plantFlex;              // darker toward the base
-  vec3 color = atmosphereLit(plantColor, n, diffuse, light.xyz, light.w, vec3(1.0), worldPosition) * occlusion;
+  vec3 color = atmosphereLit(albedo, n, diffuse, light.xyz, light.w, vec3(1.0), worldPosition) * occlusion;
   if (plantBurn > 1.5) color = max(color, plantColor * 0.8); // embers are self-lit
   fragColor = vec4(applyAtmosphere(color, worldPosition), 1.0);
 }
@@ -1371,8 +1477,15 @@ void main() {
   float time = wind.w;
   vec3 toEye = eye.xyz - base;
   vec3 right = normalize(vec3(toEye.z, 0.0, -toEye.x) + vec3(1e-4, 0.0, 0.0));
-  float width = kind < 0.5 ? height * 0.55 : height * (0.35 + 0.55 * TEXCOORD.y);
+  float width = kind < 0.5 ? height * 0.55 : (kind > 2.5 ? height : height * (0.35 + 0.55 * TEXCOORD.y));
   vec3 offset = right * POSITION.x * width;
+  if (kind > 2.5) {
+    // A burning branch in the air: a small glowing body with a short flame tail above it.
+    vec3 world = base + offset + vec3(0.0, (POSITION.y - 0.3) * height, 0.0);
+    worldPosition = world;
+    gl_Position = viewProjection * vec4(world, 1.0);
+    return;
+  }
   if (kind < 0.5) {
     // Flames flicker: the tip sways and the height pulses; the fire weather (params.w)
     // lifts them in hot dry air and beats them down in rain.
@@ -1412,6 +1525,19 @@ float fbm(vec2 p) {
 void main() {
   atmosphereJitter = atmosphereDither(gl_FragCoord.xy);
   float time = wind.w;
+  if (kind > 2.5) {
+    // Ember: a round glowing core trailing a flickering tongue.
+    vec2 c = vec2(uv.x - 0.5, uv.y - 0.3);
+    float core = 1.0 - smoothstep(0.10, 0.22, length(c));
+    float n = fbm(vec2(uv.x * 4.0 + seed, uv.y * 3.0 - time * 3.0 - seed));
+    float tail = (1.0 - smoothstep(0.08, 0.2, abs(c.x) * (0.6 + 1.8 * max(c.y, 0.0)))) * smoothstep(0.0, 0.15, c.y) *
+                 (1.0 - smoothstep(0.35, 0.7, c.y)) * smoothstep(0.3, 0.6, n + 0.3);
+    float alpha = max(core, tail * 0.8) * (0.6 + 0.4 * intensity);
+    if (alpha < 0.02) discard;
+    vec3 color = mix(vec3(1.0, 0.45, 0.08), vec3(1.0, 0.92, 0.6), core);
+    fragColor = vec4(applyAtmosphere(color, worldPosition), alpha);
+    return;
+  }
   if (kind < 0.5) {
     // Flame: a tongue narrowing toward the tip, eroded by rising noise.
     float halfWidth = 0.5 * pow(1.0 - uv.y, 0.65) * (0.85 + 0.15 * sin(seed));
@@ -1870,6 +1996,241 @@ void main() {
   vec3 sunlight = normalize(vec3(0.45, 0.85, 0.25));
   float shade = 0.28 + 0.72 * max(dot(normalize(surfaceNormal), sunlight), 0.0);
   fragColor = vec4(surfaceTint * shade, 1.0);
+}
+)GLSL";
+
+// Built things (roads, bridges, buildings) share the Object geometry and
+// uniform but are lit with a sky ambient instead of a dark floor, and every
+// part carries a material (the tint's alpha) that is textured procedurally in
+// world space: straw laid in courses, boards with grain and knots, coursed
+// stone and brick with mortar joints, overlapping tiles, pored concrete,
+// aggregate in the asphalt, panes in the glass, corrugated sheet. Each
+// material is a small height field over a frame fitted to the face (across
+// and up the slope), which shades the surface and bends its normal; the fine
+// terms fade out where they would shimmer at a distance.
+constexpr char kStructureVertexShader[] = R"GLSL(#version 430 core
+layout(location = 0) in vec3 POSITION;
+layout(location = 1) in vec3 NORMAL;
+layout(std140, binding = 0) uniform Camera { mat4 viewProjection; };
+layout(std140, binding = 2) uniform Object {
+  mat4 model;
+  mat4 normalMatrix;
+  vec4 tint;
+};
+out vec3 surfaceNormal;
+out vec3 surfaceTint;
+out vec3 worldPosition;
+out float materialId;
+void main() {
+  surfaceNormal = normalize(mat3(normalMatrix) * NORMAL);
+  surfaceTint = tint.rgb;
+  materialId = tint.a;
+  vec4 world = model * vec4(POSITION, 1.0);
+  worldPosition = world.xyz;
+  gl_Position = viewProjection * world;
+}
+)GLSL";
+
+const std::string kStructureFragmentShader = std::string(R"GLSL(#version 430 core
+in vec3 surfaceNormal;
+in vec3 surfaceTint;
+in vec3 worldPosition;
+in float materialId;
+out vec4 fragColor;
+)GLSL") + kNoiseGlsl + R"GLSL(
+float sHash(vec2 p) { return terrainHash(p * 7.13 + vec2(3.7, 1.3)); }
+float sFbm(vec2 p) {
+  return 0.5 * terrainNoise(p).x + 0.3 * terrainNoise(p * 2.11 + vec2(5.1, 2.3)).x + 0.2 * terrainNoise(p * 4.7 + vec2(1.7, 8.9)).x;
+}
+// A masonry course pattern: rows `course` high, units `unit` long in stretcher
+// bond with a little jitter, joints `joint` wide. Returns the unit's relief
+// (1 on the unit, 0 in the joint) and a hash per unit in `id`.
+float masonry(vec2 uv, float course, float unit, float joint, float jitter, out float id) {
+  float row = floor(uv.y / course);
+  float shift = fract(row * 0.5) * unit + (sHash(vec2(row, 0.0)) - 0.5) * jitter * unit;
+  float col = floor((uv.x + shift) / unit);
+  id = sHash(vec2(row, col));
+  float along = fract((uv.x + shift) / unit) * unit, up = fract(uv.y / course) * course;
+  float dx = min(along, unit - along), dy = min(up, course - up);
+  float edge = min(dx, dy);
+  return smoothstep(0.0, joint, edge - 0.25 * joint);
+}
+// The material's shading (multiplies the colour) and its relief gradient (for the normal).
+// h: relief height in metres; returns the colour factor.
+vec3 materialShade(int material, vec2 uv, float pixel, out vec2 slope) {
+  slope = vec2(0.0);
+  if (material == 1) {
+    // Asphalt: fine aggregate and faint patches.
+    float fine = terrainNoise(uv * 40.0).x, patchy = sFbm(uv * 0.35);
+    float fade = terrainDetailFade(pixel, 40.0);
+    return vec3(1.0 + fade * 0.14 * (fine - 0.5) + 0.10 * (patchy - 0.5));
+  }
+  if (material == 2) {
+    // Concrete: pores, a rough grain, faint streaks running down the face.
+    float fade = terrainDetailFade(pixel, 30.0);
+    vec3 grain = terrainNoise(uv * 30.0);
+    float pores = smoothstep(0.78, 0.9, terrainNoise(uv * 55.0 + vec2(2.0, 9.0)).x);
+    float streak = sFbm(vec2(uv.x * 3.0, uv.y * 0.4));
+    float mottle = sFbm(uv * 1.2);
+    slope = grain.yz * 0.002 * fade;
+    return vec3((1.0 + 0.10 * (grain.x - 0.5) * fade - 0.18 * pores * fade) * (0.93 + 0.08 * streak) * (0.95 + 0.10 * mottle));
+  }
+  if (material == 3) {
+    // Thatch: bundles of straw laid down the slope (v), in courses 0.45 m apart; each
+    // strand its own tone, the course's lower edge in shadow, the butts ragged.
+    float fade = terrainDetailFade(pixel, 60.0), coarse = terrainDetailFade(pixel, 6.0);
+    float course = 0.45;
+    float cy = fract(uv.y / course);
+    float bundle = terrainNoise(vec2(uv.x * 6.0, uv.y * 0.6)).x;
+    float strandX = uv.x * 60.0 + 4.0 * terrainNoise(vec2(uv.x * 2.0, uv.y * 1.5)).x;  // strands wander a little
+    vec3 strand = terrainNoise(vec2(strandX, uv.y * 2.5));
+    float fine = terrainNoise(vec2(strandX * 2.3, uv.y * 9.0)).x;
+    float ragged = terrainNoise(vec2(uv.x * 25.0, floor(uv.y / course))).x * 0.15;
+    float overhang = smoothstep(0.0, 0.35 + ragged, cy);   // the lower rows lie under the ones above
+    float tone = 0.72 + 0.40 * strand.x + 0.18 * (fine - 0.5);
+    tone = mix(1.0, tone, fade) * mix(1.0, 0.88 + 0.24 * bundle, coarse) * mix(0.55, 1.0, overhang);
+    // Warm and grey straws among the gold.
+    vec3 hue = mix(vec3(0.92, 0.86, 0.72), vec3(1.08, 1.02, 0.82), strand.x);
+    slope = vec2(strand.y * 0.012 * fade, -(1.0 - overhang) * 0.03 * coarse);
+    return hue * tone;
+  }
+  if (material == 4) {
+    // Planks: horizontal boards 0.22 m high, each with the grain of its own tree —
+    // rings stretched along the board, wandering as the tree grew, tight where
+    // growth was slow — a knot here and there, and dark seams between the boards.
+    float board = 0.22;
+    float row = floor(uv.y / board);
+    float rowHash = sHash(vec2(row, 3.0));
+    float fade = terrainDetailFade(pixel, 25.0), coarse = terrainDetailFade(pixel, 4.0);
+    float wander = terrainNoise(vec2(uv.x * 0.7 + row * 11.0, row)).x;
+    float tightness = 0.6 + 0.8 * sHash(vec2(row, 7.0));          // ring spacing varies per board (good and lean years)
+    float rings = sin((uv.y - row * board) * 70.0 * tightness + wander * 9.0 + uv.x * 1.5 * sin(row)) * 0.5 + 0.5;
+    float grain = terrainNoise(vec2(uv.x * 3.0 + row * 5.0, (uv.y - row * board) * 90.0)).x;
+    // A knot: a dark eye with rings around it, once every couple of metres.
+    float cell = floor(uv.x / 1.8 + rowHash);
+    vec2 knotCentre = vec2((cell + 0.5 - rowHash) * 1.8 + (sHash(vec2(cell, row)) - 0.5) * 1.2, (row + 0.25 + 0.5 * sHash(vec2(cell, row + 9.0))) * board);
+    float knotDist = length((uv - knotCentre) * vec2(1.0, 1.6));
+    float knot = sHash(vec2(cell, row + 5.0)) < 0.35 ? (1.0 - smoothstep(0.0, 0.035, knotDist)) : 0.0;
+    float knotRings = sHash(vec2(cell, row + 5.0)) < 0.35 ? (1.0 - smoothstep(0.035, 0.09, knotDist)) * (0.5 + 0.5 * sin(knotDist * 260.0)) : 0.0;
+    float seam = 1.0 - smoothstep(0.0, 0.012, min(fract(uv.y / board), 1.0 - fract(uv.y / board)) * board);
+    float tone = (0.80 + 0.40 * rowHash) * (1.0 - 0.16 * rings * fade - 0.08 * (grain - 0.5) * fade) * (1.0 - 0.55 * knot * coarse - 0.15 * knotRings * coarse);
+    tone *= 1.0 - 0.45 * seam;
+    // Weathering: boards grey where the rain runs.
+    float weather = sFbm(vec2(uv.x * 0.8, uv.y * 2.0));
+    vec3 hue = mix(vec3(1.0), vec3(0.86, 0.88, 0.9), 0.35 * weather);
+    slope = vec2(0.0, -seam * 0.02 - rings * 0.002 * fade);
+    return hue * tone;
+  }
+  if (material == 5) {
+    // Coursed rubble: stones of varying length in 0.3 m courses, mortar in between,
+    // each stone its own tone and a rough face.
+    float id;
+    float relief = masonry(uv, 0.3, 0.55, 0.022, 0.8, id);
+    float fade = terrainDetailFade(pixel, 28.0), coarse = terrainDetailFade(pixel, 4.0);
+    vec3 rough = terrainNoise(uv * 28.0 + id * 10.0);
+    float mottle = terrainNoise(uv * 3.0 + id).x;
+    vec3 stoneHue = mix(vec3(0.92, 0.9, 0.86), vec3(1.06, 1.0, 0.94), id);
+    vec3 mortar = vec3(0.78, 0.76, 0.72);
+    float tone = (0.82 + 0.32 * id) * (1.0 + 0.12 * (rough.x - 0.5) * fade + 0.08 * (mottle - 0.5) * coarse);
+    // Stones stand proud of the joints; their faces are bumpy.
+    float edgeRelief = relief;
+    slope = (rough.yz * 0.0015 * fade);
+    slope.y -= (1.0 - edgeRelief) * 0.0;
+    vec3 face = stoneHue * tone;
+    return mix(mortar, face, relief * coarse + (1.0 - coarse));
+  }
+  if (material == 6) {
+    // Roof tiles: rows 0.35 m down the slope, each row overlapping the one below
+    // (shadow under the lip), tiles 0.25 m across with slightly different tones.
+    float row = floor(uv.y / 0.35), cy = fract(uv.y / 0.35);
+    float col = floor((uv.x + fract(row * 0.5) * 0.125) / 0.25);
+    float id = sHash(vec2(row, col));
+    float coarse = terrainDetailFade(pixel, 4.0), fade = terrainDetailFade(pixel, 20.0);
+    float lip = smoothstep(0.0, 0.22, cy);
+    float curve = 0.9 + 0.1 * sin(fract((uv.x + fract(row * 0.5) * 0.125) / 0.25) * 6.2832);  // a pantile's wave
+    float grain = terrainNoise(uv * 22.0 + id).x;
+    float tone = mix(1.0, (0.86 + 0.24 * id) * curve, coarse) * mix(0.55, 1.0, lip) * (1.0 + 0.08 * (grain - 0.5) * fade);
+    slope = vec2(0.0, -(1.0 - lip) * 0.04 * coarse);
+    return vec3(tone);
+  }
+  if (material == 7) {
+    // Glass: panes 1.5 m across, each slightly its own, the sky brighter toward the top of each.
+    float paneX = floor(uv.x / 1.5), paneY = floor(uv.y / 1.8);
+    float id = sHash(vec2(paneX, paneY));
+    float inPane = fract(uv.y / 1.8);
+    float frame = 1.0 - smoothstep(0.0, 0.03, min(fract(uv.x / 1.5), 1.0 - fract(uv.x / 1.5)) * 1.5) * 0.0;
+    float tone = 0.9 + 0.16 * id + 0.12 * inPane;
+    return vec3(tone, tone, tone + 0.03) * (1.0 - 0.0 * frame);
+  }
+  if (material == 8) {
+    // Corrugated sheet: ribs 0.12 m apart across the face, a little rust at the laps.
+    float rib = sin(uv.x / 0.12 * 6.2832);
+    float coarse = terrainDetailFade(pixel, 8.0);
+    float tone = 1.0 + 0.14 * rib * coarse;
+    float rust = smoothstep(0.6, 0.85, sFbm(uv * 1.3 + vec2(4.0, 2.0)));
+    slope = vec2(cos(uv.x / 0.12 * 6.2832) * 0.02 * coarse, 0.0);
+    return mix(vec3(tone), vec3(0.75, 0.5, 0.35) * tone, rust * 0.35);
+  }
+  if (material == 9) {
+    // Paint: a little worn.
+    float wear = terrainNoise(uv * 12.0).x;
+    return vec3(0.94 + 0.12 * wear);
+  }
+  if (material == 10) {
+    // Brick in stretcher bond: 0.075 m courses, 0.23 m bricks, pale mortar.
+    float id;
+    float relief = masonry(uv, 0.075, 0.23, 0.012, 0.0, id);
+    float coarse = terrainDetailFade(pixel, 14.0), fade = terrainDetailFade(pixel, 40.0);
+    float grain = terrainNoise(uv * 45.0 + id * 7.0).x;
+    vec3 brickHue = mix(vec3(0.82, 0.78, 0.76), vec3(1.12, 1.04, 0.98), id);
+    vec3 mortar = vec3(1.25, 1.22, 1.15);
+    vec3 face = brickHue * (1.0 + 0.10 * (grain - 0.5) * fade);
+    return mix(mortar, face, relief * coarse + (1.0 - coarse));
+  }
+  if (material == 11) {
+    // Timber: vertical boards 0.12 m wide with grain running up them.
+    float board = 0.12;
+    float col = floor(uv.x / board);
+    float id = sHash(vec2(col, 1.0));
+    float fade = terrainDetailFade(pixel, 30.0);
+    float grain = terrainNoise(vec2((uv.x - col * board) * 60.0, uv.y * 2.5 + col * 3.0)).x;
+    float seam = 1.0 - smoothstep(0.0, 0.008, min(fract(uv.x / board), 1.0 - fract(uv.x / board)) * board);
+    return vec3((0.85 + 0.3 * id) * (1.0 - 0.14 * (grain - 0.5) * fade) * (1.0 - 0.4 * seam));
+  }
+  if (material == 13) {
+    // A single pane: the sky brighter toward its top, a faint ripple in the glass.
+    float ripple = terrainNoise(uv * 3.0).x;
+    return vec3(0.92 + 0.12 * fract(uv.y / 1.4) + 0.06 * (ripple - 0.5)) * vec3(1.0, 1.0, 1.03);
+  }
+  if (material == 12) {
+    // Pavement: concrete slabs 5 m square with joints, pored and stained.
+    float jx = min(fract(uv.x / 5.0), 1.0 - fract(uv.x / 5.0)) * 5.0, jy = min(fract(uv.y / 5.0), 1.0 - fract(uv.y / 5.0)) * 5.0;
+    float joint = 1.0 - smoothstep(0.0, 0.04, min(jx, jy));
+    float id = sHash(floor(uv / 5.0));
+    float fade = terrainDetailFade(pixel, 30.0);
+    float grain = terrainNoise(uv * 30.0 + id).x;
+    float stain = sFbm(uv * 0.7 + id);
+    return vec3((0.94 + 0.1 * id) * (1.0 + 0.08 * (grain - 0.5) * fade) * (0.96 + 0.08 * stain) * (1.0 - 0.3 * joint));
+  }
+  return vec3(1.0);
+}
+void main() {
+  vec3 n = normalize(surfaceNormal);
+  int material = int(materialId + 0.5);
+  // A frame fitted to the face: u across it (horizontal), v up the slope (or along z on a flat surface).
+  vec3 helper = abs(n.y) > 0.95 ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0);
+  vec3 u = normalize(cross(helper, n));
+  vec3 v = cross(n, u);
+  vec2 uv = vec2(dot(worldPosition, u), dot(worldPosition, v));
+  float pixel = max(length(fwidth(uv)), 1e-4);
+  vec2 slope;
+  vec3 shade = materialShade(material, uv, pixel, slope);
+  // The relief bends the normal.
+  vec3 bent = normalize(n - (u * slope.x + v * slope.y) * 25.0);
+  vec3 sunlight = normalize(vec3(0.45, 0.85, 0.25));
+  float sky = 0.5 + 0.5 * bent.y;                      // hemisphere: skylight from above, ground bounce below
+  float light = min(1.0, 0.52 + 0.16 * sky + 0.36 * max(dot(bent, sunlight), 0.0));
+  fragColor = vec4(clamp(surfaceTint * shade, 0.0, 1.0) * light, 1.0);
 }
 )GLSL";
 
@@ -2594,7 +2955,9 @@ PipelineHandle OpenGLRenderDevice::create_pipeline(PipelineDesc desc) {
     case ShaderProgramId::Precipitation:vertex_source=kPrecipitationVertexShader.c_str();fragment_source=kPrecipitationFragmentShader.c_str();break;
     case ShaderProgramId::Lightning:vertex_source=kLightningVertexShader;fragment_source=kLightningFragmentShader.c_str();break;
     case ShaderProgramId::Spray:vertex_source=kSprayVertexShader.c_str();fragment_source=kSprayFragmentShader.c_str();break;
+    case ShaderProgramId::Hud:vertex_source=kHudVertexShader;fragment_source=kHudFragmentShader;break;
     case ShaderProgramId::Object:vertex_source=kObjectVertexShader;fragment_source=kObjectFragmentShader;break;
+    case ShaderProgramId::Structure:vertex_source=kStructureVertexShader;fragment_source=kStructureFragmentShader.c_str();break;
     case ShaderProgramId::TexturedObject:vertex_source=kTexturedVertexShader;fragment_source=kTexturedFragmentShader;break;
     case ShaderProgramId::InstancedTexturedObject:vertex_source=kInstancedTexturedVertexShader;fragment_source=kTexturedFragmentShader;break;
     case ShaderProgramId::PbrObject:vertex_source=kPbrTexturedVertexShader;fragment_source=kPbrFragmentShader;break;

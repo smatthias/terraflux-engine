@@ -72,6 +72,20 @@ void test_meshes() {
     for (const auto& v : mesh.vertices) { if (v.position[1] < 0.01f) base_flex = std::min(base_flex, v.flex); if (v.position[1] > 0.99f) tip_flex = std::max(tip_flex, v.flex); }
     require(base_flex == 0 && tip_flex == 1, "flex is zero at the base and one at the tip");
   }
+  // Branches: wood reaches out into the crown of a broadleaf tree and shows under a conifer's tiers; a shrub has none.
+  for (const auto shape : {TreeShape::Conifer, TreeShape::Broadleaf}) {
+    TreeMeshOptions o; o.shape = shape;
+    const auto mesh = make_tree_mesh(o);
+    double wood_reach = 0, wood_top = 0;
+    for (const auto& v : mesh.vertices) if (v.tintable == 0) { wood_reach = std::max(wood_reach, static_cast<double>(std::hypot(v.position[0], v.position[2]))); wood_top = std::max(wood_top, static_cast<double>(v.position[1])); }
+    require(wood_reach > 0.15 && wood_top > o.trunk_height + 0.1, "branches carry wood out and up into the crown");
+  }
+  {
+    TreeMeshOptions o; o.shape = TreeShape::Shrub;
+    double wood_reach = 0;
+    for (const auto& v : make_tree_mesh(o).vertices) if (v.tintable == 0) wood_reach = std::max(wood_reach, static_cast<double>(std::hypot(v.position[0], v.position[2])));
+    require(wood_reach < 0.05, "a shrub has only its stem");
+  }
   TreeMeshOptions coarse, fine; coarse.segments = 3; coarse.layers = 1; fine.segments = 24; fine.layers = 6;
   require(make_tree_mesh(fine).indices.size() > 4 * make_tree_mesh(coarse).indices.size(), "segments and layers control detail");
   rejects([] { TreeMeshOptions o; o.segments = 2; (void)make_tree_mesh(o); }, "too few segments rejected");
@@ -284,7 +298,7 @@ void test_renderer() {
     require(fewer.tree_instances < all.tree_instances && fewer.tree_instances == renderer.placement().trees.size(), "re-placement takes effect");
   }
   require(device.live_resource_bytes() == baseline && device.live_buffer_count() == buffers, "renderer releases everything");
-  // Validator: vegetation instance records are 48 bytes, not 144.
+  // Validator: vegetation instance records are 80 bytes (kVegetationInstanceBytes), not 144.
   RenderPassScope pass(device, {{64, 64}});
   const auto grass = make_grass_mesh(1);
   const auto vb = shared.create_buffer({BufferUsage::Vertex, std::as_bytes(std::span(grass.vertices)).size()}, std::as_bytes(std::span(grass.vertices)));
@@ -294,7 +308,7 @@ void test_renderer() {
   const std::vector<TextureBinding> field{{kOrographicFieldSlot, atmosphere.binding().field}};
   device.draw_indexed({pipeline, vb, ib, 0, 3, {{0, camera}, {kVegetationStyleSlot, style_buffer}}, {{4, instances}, {kVegetationFireSlot, fire_states}}, field, 10});
   rejects<std::out_of_range>([&] { device.draw_indexed({pipeline, vb, ib, 0, 3, {{0, camera}, {kVegetationStyleSlot, style_buffer}}, {{4, instances}, {kVegetationFireSlot, fire_states}}, field, 11}); },
-                             "instance count beyond the 48-byte records rejected");
+                             "instance count beyond the 80-byte records rejected");
   rejects([&] { device.draw_indexed({pipeline, vb, ib, 0, 3, {{0, camera}, {kVegetationStyleSlot, style_buffer}}, {{4, instances}}, field, 1}); },
           "the fire state buffer is required even without a fire");
   const std::array<float, 8> short_style{};

@@ -233,6 +233,429 @@ jobs:
             echo "tree spacing below four meters was accepted" && exit 1
           fi
 
+      - name: Verify the first-person camera and the world view hand-over
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --first-person-test --smoke-test | tee /tmp/terraflux-first-person.log
+          grep -q "First person passed" /tmp/terraflux-first-person.log
+          grep -q '"view":"first-person"' /tmp/terraflux-first-person.log
+          grep -q "CAMERA_JSON" /tmp/terraflux-first-person.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --first-person-test --smoke-test \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --first-person-test --smoke-test \
+            --offscreen --terrain-retain-frames 2 --terrain-tile-quads 8 --vegetation low
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --first-person-test --smoke-test --render-cell 0 --vegetation off
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --view first-person --walk-speed 20 \
+            --view-x -350 --view-z 250 --view-yaw 20 --weather cumulus | tee /tmp/terraflux-walk.log
+          grep -q '"view":"first-person"' /tmp/terraflux-walk.log
+          grep -q '"walk_speed_mps":20' /tmp/terraflux-walk.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --view first-person \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json
+          if ./build-gl/terraflux-terrain-viewer --view sideways > /tmp/terraflux-bad-view.log 2>&1; then
+            echo "an unknown view was accepted" && exit 1
+          fi
+          if ./build-gl/terraflux-terrain-viewer --walk-speed 0.5 > /tmp/terraflux-bad-walk.log 2>&1; then
+            echo "a walking speed below one meter per second was accepted" && exit 1
+          fi
+          if ./build-gl/terraflux-terrain-viewer --first-person-test --smoke-test --view first-person > /tmp/terraflux-bad-fp-test.log 2>&1; then
+            echo "the first-person test accepted a first-person start" && exit 1
+          fi
+
+      - name: Verify walking collision with trees, cliffs and grass
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --collision-test --smoke-test | tee /tmp/terraflux-collision.log
+          grep -q "Collision passed" /tmp/terraflux-collision.log
+          grep -q "COLLISION_JSON" /tmp/terraflux-collision.log
+          grep -q '"frame":1' /tmp/terraflux-collision.log
+          if grep -q "COLLISION_TEST_NOTE" /tmp/terraflux-collision.log; then
+            echo "the demo escarpment should be steep enough for the cliff check" && exit 1
+          fi
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --collision-test --smoke-test \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --collision-test --smoke-test \
+            --vegetation high --tree-style broadleaf --offscreen --terrain-tile-quads 8
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --collision-test --smoke-test \
+            --tree-style custom --tree-obj examples/assets/pyramid_materials.obj
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --view first-person --max-slope 60 \
+            --scene examples/asset_scene.json | tee /tmp/terraflux-walk-assets.log
+          grep -q '"max_slope_deg":60' /tmp/terraflux-walk-assets.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --view first-person --no-collision | tee /tmp/terraflux-ghost.log
+          grep -q '"enabled":false' /tmp/terraflux-ghost.log
+          if ./build-gl/terraflux-terrain-viewer --max-slope 95 > /tmp/terraflux-bad-slope.log 2>&1; then
+            echo "a slope limit above 89 degrees was accepted" && exit 1
+          fi
+          if ./build-gl/terraflux-terrain-viewer --collision-test --smoke-test --no-collision > /tmp/terraflux-bad-collision-test.log 2>&1; then
+            echo "the collision test accepted --no-collision" && exit 1
+          fi
+
+      - name: Verify gravity and jumping
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --jump-test --smoke-test | tee /tmp/terraflux-jump.log
+          grep -q "Jump passed" /tmp/terraflux-jump.log
+          grep -q '"gravity_mps2":9.81' /tmp/terraflux-jump.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --jump-test --smoke-test \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --jump-test --smoke-test --gravity 1.62 --jump-height 2 \
+            --offscreen --terrain-tile-quads 8 --vegetation low | tee /tmp/terraflux-moon.log
+          grep -q '"gravity_mps2":1.62' /tmp/terraflux-moon.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --jump-test --smoke-test --vegetation off --render-cell 0
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --view first-person --jump-height 0 | tee /tmp/terraflux-nojump.log
+          grep -q '"jump_height_m":0' /tmp/terraflux-nojump.log
+          if ./build-gl/terraflux-terrain-viewer --gravity 0 > /tmp/terraflux-bad-gravity.log 2>&1; then
+            echo "zero gravity was accepted" && exit 1
+          fi
+          if ./build-gl/terraflux-terrain-viewer --jump-test --smoke-test --jump-height 0 > /tmp/terraflux-bad-jump-test.log 2>&1; then
+            echo "the jump test accepted a zero jump height" && exit 1
+          fi
+
+      - name: Verify the walking gait
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --gait-test --smoke-test | tee /tmp/terraflux-gait.log
+          grep -q "Gait passed" /tmp/terraflux-gait.log
+          grep -q '"gait":true' /tmp/terraflux-gait.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --gait-test --smoke-test \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --gait-test --smoke-test --walk-speed 1.4 \
+            --offscreen --terrain-tile-quads 8 --vegetation low
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --gait-test --smoke-test --vegetation off --render-cell 0 --walk-speed 20
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --view first-person --no-gait | tee /tmp/terraflux-glide.log
+          grep -q '"gait":false' /tmp/terraflux-glide.log
+          if ./build-gl/terraflux-terrain-viewer --gait-test --smoke-test --no-gait > /tmp/terraflux-bad-gait-test.log 2>&1; then
+            echo "the gait test accepted --no-gait" && exit 1
+          fi
+
+      - name: Verify the tree-level fire
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --tree-fire-test --smoke-test \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json | tee /tmp/terraflux-tree-fire.log
+          grep -q "Tree fire passed" /tmp/terraflux-tree-fire.log
+          grep -q '"mode":"model"' /tmp/terraflux-tree-fire.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --tree-fire-test --smoke-test --tree-fire grid \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json | tee /tmp/terraflux-tree-fire-grid.log
+          grep -q '"mode":"grid"' /tmp/terraflux-tree-fire-grid.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --tree-fire-test --smoke-test \
+            --vegetation high --offscreen --terrain-tile-quads 8 \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --tree-fire off \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json | tee /tmp/terraflux-tree-fire-off.log
+          if grep -q "TREE_FIRE_JSON" /tmp/terraflux-tree-fire-off.log; then
+            echo "the tree fire model ran while off" && exit 1
+          fi
+          if ./build-gl/terraflux-terrain-viewer --tree-fire sometimes > /tmp/terraflux-bad-tree-fire.log 2>&1; then
+            echo "an unknown tree fire mode was accepted" && exit 1
+          fi
+          if ./build-gl/terraflux-terrain-viewer --tree-fire-test --smoke-test > /tmp/terraflux-bad-tree-fire-test.log 2>&1; then
+            echo "the tree fire test ran without a replay" && exit 1
+          fi
+
+      - name: Verify storms from inside (gusts, windthrow, lightning)
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --storm-test --smoke-test | tee /tmp/terraflux-storm.log
+          grep -q "Storm passed" /tmp/terraflux-storm.log
+          grep -q '"hazard":"struck"' /tmp/terraflux-storm.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --storm-test --smoke-test \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --storm-test --smoke-test \
+            --vegetation high --offscreen --terrain-tile-quads 8
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --storm-test --smoke-test --tree-fire grid --vegetation-seed 3
+          if ./build-gl/terraflux-terrain-viewer --storm-test --smoke-test --weather clear > /tmp/terraflux-bad-storm.log 2>&1; then
+            echo "the storm test accepted a weather override" && exit 1
+          fi
+
+      - name: Verify flash floods and the walker in water
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --flood-test --smoke-test | tee /tmp/terraflux-flood.log
+          grep -q "Flood passed" /tmp/terraflux-flood.log
+          grep -q "FLASH_FLOOD_JSON" /tmp/terraflux-flood.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --flood-test --smoke-test \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --flood-test --smoke-test --offscreen --terrain-tile-quads 8 --vegetation low
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --flood-test --smoke-test --vegetation off --render-cell 0
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --flash-flood 0.8 --view first-person | tee /tmp/terraflux-flashed.log
+          grep -q '"flash":0.8' /tmp/terraflux-flashed.log
+          if ./build-gl/terraflux-terrain-viewer --flash-flood 2 > /tmp/terraflux-bad-flash.log 2>&1; then
+            echo "a flood level above one was accepted" && exit 1
+          fi
+          if ./build-gl/terraflux-terrain-viewer --flood-test --smoke-test --flash-flood 0.5 > /tmp/terraflux-bad-flood-test.log 2>&1; then
+            echo "the flood test accepted a preset wave" && exit 1
+          fi
+
+      - name: Verify climbing
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --climb-test --smoke-test | tee /tmp/terraflux-climb.log
+          grep -q "Climb passed" /tmp/terraflux-climb.log
+          grep -q '"surface":"rock"' /tmp/terraflux-climb.log
+          grep -q '"refusal":"waterfall"' /tmp/terraflux-climb.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --climb-test --smoke-test --offscreen --terrain-tile-quads 8 --vegetation low
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --climb-test --smoke-test --vegetation off
+          if ./build-gl/terraflux-terrain-viewer --climb-test --smoke-test --flash-flood 0.5 > /tmp/terraflux-bad-climb-test.log 2>&1; then
+            echo "the climb test accepted a preset wave" && exit 1
+          fi
+
+      - name: Verify the body (vitals, bars, crouch)
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --vitals-test --smoke-test | tee /tmp/terraflux-vitals.log
+          grep -q "Vitals passed" /tmp/terraflux-vitals.log
+          grep -q '"cause":"fire"' /tmp/terraflux-vitals.log
+          grep -q '"hud_bars":4' /tmp/terraflux-vitals.log
+          grep -q "You collapsed" /tmp/terraflux-vitals.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --vitals-test --smoke-test \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --vitals-test --smoke-test --offscreen --terrain-tile-quads 8 --vegetation high
+          if ./build-gl/terraflux-terrain-viewer --vitals-test --smoke-test --vegetation off > /tmp/terraflux-bad-vitals-test.log 2>&1; then
+            echo "the vitals test ran without trees" && exit 1
+          fi
+
+      - name: Verify the body in view and swimming
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --body-test --smoke-test | tee /tmp/terraflux-body.log
+          grep -q "Body passed" /tmp/terraflux-body.log
+          grep -q '"activity":"climb"' /tmp/terraflux-body.log
+          grep -q '"underwater":true' /tmp/terraflux-body.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --body-test --smoke-test --water-level 80 \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --body-test --smoke-test --offscreen --terrain-tile-quads 8 --vegetation low
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --view first-person --view-pitch -57 --no-arms
+          if ./build-gl/terraflux-terrain-viewer --body-test --smoke-test --no-arms > /tmp/terraflux-bad-body-test.log 2>&1; then
+            echo "the body test ran with the arms hidden" && exit 1
+          fi
+
+      - name: Verify things to pick up
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --items-test --smoke-test | tee /tmp/terraflux-items.log
+          grep -q "Items passed" /tmp/terraflux-items.log
+          grep -q "STONES_JSON" /tmp/terraflux-items.log
+          grep -q '"did":"lit the branch"' /tmp/terraflux-items.log
+          grep -q '"did":"set the tree alight"' /tmp/terraflux-items.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --items-test --smoke-test \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --items-test --smoke-test --offscreen --terrain-tile-quads 8 --vegetation high
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --view first-person --view-pitch -40 --hold torch
+          if ./build-gl/terraflux-terrain-viewer --items-test --smoke-test --no-stones > /tmp/terraflux-bad-items-test.log 2>&1; then
+            echo "the items test ran without stones" && exit 1
+          fi
+
+      - name: Verify the rope, the axe and the chainsaw
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --tools-test --smoke-test | tee /tmp/terraflux-tools.log
+          grep -q "Tools passed" /tmp/terraflux-tools.log
+          grep -q '"rope":"hung","rope_branch":-1' /tmp/terraflux-tools.log
+          grep -q '"did":"felled the tree"' /tmp/terraflux-tools.log
+          grep -q '"did":"sawed the tree through"' /tmp/terraflux-tools.log
+          grep -q "A TREE FELL ON YOU" /tmp/terraflux-tools.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --tools-test --smoke-test \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --tools-test --smoke-test --offscreen --terrain-tile-quads 8 --vegetation high
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --view first-person --view-pitch -25 --tool chainsaw --chainsaw-fuel 60
+          if ./build-gl/terraflux-terrain-viewer --tools-test --smoke-test --tool axe > /tmp/terraflux-bad-tools-test.log 2>&1; then
+            echo "the tools test ran with a tool preselected" && exit 1
+          fi
+          if ./build-gl/terraflux-terrain-viewer --smoke-test --rope-length 1 > /tmp/terraflux-bad-rope.log 2>&1; then
+            echo "a one-metre rope was accepted" && exit 1
+          fi
+
+      - name: Verify roads and bridges
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --roads-test --smoke-test | tee /tmp/terraflux-roads.log
+          grep -q "Roads passed" /tmp/terraflux-roads.log
+          grep -q '"bridges":1' /tmp/terraflux-roads.log
+          grep -q "A tree fell across the road" /tmp/terraflux-roads.log
+          grep -q "THE BRIDGE COLLAPSED UNDER YOU" /tmp/terraflux-roads.log
+          grep -q '"cause":"collapse"' /tmp/terraflux-roads.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --roads-test --smoke-test --offscreen --terrain-tile-quads 8 --vegetation high
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --roads examples/roads/demo_routes.json | tee /tmp/terraflux-roads-routes.log
+          grep -q '"bridges":1' /tmp/terraflux-roads-routes.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --roads examples/roads/lake_bridge.json --view first-person --view-x -600 --view-z 60 | tee /tmp/terraflux-roads-authored.log
+          grep -q '"roads":3,"bridges":1' /tmp/terraflux-roads-authored.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --roads demo \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json | tee /tmp/terraflux-roads-replay.log
+          grep -q "ROADS_JSON" /tmp/terraflux-roads-replay.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --roads off | tee /tmp/terraflux-roads-off.log
+          if grep -q "ROADS_JSON" /tmp/terraflux-roads-off.log; then
+            echo "--roads off still built a network" && exit 1
+          fi
+          if ./build-gl/terraflux-terrain-viewer --roads-test --smoke-test --roads off > /tmp/terraflux-bad-roads-test.log 2>&1; then
+            echo "the roads test ran without roads" && exit 1
+          fi
+          if ./build-gl/terraflux-terrain-viewer --smoke-test --roads /tmp/does-not-exist.json > /tmp/terraflux-bad-roads-file.log 2>&1; then
+            echo "a missing road network file was accepted" && exit 1
+          fi
+
+      - name: Verify buildings beside the roads
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --buildings-test --smoke-test | tee /tmp/terraflux-buildings.log
+          grep -q "Buildings passed" /tmp/terraflux-buildings.log
+          grep -q '"bungalows":1,"houses":1,"hospitals":1,"skyscrapers":1' /tmp/terraflux-buildings.log
+          grep -q '"at":"hospital"' /tmp/terraflux-buildings.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --buildings-test --smoke-test --offscreen --terrain-tile-quads 8 --vegetation high
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --roads examples/roads/lake_bridge.json | tee /tmp/terraflux-buildings-authored.log
+          grep -q '"buildings":3' /tmp/terraflux-buildings-authored.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --roads demo --buildings off | tee /tmp/terraflux-buildings-off.log
+          if grep -q "BUILDINGS_JSON" /tmp/terraflux-buildings-off.log; then
+            echo "--buildings off still placed buildings" && exit 1
+          fi
+          if ./build-gl/terraflux-terrain-viewer --buildings-test --smoke-test --buildings off > /tmp/terraflux-bad-buildings-test.log 2>&1; then
+            echo "the buildings test ran without buildings" && exit 1
+          fi
+
+      - name: Verify the bungalow's door and interior
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --interior-test --smoke-test | tee /tmp/terraflux-interior.log
+          grep -q "Interior passed" /tmp/terraflux-interior.log
+          grep -q '"interiors":3' /tmp/terraflux-interior.log
+          grep -q '"hint":"E: open the door"' /tmp/terraflux-interior.log
+          grep -q '"did":"opened the door"' /tmp/terraflux-interior.log
+          grep -q '"did":"closed the door"' /tmp/terraflux-interior.log
+          grep -q '"inside":true,"on_floor":true' /tmp/terraflux-interior.log
+          grep -q '"kept_in":true' /tmp/terraflux-interior.log
+          grep -q '"out":true' /tmp/terraflux-interior.log
+          grep -q '"room":"living room"' /tmp/terraflux-interior.log
+          grep -q '"room":"kitchen"' /tmp/terraflux-interior.log
+          grep -q '"room":"bedroom"' /tmp/terraflux-interior.log
+          grep -q '"room":"stairs"' /tmp/terraflux-interior.log
+          grep -q '"room":"gallery"' /tmp/terraflux-interior.log
+          grep -q '"did":"took the lift up to floor 1"' /tmp/terraflux-interior.log
+          grep -q '"room":"lift"' /tmp/terraflux-interior.log
+          grep -q '"hint":"living room","did":"kitchen","room":"hall"' /tmp/terraflux-interior.log
+          if ./build-gl/terraflux-terrain-viewer --interior-test --smoke-test --buildings off > /tmp/terraflux-bad-interior-test.log 2>&1; then
+            echo "the interior test ran without buildings" && exit 1
+          fi
+
+      - name: Verify the hazards on the buildings and the infrastructure
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --hazards-test --smoke-test | tee /tmp/terraflux-hazards.log
+          grep -q "Hazards passed" /tmp/terraflux-hazards.log
+          grep -q "THE BUNGALOW'S ROOF FELL IN ON YOU" /tmp/terraflux-hazards.log
+          grep -q "THE BUNGALOW COLLAPSED (fire)" /tmp/terraflux-hazards.log
+          grep -q "The house's windows burst in the heat" /tmp/terraflux-hazards.log
+          grep -q "THE HOUSE'S ROOF FELL IN" /tmp/terraflux-hazards.log
+          grep -q "LIGHTNING STRUCK THE SKYSCRAPER" /tmp/terraflux-hazards.log
+          grep -q "THE HOSPITAL WAS WASHED OUT by the flood" /tmp/terraflux-hazards.log
+          grep -q '"destroyed_by":"fire","on_rubble":true' /tmp/terraflux-hazards.log
+          grep -q '"house_roof_cause":"impact","windows_burst":true' /tmp/terraflux-hazards.log
+          grep -q '"struck":true,"washed_out":true' /tmp/terraflux-hazards.log
+          grep -q '"sound":true' /tmp/terraflux-hazards.log
+          if ./build-gl/terraflux-terrain-viewer --hazards-test --smoke-test --buildings off > /tmp/terraflux-bad-hazards-test.log 2>&1; then
+            echo "the hazards test ran without buildings" && exit 1
+          fi
+
+      - name: Verify the city
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --city-test --smoke-test | tee /tmp/terraflux-city.log
+          grep -q "City passed" /tmp/terraflux-city.log
+          grep -q '"suburbs":6' /tmp/terraflux-city.log
+          grep -q '"on_deck":true' /tmp/terraflux-city.log
+          grep -q '"on_runway":true' /tmp/terraflux-city.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --city-test --smoke-test \
+            --request /tmp/terraflux-request.json --response /tmp/terraflux-response.json | tee /tmp/terraflux-city-replay.log
+          grep -q "City passed" /tmp/terraflux-city-replay.log
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build-gl/terraflux-terrain-viewer --smoke-test --roads city --view first-person --view-x -740 --view-z -600 | tee /tmp/terraflux-city-fp.log
+          grep -q "CITY_JSON" /tmp/terraflux-city-fp.log
+          if ./build-gl/terraflux-terrain-viewer --city-test --smoke-test --roads demo > /tmp/terraflux-bad-city-test.log 2>&1; then
+            echo "the city test ran on the demo network" && exit 1
+          fi
+
       - name: Verify weather wind, twilight, cloud forms and orographic lift
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"

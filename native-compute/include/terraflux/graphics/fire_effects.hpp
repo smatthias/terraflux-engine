@@ -108,6 +108,10 @@ class FireEffectsRenderer {
   FireEffectsRenderer& operator=(const FireEffectsRenderer&) = delete;
   void set_emitters(FireEmitters emitters);  // truncated to capacity
   const FireEmitters& emitters() const { return emitters_; }
+  // Per-frame emitters on top of the cell emitters (the tree fire model's
+  // trunk flames, embers and smoke); truncated to capacity, drawn after them.
+  void set_dynamic(FireEmitters emitters);
+  const FireEmitters& dynamic() const { return dynamic_; }
   std::size_t capacity() const { return capacity_; }
   // Transparent pass: draws flames then smoke within the draw distance and frustum.
   FireDrawStats draw(PipelineHandle pipeline, BufferHandle camera, BufferHandle style, const AtmosphereBinding& atmosphere,
@@ -117,7 +121,7 @@ class FireEffectsRenderer {
   RenderResourceOwner resources_;
   std::size_t capacity_;
   BufferHandle vb_, ib_, instances_;
-  FireEmitters emitters_;
+  FireEmitters emitters_, dynamic_;
   std::vector<FireInstance> scratch_;
 };
 

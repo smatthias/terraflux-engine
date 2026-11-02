@@ -40,6 +40,19 @@ add_library(terraflux_graphics STATIC
   src/graphics/vegetation.cpp
   src/graphics/fire_effects.cpp
   src/graphics/weather.cpp
+  src/graphics/camera_rig.cpp
+  src/graphics/collision.cpp
+  src/graphics/tree_fire.cpp
+  src/graphics/flood.cpp
+  src/graphics/vitals.cpp
+  src/graphics/hud.cpp
+  src/graphics/body_view.cpp
+  src/graphics/items.cpp
+  src/graphics/tools.cpp
+  src/graphics/mesh_parts.cpp
+  src/graphics/roads.cpp
+  src/graphics/buildings.cpp
+  src/graphics/city.cpp
   src/graphics/terrain_tiles.cpp
   src/graphics/mesh_upload.cpp
   src/graphics/visibility.cpp
@@ -118,6 +131,51 @@ if(BUILD_TESTING)
   add_executable(terraflux-weather-tests tests/weather_tests.cpp)
   target_link_libraries(terraflux-weather-tests PRIVATE terraflux_graphics)
   add_test(NAME terraflux-weather-tests COMMAND terraflux-weather-tests)
+
+  add_executable(terraflux-camera-tests tests/camera_tests.cpp)
+  target_link_libraries(terraflux-camera-tests PRIVATE terraflux_graphics)
+  add_test(NAME terraflux-camera-tests COMMAND terraflux-camera-tests)
+
+  add_executable(terraflux-tree-fire-tests tests/tree_fire_tests.cpp)
+  target_link_libraries(terraflux-tree-fire-tests PRIVATE terraflux_graphics)
+  add_test(NAME terraflux-tree-fire-tests COMMAND terraflux-tree-fire-tests)
+
+  add_executable(terraflux-flood-tests tests/flood_tests.cpp)
+  target_link_libraries(terraflux-flood-tests PRIVATE terraflux_graphics)
+  add_test(NAME terraflux-flood-tests COMMAND terraflux-flood-tests)
+
+  add_executable(terraflux-vitals-tests tests/vitals_tests.cpp)
+  target_link_libraries(terraflux-vitals-tests PRIVATE terraflux_graphics)
+  add_test(NAME terraflux-vitals-tests COMMAND terraflux-vitals-tests)
+
+  add_executable(terraflux-body-view-tests tests/body_view_tests.cpp)
+  target_link_libraries(terraflux-body-view-tests PRIVATE terraflux_graphics)
+  add_test(NAME terraflux-body-view-tests COMMAND terraflux-body-view-tests)
+
+  add_executable(terraflux-items-tests tests/items_tests.cpp)
+  target_link_libraries(terraflux-items-tests PRIVATE terraflux_graphics)
+  add_test(NAME terraflux-items-tests COMMAND terraflux-items-tests)
+
+  add_executable(terraflux-tools-tests tests/tools_tests.cpp)
+  target_link_libraries(terraflux-tools-tests PRIVATE terraflux_graphics)
+  add_test(NAME terraflux-tools-tests COMMAND terraflux-tools-tests)
+
+  add_executable(terraflux-roads-tests tests/roads_tests.cpp)
+  target_link_libraries(terraflux-roads-tests PRIVATE terraflux_graphics)
+  add_test(NAME terraflux-roads-tests COMMAND terraflux-roads-tests)
+
+  add_executable(terraflux-buildings-tests tests/buildings_tests.cpp)
+  target_link_libraries(terraflux-buildings-tests PRIVATE terraflux_graphics)
+  add_test(NAME terraflux-buildings-tests COMMAND terraflux-buildings-tests)
+
+  add_executable(terraflux-city-tests tests/city_tests.cpp)
+  target_link_libraries(terraflux-city-tests PRIVATE terraflux_graphics)
+  add_test(NAME terraflux-city-tests COMMAND terraflux-city-tests)
+
+  add_executable(terraflux-collision-tests tests/collision_tests.cpp)
+  target_link_libraries(terraflux-collision-tests PRIVATE terraflux_graphics)
+  add_test(NAME terraflux-collision-tests COMMAND terraflux-collision-tests
+      "${CMAKE_SOURCE_DIR}/../examples/assets/pyramid_materials.obj")
 
   add_executable(terraflux-water-tests tests/water_tests.cpp)
   target_link_libraries(terraflux-water-tests PRIVATE terraflux_graphics)
