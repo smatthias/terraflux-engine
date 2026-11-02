@@ -2064,6 +2064,48 @@ the chimney. `version()` bumps on every change of what is drawn, walked
 on or collided with (damage in tenths, roof fallen, windows burst, door
 gone, destroyed, reset); `door_version()` also when a door burns away.
 
+Rooms and levels (`interior_plan(spec)` → `InteriorPlan`: `InteriorRoom`s
+with a level, `InteriorWall` partitions (local plan segments,
+kInteriorWallThickness thick, bottom/top over the floor, `InteriorOpening`
+doorways by their centre along the wall), an optional `InteriorStair`
+(a straight flight from its foot to its head rising `rise`), `InteriorRail`
+post chains and `upper_floor` / `slab`). The bungalow is one room. The
+house (`house_layout`): the stair's strip 1 m wide along the left wall from
+0.55 m inside the front wall toward the back, 1.4 × the storey height long
+(35°); the partition behind the living room at the stair's head with the
+kitchen doorway a metre past the stair and the bathroom doorway mid-way
+along the bathroom, up to the underside of the upper slab; a blind
+partition between the kitchen and the bathroom at a = min(1, iw − 3); the
+rooms living room / stairs / kitchen / bathroom on level 0 and the bedroom
+on level 1; one rail along the stair's open side from the front wall to the
+head, from −0.5 m to a metre over the upper floor (it is the banister too).
+`furnish` places the house's pieces per room (shared builders for the
+cooking area, a table with chairs and a bed; the toilet, washbasin, sofa,
+television and low table are drawn as parts and block as one undrawn box
+each; upstairs pieces carry the upper floor in `bottom`).
+`platform_height(x, z, feet_y)`: inside, the levels at the point — the
+ground floor, the stair as a linear ramp (`stair_height_at`), the upper
+floor outside the stairwell (`in_stairwell`: the stair's strip from its
+head to the front wall) — and the highest no more than 0.5 m over the feet
+is returned (the viewer's `built_surface` passes the feet, so a jump under
+the upper floor still lands on the ground floor and the rig climbs the
+ramp by its slope rule). `room_at` names the room by position and level
+(the stair where the ramp is over 5 cm up). `obstacles()` adds the
+partitions as 0.35 m post chains with the doorways open (from 0.5 m under
+the floor to the partition's top, so they do not reach the upstairs
+walker) and the rails as 0.08 m posts over their vertical extent (the
+handrail spans both storeys: it stops the ground-floor walker from walking
+under the flight, the stair walker from stepping off and the bedroom
+walker from the well); upstairs furniture posts start at the upper floor
+and do not block below. `build_meshes` draws the partitions as plaster
+pieces round their doorways (stacked holes — a window over the door, a
+storey over a storey — are cut by splitting the wall at every hole edge and
+cutting each strip's holes in height order), the stair as solid timber
+steps (0.19 m risers) with posts and a tilted rail, the upper floor as
+planks slabs round the stairwell (their underside the ground floor's
+ceiling), and glazed kinds get a pane in every hole (the bungalow's stay
+open).
+
 Doors. `DoorState{open 0..1, opening}` per building (`doors()`);
 `toggle_door(i)` sets an enterable building's door swinging the other way
 (false for a solid one), `advance(dt)` moves the swinging leaves at 1/0.6 s

@@ -945,7 +945,7 @@ beside a bridge:
 | Kind | Size | Walls | Roof | Windows | Entrance |
 | --- | --- | --- | --- | --- | --- |
 | Bungalow | 9 × 7 m, one storey | wooden planks | thatched gable (38°) | open holes | plank door **that opens** (see below) |
-| House | 11 × 9 m, two storeys | grey stone | red tiled gable (40°), a chimney | glass | wooden door |
+| House | 11 × 9 m, two storeys | grey stone | red tiled gable (40°), a chimney | glass | wooden door **that opens** (see below) |
 | Hospital | 40 × 20 m, five storeys | white concrete | flat dark grey, parapet | glass | canopy over a double glass door, a **red cross** on the front and on the roof |
 | Skyscraper | 30 × 30 m, twenty storeys (80 m) | glass facade with floor bands and mullions | flat white with a plant room | — | glass lobby under a canopy |
 
@@ -956,9 +956,10 @@ junctions) nearest to a preferred point; a site is suitable when the ground
 under the footprint varies no more than the kind allows (2.5–6 m: the
 foundation takes up the fall, the floor sits on the ground at the door so the
 entrance is at grade and the ground may rise no more than 1.8 m (2.5–3.5 m for the big footprints) over the
-floor behind it — the bungalow, which is entered, instead raises its floor
-over the highest ground under it and its footpath ramps up to the door, at
-most 1.65 m, at 3:10), every corner is above the water, nothing lies on a
+floor behind it — the bungalow and the house, which are entered, instead
+raise their floor over the highest ground under them and their footpath
+ramps up to the door, at most 1.65–1.95 m, at 3:10), every corner is above
+the water, nothing lies on a
 carriageway and the other buildings and their paths are clear. The demo and
 replay networks get all four (nearest to where the demo routes cross; the
 tower and the hospital first so they find the flat land); a network file
@@ -991,7 +992,27 @@ mattress, blanket, pillow) against the right one. The solid pieces — the
 cupboards, stove, table, chairs, wardrobe and mattress — are obstacles you
 bump into (never climbed: each stands higher than the step height); the
 worktop, sink and wall cupboard are over the counter and the blanket and
-pillow lie on the bed. The other kinds stay solid.
+pillow lie on the bed.
+
+**The house is entered too**, and it has rooms. Downstairs, behind the
+front door, three rooms are parted by plaster partition walls with open
+doorways: the **living room** inside the door (a television on its stand
+against the right wall, a sofa facing it across a low table), the
+**kitchen** at the back left through a doorway (a cooking area along the
+back wall — cupboards, worktop, sink, stove, a wall cupboard — a tall
+kitchen cabinet against the left wall, a kitchen table with four chairs)
+and the **bathroom** at the back right through its own doorway (a toilet
+and a washbasin against the back wall, a cabinet). A straight **wooden
+staircase** runs up the left wall of the living room, a handrail on its
+open side, to the **bedroom** that is the whole upper floor (a bed against
+the back wall, a wardrobe in the front corner), the banister round the
+stairwell. Every wall has glazed windows, upstairs too. You walk from room
+to room, climb the stairs (a 35° flight; the walker rises with it and
+steps off onto the upper floor) and come down again; upstairs furniture is
+no obstacle downstairs and vice versa; the partitions stop you, the
+doorways let you through, the banister keeps you out of the stairwell. The
+title names the room: `inside the house (kitchen, door open)`,
+`(stairs, …)`, `(bedroom, …)`. The other kinds stay solid.
 
 ```bash
 ./build-gl/terraflux-terrain-viewer --roads demo --view first-person --view-x -805 --view-z -103 --view-yaw 0   # before the bungalow's door
@@ -1004,13 +1025,16 @@ the walker up to the floor's level, the leaf stops it at the threshold,
 `E: open the door` is offered), opens it with E and walks in onto the floor
 until the stove stops it, walks at the table (the chairs stop it), closes
 the door from inside and fails to leave, then opens it again and walks out
-down the ramp; `INTERIOR_TEST_JSON` reports each frame.
+down the ramp; then it opens the house's door and crosses the living room,
+goes through the doorway into the kitchen, climbs the stairs to the
+bedroom, comes down and walks out; `INTERIOR_TEST_JSON` reports each frame
+with the room the walker is in.
 
 #### Hazards: fire, falling trees, flood, storm and lightning on the buildings
 
 The buildings live in the same weather as the roads. Each one is a set of
 **elements** — the walls, the roof, the windows, the door and (in the
-bungalow) the interior — each of a **material** (`material_hazard` in
+bungalow and the house) the interior — each of a **material** (`material_hazard` in
 `mesh_parts.hpp`), and **not every material burns**:
 
 | Material | Burns | Otherwise damaged by |
@@ -1121,7 +1145,13 @@ and a walker climbing it, the doorway open in the walls and shut by the
 leaf, the door's swing and its version, the leaf's posts and meshes open
 and closed, a walker stopped by the closed door, in through the open one
 onto the floor, stopped by the chairs and held by the walls, and kept in by
-the door closed from inside). `--buildings-test` shows the four from the
+the door closed from inside), and the house (five rooms on two levels, the
+partitions and their doorways, the stair and its rail, every piece of
+furniture in its room, the levels by the feet's height, the rooms by
+position, a walker through the kitchen doorway, stopped by the blind
+partition, up the stairs to the bedroom, stopped by the wardrobe and held
+by the banister, down again, and the bed upstairs no obstacle downstairs
+while the sofa is one). `--buildings-test` shows the four from the
 world view (hidden first as the reference), walks the hospital's footpath to
 its door, and hides them again: the reference exactly. The suite's hazards
 test covers the material table, the elements per kind, the fire (thatch

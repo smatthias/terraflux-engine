@@ -115,7 +115,64 @@ std::optional<BuildingKind> building_kind_from_name(const std::string& name) {
   return std::nullopt;
 }
 
-bool building_enterable(BuildingKind kind) { return kind == BuildingKind::Bungalow; }
+bool building_enterable(BuildingKind kind) { return kind == BuildingKind::Bungalow || kind == BuildingKind::House; }
+
+namespace {
+// The house's plan: the stair up the left wall of the living room, the
+// partition behind the living room, the one between the kitchen and the
+// bathroom (local, from the spec).
+struct HouseLayout {
+  double iw, id;              // the rooms' half extents
+  double stair_a0, stair_a1;  // the stair's strip along the left wall
+  double stair_foot_b, stair_head_b;
+  double back_b;              // the front face of the partition behind the living room
+  double split_a;             // the centre line of the partition between the kitchen and the bathroom
+  double upper;               // the upper floor's height
+};
+HouseLayout house_layout(const BuildingSpec& spec) {
+  HouseLayout h;
+  h.iw = 0.5 * spec.width_meters - kWall; h.id = 0.5 * spec.depth_meters - kWall;
+  h.upper = spec.storey_height_meters;
+  h.stair_a0 = -h.iw; h.stair_a1 = -h.iw + 1.0;
+  h.stair_foot_b = h.id - 0.55;
+  h.stair_head_b = h.stair_foot_b - 1.4 * h.upper;  // a 35-degree flight
+  h.back_b = h.stair_head_b;
+  h.split_a = std::min(1.0, h.iw - 3.0);
+  return h;
+}
+}  // namespace
+
+InteriorPlan interior_plan(const BuildingSpec& spec) {
+  validate_building_spec(spec);
+  InteriorPlan plan;
+  if (!building_enterable(spec.kind)) return plan;
+  const double iw = 0.5 * spec.width_meters - kWall, id = 0.5 * spec.depth_meters - kWall;
+  if (spec.kind == BuildingKind::Bungalow || spec.storeys < 2) {
+    plan.rooms.push_back({"room", -iw, iw, -id, id, 0});
+    return plan;
+  }
+  const HouseLayout h = house_layout(spec);
+  const DoorSize doorway{1.0, 2.1};
+  plan.upper_floor = h.upper;
+  plan.rooms.push_back({"living room", h.stair_a1, iw, h.back_b, id, 0});
+  plan.rooms.push_back({"stairs", h.stair_a0, h.stair_a1, h.stair_head_b, id, 0});
+  plan.rooms.push_back({"kitchen", -iw, h.split_a - 0.5 * kWall, -id, h.back_b - kWall, 0});
+  plan.rooms.push_back({"bathroom", h.split_a + 0.5 * kWall, iw, -id, h.back_b - kWall, 0});
+  plan.rooms.push_back({"bedroom", -iw, iw, -id, id, 1});
+  // The partition behind the living room, with the kitchen's and the bathroom's doorways; its centre line is half a wall behind the face.
+  InteriorWall back;
+  back.from = {-iw, h.back_b - 0.5 * kWall}; back.to = {iw, h.back_b - 0.5 * kWall}; back.bottom = 0.0; back.top = h.upper - plan.slab;
+  back.openings.push_back({(h.stair_a1 + 1.5) - (-iw), doorway.width, doorway.height});                 // into the kitchen, a metre past the stair
+  back.openings.push_back({(0.5 * (h.split_a + 0.5 * kWall + iw)) - (-iw), doorway.width, doorway.height});  // into the bathroom, mid-wall
+  plan.walls.push_back(std::move(back));
+  InteriorWall split;
+  split.from = {h.split_a, h.back_b - kWall}; split.to = {h.split_a, -id}; split.bottom = 0.0; split.top = h.upper - plan.slab;
+  plan.walls.push_back(std::move(split));
+  plan.stair = InteriorStair{{0.5 * (h.stair_a0 + h.stair_a1), h.stair_foot_b}, {0.5 * (h.stair_a0 + h.stair_a1), h.stair_head_b}, h.stair_a1 - h.stair_a0, h.upper};
+  // The handrail along the stair's open side runs on up as the banister round the stairwell.
+  plan.rails.push_back({{h.stair_a1, id}, {h.stair_a1, h.stair_head_b}, -0.5, h.upper + 1.0});
+  return plan;
+}
 
 std::vector<Furnishing> furnish(const BuildingSpec& spec) {
   validate_building_spec(spec);
@@ -125,7 +182,7 @@ std::vector<Furnishing> furnish(const BuildingSpec& spec) {
   const double ceiling = spec.storeys * spec.storey_height_meters - 0.1;
   const double door_half = 0.5 * door_size(spec.kind).width + kDoorwayClearance;
   const math::Vec3 timber{0.50, 0.34, 0.20}, dark_timber{0.42, 0.28, 0.16}, pale_timber{0.56, 0.40, 0.24}, steel{0.75, 0.76, 0.78}, iron{0.25, 0.25, 0.27};
-  const math::Vec3 stone{0.55, 0.55, 0.52}, linen{0.92, 0.92, 0.88}, wool{0.30, 0.40, 0.65};
+  const math::Vec3 stone{0.55, 0.55, 0.52}, linen{0.92, 0.92, 0.88}, wool{0.30, 0.40, 0.65}, porcelain{0.94, 0.95, 0.95}, fabric{0.30, 0.36, 0.48}, black{0.06, 0.06, 0.07};
   // A piece is kept when it stands clear of the walls, the doorway and the ceiling.
   const auto add = [&](const char* what, double a, double b, double half_a, double half_b, double bottom, double height, math::Vec3 color,
                        SurfaceMaterial material, bool solid, bool drawn = true) {
@@ -134,45 +191,93 @@ std::vector<Furnishing> furnish(const BuildingSpec& spec) {
     out.push_back(Furnishing{what, {a, b}, half_a, half_b, bottom, height, color, material, solid, drawn});
     return true;
   };
-  // The kitchen along the back wall: a run of cupboards under a worktop with
-  // a sink, a stove beside it and a cupboard on the wall over the worktop.
-  {
-    const double b = -id + 0.32, a0 = -iw + 0.25;  // 2 cm off the back wall
+  // A table with chairs round it (a kitchen or dining table).
+  const auto table_and_chairs = [&](double ta, double tb, double lift) {
+    if (!add("table", ta, tb, 0.7, 0.45, lift, 0.76, pale_timber, SurfaceMaterial::Timber, true, false)) return;
+    add("table", ta, tb, 0.7, 0.45, lift + 0.72, 0.04, pale_timber, SurfaceMaterial::Timber, false);
+    for (const double sa : {-1.0, 1.0})
+      for (const double sb : {-1.0, 1.0}) add("table", ta + sa * 0.6, tb + sb * 0.35, 0.04, 0.04, lift, 0.72, pale_timber, SurfaceMaterial::Timber, false);
+    for (const double sb : {-1.0, 1.0})
+      for (const double sa : {-1.0, 1.0}) {
+        const double ca = ta + sa * 0.4, cb = tb + sb * 0.75;
+        if (!add("chair", ca, cb, 0.21, 0.21, lift, 0.9, timber, SurfaceMaterial::Timber, true, false)) continue;
+        add("chair", ca, cb, 0.21, 0.21, lift + 0.42, 0.04, timber, SurfaceMaterial::Timber, false);
+        for (const double la : {-1.0, 1.0})
+          for (const double lb : {-1.0, 1.0}) add("chair", ca + la * 0.18, cb + lb * 0.18, 0.02, 0.02, lift, 0.42, timber, SurfaceMaterial::Timber, false);
+        add("chair", ca, cb + sb * 0.19, 0.21, 0.02, lift + 0.46, 0.44, timber, SurfaceMaterial::Timber, false);  // the backrest, away from the table
+      }
+  };
+  // A cooking area along a back wall from a0: a run of cupboards under a
+  // worktop with a sink, a cupboard on the wall over it, a stove beside it.
+  const auto cooking_area = [&](double a0, double b) {
     if (add("cupboard", a0 + 1.5, b, 1.5, 0.3, 0.0, 0.85, timber, SurfaceMaterial::Timber, true)) {
       add("worktop", a0 + 1.5, b, 1.52, 0.32, 0.85, 0.05, stone, SurfaceMaterial::Stone, false);
       add("sink", a0 + 0.7, b, 0.25, 0.2, 0.9, 0.1, steel, SurfaceMaterial::Metal, false);
       add("cupboard", a0 + 1.1, b - 0.12, 0.9, 0.18, 1.5, 0.7, timber, SurfaceMaterial::Timber, false);  // on the wall, clear of the window
     }
     add("stove", a0 + 3.4, b, 0.3, 0.3, 0.0, 0.9, iron, SurfaceMaterial::Metal, true);
-  }
-  // A table with four chairs, right of the door.
-  {
-    const double ta = std::min(1.6, iw - 1.6), tb = 0.2;
-    if (add("table", ta, tb, 0.7, 0.45, 0.0, 0.76, pale_timber, SurfaceMaterial::Timber, true, false)) {
-      add("table", ta, tb, 0.7, 0.45, 0.72, 0.04, pale_timber, SurfaceMaterial::Timber, false);
-      for (const double sa : {-1.0, 1.0})
-        for (const double sb : {-1.0, 1.0}) add("table", ta + sa * 0.6, tb + sb * 0.35, 0.04, 0.04, 0.0, 0.72, pale_timber, SurfaceMaterial::Timber, false);
-      for (const double sb : {-1.0, 1.0})
-        for (const double sa : {-1.0, 1.0}) {
-          const double ca = ta + sa * 0.4, cb = tb + sb * 0.75;
-          if (!add("chair", ca, cb, 0.21, 0.21, 0.0, 0.9, timber, SurfaceMaterial::Timber, true, false)) continue;
-          add("chair", ca, cb, 0.21, 0.21, 0.42, 0.04, timber, SurfaceMaterial::Timber, false);
-          for (const double la : {-1.0, 1.0})
-            for (const double lb : {-1.0, 1.0}) add("chair", ca + la * 0.18, cb + lb * 0.18, 0.02, 0.02, 0.0, 0.42, timber, SurfaceMaterial::Timber, false);
-          add("chair", ca, cb + sb * 0.19, 0.21, 0.02, 0.46, 0.44, timber, SurfaceMaterial::Timber, false);  // the backrest, away from the table
-        }
+  };
+  // A bed against a back wall, its head to the wall.
+  const auto bed = [&](double ba, double bb, double lift) {
+    if (add("bed", ba, bb, 0.7, 1.0, lift, 0.35, timber, SurfaceMaterial::Timber, false)) {
+      add("mattress", ba, bb, 0.66, 0.96, lift + 0.35, 0.22, linen, SurfaceMaterial::Plain, true);
+      add("blanket", ba, bb + 0.36, 0.66, 0.6, lift + 0.57, 0.05, wool, SurfaceMaterial::Plain, false);
+      add("pillow", ba, bb - 0.7, 0.4, 0.22, lift + 0.57, 0.12, linen, SurfaceMaterial::Plain, false);
     }
+  };
+  if (spec.kind == BuildingKind::House && spec.storeys >= 2) {
+    const HouseLayout h = house_layout(spec);
+    const double kb = -id + 0.32;  // along the back wall, 2 cm off it
+    // The kitchen (back left): the cooking area along the back wall, a tall cabinet against the left wall, the table with four chairs.
+    cooking_area(-iw + 0.25, kb);
+    add("cabinet", -iw + 0.32, -id + 1.3, 0.3, 0.45, 0.0, 2.0, dark_timber, SurfaceMaterial::Timber, true);  // between the cooking area and the window
+    table_and_chairs(h.split_a - 1.9, 0.5 * (h.back_b - kWall - id) + 0.2, 0.0);
+    // The bathroom (back right): a toilet and a washbasin against the back wall, a cabinet against the right wall.
+    {
+      const double ta = iw - 0.75, tb = -id + 0.4;
+      if (add("toilet", ta, tb, 0.2, 0.35, 0.0, 0.85, porcelain, SurfaceMaterial::Plain, true, false)) {
+        add("toilet", ta, tb + 0.05, 0.2, 0.3, 0.0, 0.42, porcelain, SurfaceMaterial::Plain, false);   // the bowl
+        add("toilet", ta, tb - 0.25, 0.2, 0.1, 0.42, 0.43, porcelain, SurfaceMaterial::Plain, false);  // the cistern
+      }
+      const double sa = h.split_a + 1.4, sb = -id + 0.3;
+      if (add("washbasin", sa, sb, 0.28, 0.22, 0.0, 0.95, porcelain, SurfaceMaterial::Plain, true, false)) {
+        add("washbasin", sa, sb, 0.1, 0.1, 0.0, 0.8, porcelain, SurfaceMaterial::Plain, false);    // the pedestal
+        add("washbasin", sa, sb, 0.28, 0.22, 0.8, 0.15, porcelain, SurfaceMaterial::Plain, false);  // the basin
+        add("tap", sa, sb - 0.17, 0.02, 0.02, 0.95, 0.12, steel, SurfaceMaterial::Metal, false);
+      }
+      add("cabinet", iw - 0.22, 0.5 * (h.back_b - kWall - id), 0.2, 0.45, 0.0, 1.8, timber, SurfaceMaterial::Timber, true);
+    }
+    // The living room (front): a television on its stand against the right wall, the sofa facing it over a low table.
+    {
+      const double lb = 0.5 * (h.back_b + id) + 0.7;
+      if (add("television", iw - 0.27, lb, 0.25, 0.6, 0.0, 1.15, black, SurfaceMaterial::Plain, true, false)) {
+        add("stand", iw - 0.27, lb, 0.25, 0.6, 0.0, 0.5, timber, SurfaceMaterial::Timber, false);
+        add("television", iw - 0.25, lb, 0.04, 0.55, 0.5, 0.65, black, SurfaceMaterial::Plain, false);
+      }
+      const double ca = iw - 1.45;
+      if (add("table", ca, lb, 0.45, 0.3, 0.0, 0.55, pale_timber, SurfaceMaterial::Timber, true, false)) {
+        add("table", ca, lb, 0.45, 0.3, 0.5, 0.05, pale_timber, SurfaceMaterial::Timber, false);
+        for (const double sa : {-1.0, 1.0})
+          for (const double sb : {-1.0, 1.0}) add("table", ca + sa * 0.38, lb + sb * 0.23, 0.03, 0.03, 0.0, 0.5, pale_timber, SurfaceMaterial::Timber, false);
+      }
+      const double fa = iw - 2.85;
+      if (add("sofa", fa, lb, 0.45, 1.1, 0.0, 0.9, fabric, SurfaceMaterial::Plain, true, false)) {
+        add("sofa", fa, lb, 0.45, 1.0, 0.1, 0.35, fabric, SurfaceMaterial::Plain, false);           // the seat
+        add("sofa", fa - 0.35, lb, 0.1, 1.0, 0.45, 0.45, fabric, SurfaceMaterial::Plain, false);    // the backrest, away from the television
+        for (const double sb : {-1.0, 1.0}) add("sofa", fa, lb + sb * 1.0, 0.45, 0.1, 0.0, 0.6, fabric, SurfaceMaterial::Plain, false);  // the armrests
+      }
+    }
+    // The bedroom upstairs: the bed against the back wall, the wardrobe against the right wall.
+    bed(iw - 2.75, -id + 1.05, h.upper);
+    add("wardrobe", iw - 0.32, id - 0.95, 0.3, 0.9, h.upper, 2.1, dark_timber, SurfaceMaterial::Timber, true);  // in the front corner, clear of the window
+    return out;
   }
+  // The bungalow: one room.
+  cooking_area(-iw + 0.25, -id + 0.32);
+  table_and_chairs(std::min(1.6, iw - 1.6), 0.2, 0.0);
   // A wardrobe against the left wall, a bed against the right one.
   add("wardrobe", -iw + 0.32, 1.5, 0.3, 0.6, 0.0, 2.0, dark_timber, SurfaceMaterial::Timber, true);
-  {
-    const double ba = iw - 0.72, bb = -id + 1.65;
-    if (add("bed", ba, bb, 0.7, 1.0, 0.0, 0.35, timber, SurfaceMaterial::Timber, false)) {
-      add("mattress", ba, bb, 0.66, 0.96, 0.35, 0.22, linen, SurfaceMaterial::Plain, true);
-      add("blanket", ba, bb - 0.36, 0.66, 0.6, 0.57, 0.05, wool, SurfaceMaterial::Plain, false);
-      add("pillow", ba, bb + 0.7, 0.4, 0.22, 0.57, 0.12, linen, SurfaceMaterial::Plain, false);
-    }
-  }
+  bed(iw - 0.72, -id + 1.65, 0.0);
   return out;
 }
 
@@ -572,6 +677,27 @@ bool crosses_footprint(const Building& b, math::Vec2 from, math::Vec2 to) {
 }
 // A colour darkened by damage (char, soot, rot).
 math::Vec3 charred(math::Vec3 color, double damage) { return color * (1.0 - 0.65 * std::clamp(damage, 0.0, 1.0)); }
+// The stair's height over the floor at a local point within its strip, if the point is on it.
+std::optional<double> stair_height_at(const InteriorStair& stair, double a, double b) {
+  const math::Vec2 run = stair.head - stair.foot;
+  const double len = run.length();
+  if (len < 1e-9) return std::nullopt;
+  const math::Vec2 dir = run / len, side{-dir.y, dir.x};
+  const math::Vec2 d = math::Vec2{a, b} - stair.foot;
+  const double along = d.dot(dir), across = std::abs(d.dot(side));
+  if (across > 0.5 * stair.width || along < -1e-9 || along > len + 1e-9) return std::nullopt;
+  return stair.rise * (along / len);
+}
+// Whether a local point lies over the stairwell (the stair's strip from its head to the wall it starts from).
+bool in_stairwell(const InteriorStair& stair, double a, double b, double id) {
+  const math::Vec2 run = stair.head - stair.foot;
+  const double len = run.length();
+  if (len < 1e-9) return false;
+  const math::Vec2 dir = run / len, side{-dir.y, dir.x};
+  const math::Vec2 d = math::Vec2{a, b} - stair.head;
+  const double back = d.dot(dir) * -1.0;  // toward the foot and beyond
+  return std::abs(d.dot(side)) <= 0.5 * stair.width && back >= -1e-9 && back <= len + id;  // to the wall behind the foot
+}
 // Posts along a line, the last one centred on `to`.
 void post_chain(std::vector<Obstacle>& out, math::Vec2 from, math::Vec2 to, double radius, double bottom, double top) {
   const double len = (to - from).length();
@@ -657,6 +783,40 @@ std::optional<double> BuildingSet::platform_height(double x, double z) const {
   return std::nullopt;
 }
 
+std::optional<double> BuildingSet::platform_height(double x, double z, double feet_y) const {
+  if (!std::isfinite(feet_y)) throw std::invalid_argument("building sample position must be finite");
+  const auto i = inside_of(x, z);
+  if (!i) return platform_height(x, z);
+  const auto& b = buildings_[*i];
+  const InteriorPlan plan = interior_plan(b.spec);
+  if (plan.upper_floor <= 0) return b.floor_meters;
+  const auto [a, bb] = frame_of(b).local({x, z});
+  const double id = 0.5 * b.spec.depth_meters - kWall;
+  // The levels here: the ground floor, the stair, the upper floor outside the stairwell.
+  std::vector<double> levels{b.floor_meters};
+  if (plan.stair) {
+    if (const auto h = stair_height_at(*plan.stair, a, bb)) levels.push_back(b.floor_meters + *h);
+    if (!in_stairwell(*plan.stair, a, bb, id)) levels.push_back(b.floor_meters + plan.upper_floor);
+  } else levels.push_back(b.floor_meters + plan.upper_floor);
+  // The highest no more than the step height above the feet.
+  double best = levels[0];
+  for (const double level : levels) if (level <= feet_y + 0.5 + 1e-6 && level > best) best = level;
+  return best;
+}
+
+const char* BuildingSet::room_at(std::size_t building, double x, double z, double feet_y) const {
+  if (building >= buildings_.size()) throw std::out_of_range("building index out of range");
+  if (!inside(building, x, z)) return nullptr;
+  const auto& b = buildings_[building];
+  const InteriorPlan plan = interior_plan(b.spec);
+  const auto [a, bb] = frame_of(b).local({x, z});
+  const int level = plan.upper_floor > 0 && feet_y >= b.floor_meters + 0.5 * plan.upper_floor ? 1 : 0;
+  if (level == 0 && plan.stair && stair_height_at(*plan.stair, a, bb) && stair_height_at(*plan.stair, a, bb) > 0.05) return "stairs";
+  for (const auto& room : plan.rooms)
+    if (room.level == level && a >= room.a0 - 1e-9 && a <= room.a1 + 1e-9 && bb >= room.b0 - 1e-9 && bb <= room.b1 + 1e-9) return room.name;
+  return level ? "upstairs" : "inside";
+}
+
 double BuildingSet::speed_factor(double x, double z) const {
   if (!platform_height(x, z)) return 1.0;
   if (const auto i = building_at(x, z)) if (states_[*i].destroyed) return style_.rubble_speed_factor;
@@ -729,6 +889,26 @@ std::vector<Obstacle> BuildingSet::obstacles() const {
     chain(frame.plan(mw, md), frame.plan(mw, -md));
     chain(frame.plan(mw, -md), frame.plan(-mw, -md));
     chain(frame.plan(-mw, -md), frame.plan(-mw, md));
+    // The partitions (with their doorways open) and the rails, heights over the floor.
+    const InteriorPlan plan = interior_plan(b.spec);
+    for (const auto& w : plan.walls) {
+      const math::Vec2 dir = (w.to - w.from) / std::max((w.to - w.from).length(), 1e-9);
+      std::vector<std::pair<double, double>> gaps;
+      for (const auto& o : w.openings) gaps.push_back({o.along - 0.5 * o.width - kWallPostRadius, o.along + 0.5 * o.width + kWallPostRadius});
+      std::sort(gaps.begin(), gaps.end());
+      double at = 0.0;
+      const double len = (w.to - w.from).length();
+      const auto local_chain = [&](double s0, double s1) {
+        const math::Vec2 p0 = w.from + dir * s0, p1 = w.from + dir * s1;
+        post_chain(out, frame.plan(p0.x, p0.y), frame.plan(p1.x, p1.y), kWallPostRadius, b.floor_meters + w.bottom - 0.5, b.floor_meters + w.top);
+      };
+      for (const auto& gap : gaps) {
+        if (gap.first > at) local_chain(at, gap.first);
+        at = std::max(at, gap.second);
+      }
+      if (len > at) local_chain(at, len);
+    }
+    for (const auto& r : plan.rails) post_chain(out, frame.plan(r.from.x, r.from.y), frame.plan(r.to.x, r.to.y), kDoorPostRadius, b.floor_meters + r.bottom, b.floor_meters + r.top);
     // The furniture: a solid piece as posts along its longer axis, as thick as its shorter one (gone once it has burned).
     if (st.element(BuildingElement::Interior).damage >= 1.0) continue;
     for (const auto& f : furnish(b.spec)) {
@@ -1285,15 +1465,23 @@ std::vector<MeshPart> BuildingSet::build_meshes() const {
           if (s1 - s0 < 1e-6 || y1 - y0 < 1e-6) return;
           add_box(body, fc + across * (0.5 * (s0 + s1)) + kUp * (0.5 * (y0 + y1) - fc.y), across, kUp, face.normal, {0.5 * (s1 - s0), 0.5 * (y1 - y0), 0.5 * kWall});
         };
-        double s = -half_len;
-        for (const auto& hole : holes) {
-          const double h0 = std::max(s, hole.s - hole.half_w), h1 = std::min(half_len, hole.s + hole.half_w);
-          piece(s, h0, b.floor_meters, walls_top);
-          piece(h0, h1, b.floor_meters, hole.y0);
-          piece(h0, h1, hole.y1, walls_top);
-          s = h1;
+        // Between every pair of hole edges along the wall, the strip is solid
+        // except where holes (stacked storey over storey, the door under a
+        // window) cut it: pieces below, between and above them.
+        std::vector<double> edges{-half_len, half_len};
+        for (const auto& hole : holes) { edges.push_back(std::clamp(hole.s - hole.half_w, -half_len, half_len)); edges.push_back(std::clamp(hole.s + hole.half_w, -half_len, half_len)); }
+        std::sort(edges.begin(), edges.end());
+        for (std::size_t k = 0; k + 1 < edges.size(); ++k) {
+          const double s0 = edges[k], s1 = edges[k + 1];
+          if (s1 - s0 < 1e-6) continue;
+          std::vector<std::pair<double, double>> cuts;
+          for (const auto& hole : holes)
+            if (hole.s - hole.half_w <= s0 + 1e-9 && hole.s + hole.half_w >= s1 - 1e-9) cuts.push_back({hole.y0, hole.y1});
+          std::sort(cuts.begin(), cuts.end());
+          double y = b.floor_meters;
+          for (const auto& cut : cuts) { piece(s0, s1, y, cut.first); y = std::max(y, cut.second); }
+          piece(s0, s1, y, walls_top);
         }
-        piece(s, half_len, b.floor_meters, walls_top);
       }
       // The floor and the ceiling (the ceiling goes with a burned-out room or a fallen roof).
       MeshPart floor_part; floor_part.color = charred({0.62, 0.46, 0.28}, interior_damage); floor_part.what = "floor"; floor_part.material = SurfaceMaterial::Planks;
@@ -1303,6 +1491,87 @@ std::vector<MeshPart> BuildingSet::build_meshes() const {
         MeshPart ceiling; ceiling.color = charred({0.88, 0.86, 0.80}, interior_damage); ceiling.what = "ceiling"; ceiling.material = SurfaceMaterial::Plain;
         add_box(ceiling, frame.at(0, 0, walls_top - 0.05), u3, kUp, v3, {hw - kWall + 0.02, 0.05, hd - kWall + 0.02});
         parts.push_back(std::move(ceiling));
+      }
+      // The rooms: partitions with their doorways, the stair with its handrail, the upper floor round the stairwell.
+      const InteriorPlan plan = interior_plan(b.spec);
+      if (!plan.walls.empty()) {
+        MeshPart partitions; partitions.color = charred({0.90, 0.88, 0.82}, walls_damage); partitions.what = "partition"; partitions.material = SurfaceMaterial::Plain;
+        for (const auto& w : plan.walls) {
+          const math::Vec2 run = w.to - w.from;
+          const double len = run.length();
+          if (len < 1e-9) continue;
+          const math::Vec2 dir = run / len;
+          const math::Vec3 along = plan3(b.along * dir.x + b.facing * dir.y), normal = kUp.cross(along).normalized();
+          const auto piece = [&](double s0, double s1, double y0, double y1) {
+            if (s1 - s0 < 1e-6 || y1 - y0 < 1e-6) return;
+            const math::Vec2 c = w.from + dir * (0.5 * (s0 + s1));
+            add_box(partitions, frame.at(c.x, c.y, b.floor_meters + 0.5 * (y0 + y1)), along, kUp, normal, {0.5 * (s1 - s0), 0.5 * (y1 - y0), 0.5 * kWall});
+          };
+          std::vector<InteriorOpening> holes = w.openings;
+          std::sort(holes.begin(), holes.end(), [](const InteriorOpening& x, const InteriorOpening& y) { return x.along < y.along; });
+          double at = 0.0;
+          for (const auto& hole : holes) {
+            const double h0 = std::max(at, hole.along - 0.5 * hole.width), h1 = std::min(len, hole.along + 0.5 * hole.width);
+            piece(at, h0, w.bottom, w.top);
+            piece(h0, h1, w.bottom + hole.height, w.top);
+            at = h1;
+          }
+          piece(at, len, w.bottom, w.top);
+        }
+        parts.push_back(std::move(partitions));
+      }
+      if (plan.stair && plan.upper_floor > 0) {
+        const InteriorStair& stair = *plan.stair;
+        MeshPart steps; steps.color = charred({0.55, 0.38, 0.22}, interior_damage); steps.what = "stair"; steps.material = SurfaceMaterial::Timber;
+        const math::Vec2 run = stair.head - stair.foot;
+        const double len = run.length();
+        const math::Vec2 dir = run / std::max(len, 1e-9);
+        const math::Vec3 along = plan3(b.along * dir.x + b.facing * dir.y), across = kUp.cross(along).normalized();
+        const int count = std::max(1, static_cast<int>(std::ceil(stair.rise / 0.19)));
+        const double riser = stair.rise / count, tread = len / count;
+        for (int k = 0; k < count; ++k) {
+          // A solid step from the floor up to its tread (a closed string stair).
+          const math::Vec2 c = stair.foot + dir * ((k + 0.5) * tread);
+          const double top = (k + 1) * riser;
+          add_box(steps, frame.at(c.x, c.y, b.floor_meters + 0.5 * top), along, kUp, across, {0.5 * tread, 0.5 * top, 0.5 * stair.width});
+        }
+        // The handrail on the open side: posts on every fourth step and a rail following the flight.
+        for (const auto& r : plan.rails) {
+          const math::Vec2 rd = r.to - r.from;
+          const double rl = rd.length();
+          if (rl < 1e-9) continue;
+          const math::Vec2 rdir = rd / rl;
+          const math::Vec3 rail_along = plan3(b.along * rdir.x + b.facing * rdir.y), rail_across = kUp.cross(rail_along).normalized();
+          const auto height_at = [&](math::Vec2 p) { const auto h = stair_height_at(stair, p.x, p.y); return h ? *h : (in_stairwell(stair, p.x, p.y, 0.5 * b.spec.depth_meters - kWall) && (p - stair.head).dot(dir) > 0 ? stair.rise : 0.0); };
+          const int posts = std::max(2, static_cast<int>(std::ceil(rl / 1.0)));
+          for (int k = 0; k <= posts; ++k) {
+            const math::Vec2 p = r.from + rdir * (rl * k / posts);
+            const double base = height_at(p);
+            add_box(steps, frame.at(p.x, p.y, b.floor_meters + base + 0.45), rail_along, kUp, rail_across, {0.03, 0.45, 0.03});
+          }
+          // The rail: straight segments between the posts, each tilted with the flight under it.
+          for (int k = 0; k < posts; ++k) {
+            const math::Vec2 p0 = r.from + rdir * (rl * k / posts), p1 = r.from + rdir * (rl * (k + 1) / posts);
+            const math::Vec3 e0 = frame.at(p0.x, p0.y, b.floor_meters + height_at(p0) + 0.9), e1 = frame.at(p1.x, p1.y, b.floor_meters + height_at(p1) + 0.9);
+            const math::Vec3 seg = e1 - e0;
+            const double sl = seg.length();
+            if (sl < 1e-6) continue;
+            const math::Vec3 sa = seg / sl, sup = rail_across.cross(sa).normalized();
+            add_box(steps, (e0 + e1) * 0.5, sa, sup, rail_across, {0.5 * sl, 0.035, 0.035});
+          }
+        }
+        parts.push_back(std::move(steps));
+        // The upper floor: a slab round the stairwell (its underside is the ground floor's ceiling).
+        MeshPart upper; upper.color = charred({0.62, 0.46, 0.28}, interior_damage); upper.what = "floor"; upper.material = SurfaceMaterial::Planks;
+        const double slab_y = b.floor_meters + plan.upper_floor - 0.5 * plan.slab, half_slab = 0.5 * plan.slab;
+        const double iw = hw - kWall, id = hd - kWall;
+        const double well_a0 = std::min(stair.foot.x, stair.head.x) - 0.5 * stair.width, well_a1 = std::max(stair.foot.x, stair.head.x) + 0.5 * stair.width;
+        const double well_b0 = std::min(stair.head.y, stair.foot.y);  // from the head to the front wall
+        // Three slabs: right of the well (full depth), left of it (none: the well runs to the left wall), behind the head.
+        add_box(upper, frame.at(0.5 * (well_a1 + iw), 0, slab_y), u3, kUp, v3, {0.5 * (iw - well_a1), half_slab, id});
+        if (well_a0 > -iw + 1e-6) add_box(upper, frame.at(0.5 * (-iw + well_a0), 0, slab_y), u3, kUp, v3, {0.5 * (well_a0 + iw), half_slab, id});
+        add_box(upper, frame.at(0.5 * (well_a0 + well_a1), 0.5 * (-id + well_b0), slab_y), u3, kUp, v3, {0.5 * (well_a1 - well_a0), half_slab, 0.5 * (well_b0 + id)});
+        parts.push_back(std::move(upper));
       }
       // The furniture, a part per kind of piece (gone once the room has burned out).
       const int char_level = static_cast<int>(std::floor(std::clamp(interior_damage, 0.0, 1.0) * 10.0 + 1e-9));
@@ -1423,6 +1692,14 @@ std::vector<MeshPart> BuildingSet::build_meshes() const {
         const math::Vec3 across = kUp.cross(face.normal).normalized();
         const math::Vec3 fc = face_centre(face);
         add_box(windows, math::Vec3{fc.x, pane.y, fc.z} + across * pane.along + face.normal * 0.03, across, kUp, face.normal, {pane.half_w, pane.half_h, 0.02});
+      }
+    else if (st.element(BuildingElement::Windows).present)
+      // Glazed: a pane in each hole, in the wall's centre plane (the bungalow's holes stay open).
+      for (const auto& pane : panes) {
+        const Face& face = faces[pane.face];
+        const math::Vec3 across = kUp.cross(face.normal).normalized();
+        const math::Vec3 fc = face_centre(face) - face.normal * (0.5 * kWall);
+        add_box(windows, math::Vec3{fc.x, pane.y, fc.z} + across * pane.along, across, kUp, face.normal, {pane.half_w, pane.half_h, 0.01});
       }
     if (kind == BuildingKind::Skyscraper) {
       // A glass facade: floor bands and mullions stand proud of the glass body.

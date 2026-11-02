@@ -26,8 +26,10 @@ namespace terraflux::graphics {
 //
 //  Bungalow    one storey, wooden plank walls, a thatched gable roof, open
 //              window holes and a plank door that opens; built hollow and
-//              furnished, the one kind the walker enters.
-//  House       two storeys, stone walls, a red tiled gable roof, glass windows.
+//              furnished as one room the walker enters.
+//  House       two storeys, stone walls, a red tiled gable roof, glass
+//              windows; entered too: a living room, a kitchen and a
+//              bathroom downstairs, a stair up to the bedroom.
 //  Hospital    five storeys, white concrete walls, a flat dark grey roof,
 //              glass windows, a canopy over a double glass door, and a red
 //              cross on the front and on the roof.
@@ -46,8 +48,8 @@ namespace terraflux::graphics {
 // point along the roads: flat enough, dry, off the carriageways, clear of the
 // other buildings) or given as a road segment, a distance along it and a
 // side. The buildings are solid to the walker (their walls are obstacles;
-// the doors are closed) — except the bungalow, whose door opens onto a
-// furnished room (see Interiors below) — the footpaths are surfaces it
+// the doors are closed) — except the bungalow and the house, whose doors
+// open onto furnished rooms (see Interiors below) — the footpaths are surfaces it
 // walks on at the road's pace (ramping up to a raised door), and the plants
 // on the plots are cleared.
 enum class BuildingKind : std::uint8_t { Bungalow, House, Hospital, Skyscraper, PoliceStation, Terminal, ControlTower, Hangar };
@@ -139,13 +141,40 @@ std::vector<Building> place_buildings(const RoadNetwork& roads, std::span<const 
 // in a road network file (see roads.hpp). An absent key gives an empty list.
 std::vector<BuildingRequest> parse_building_requests(const std::string& json_text);
 
-// Interiors. The bungalow is built hollow — four plank walls with a doorway,
-// a timber floor, a ceiling — with a door that swings open on its hinge and
-// a few pieces of furniture: a kitchen (cupboards, worktop, sink, stove and
-// a wall cupboard) along the back wall, a table with four chairs, a
-// wardrobe and a bed. The walker opens the door (E), steps in onto the floor
-// and bumps into the furniture; the other kinds stay solid.
+// Interiors. The bungalow and the house are built hollow — their walls with
+// a doorway and real window holes, a timber floor, a ceiling — with a door
+// that swings open on its hinge and furnished rooms. The bungalow is one
+// room: a kitchen (cupboards, worktop, sink, stove and a wall cupboard)
+// along the back wall, a table with four chairs, a wardrobe and a bed. The
+// house has three rooms downstairs behind plaster partition walls with open
+// doorways — a living room inside the front door (a television on its
+// stand, a sofa, a low table), a kitchen at the back left (a cooking area
+// of cupboards, worktop, sink and stove, a tall kitchen cabinet, a table
+// with four chairs) and a bathroom at the back right (a toilet, a
+// washbasin, a cabinet) — and a straight wooden staircase up the left wall
+// of the living room to the bedroom that is the whole upper floor (a bed, a
+// wardrobe), with a handrail along the stair and a banister round the
+// stairwell. The walker opens the door (E), steps in onto the floor, walks
+// from room to room, climbs the stairs and bumps into the furniture; the
+// other kinds stay solid.
 bool building_enterable(BuildingKind kind);
+// The rooms, partition walls, stair and rails of an enterable kind, in the
+// building's local frame (a along the front wall, b toward the road;
+// heights over the ground floor).
+struct InteriorRoom { const char* name = ""; double a0 = 0, a1 = 0, b0 = 0, b1 = 0; int level = 0; };
+struct InteriorOpening { double along = 0, width = 0, height = 0; };          // a doorway: its centre along the wall from `from`
+struct InteriorWall { math::Vec2 from, to; double bottom = 0, top = 0; std::vector<InteriorOpening> openings; };  // a partition, kInteriorWallThickness thick
+struct InteriorStair { math::Vec2 foot, head; double width = 1.0, rise = 0; };  // a straight flight: the floor at `foot`, `rise` over it at `head`
+struct InteriorRail { math::Vec2 from, to; double bottom = 0, top = 0; };      // a handrail or banister: posts from bottom to top
+struct InteriorPlan {
+  std::vector<InteriorRoom> rooms;
+  std::vector<InteriorWall> walls;
+  std::optional<InteriorStair> stair;
+  std::vector<InteriorRail> rails;
+  double upper_floor = 0.0;   // the upper floor's height over the ground floor (0: one storey)
+  double slab = 0.25;         // the upper floor slab's thickness
+};
+InteriorPlan interior_plan(const BuildingSpec& spec);
 struct DoorState {
   double open = 0.0;      // 0 closed .. 1 swung 90 degrees inward
   bool opening = false;   // the way it is moving (or resting)
@@ -271,9 +300,15 @@ class BuildingSet {
   std::size_t size() const { return buildings_.size(); }
   BuildingStats stats() const;
   // The built surface at a plan position — the footpath (the lifted ground,
-  // ramping up to the door where the floor stands higher) or the floor of
-  // an enterable building's rooms — or nullopt.
+  // ramping up to the door where the floor stands higher), the ground floor
+  // of an enterable building's rooms, or the rubble of a destroyed one — or
+  // nullopt. With the feet's height: of the building's levels (the ground
+  // floor, the stair as a ramp, the upper floor outside the stairwell) the
+  // highest no more than the step height (0.5 m) above the feet.
   std::optional<double> platform_height(double x, double z) const;
+  std::optional<double> platform_height(double x, double z, double feet_y) const;
+  // The room the point lies in at the feet's height ("kitchen", "stairs", ...), or nullptr.
+  const char* room_at(std::size_t building, double x, double z, double feet_y) const;
   // The path's speed factor on a footpath or a floor, 1 elsewhere.
   double speed_factor(double x, double z) const;
   // The building whose footprint (plus margin) covers the point, if any.

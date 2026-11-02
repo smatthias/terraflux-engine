@@ -193,8 +193,10 @@ void test_set_and_walker() {
   const auto mid_path = house.door + (house.path_end - house.door) * 0.5;
   require(set.platform_height(mid_path.x, mid_path.y) && near(*set.platform_height(mid_path.x, mid_path.y), 50 + style.surface_lift_meters) &&
           near(set.speed_factor(mid_path.x, mid_path.y), style.path_speed_factor), "the footpath carries the feet and hurries the walker");
-  require(!set.platform_height(house.centre.x, house.centre.y) && near(set.speed_factor(house.centre.x, house.centre.y), 1.0) && !set.platform_height(500, 400),
-          "off the paths there is no surface");
+  const auto& hospital = set.buildings()[1];
+  require(!set.platform_height(hospital.centre.x, hospital.centre.y) && near(set.speed_factor(hospital.centre.x, hospital.centre.y), 1.0) && !set.platform_height(500, 400),
+          "off the paths there is no surface (a solid building's plot is not one)");
+  require(set.platform_height(house.centre.x, house.centre.y) && near(*set.platform_height(house.centre.x, house.centre.y), house.floor_meters), "the house is entered: its floor is a surface");
   require(set.building_at(house.centre.x, house.centre.y) == 2 && !set.building_at(mid_path.x, mid_path.y) && set.building_at(house.door.x, house.door.y, 1.0) == 2, "building_at finds the plot");
   require(set.entrance_near(house.door.x + 1, house.door.y, 3.0) == 2 && !set.entrance_near(house.door.x + 10, house.door.y + 10, 3.0), "entrance_near finds the door");
   rejects([&] { (void)set.platform_height(std::nan(""), 0); }, "non-finite queries are rejected");
@@ -203,12 +205,14 @@ void test_set_and_walker() {
   ObstacleField walls(set.obstacles());
   require(walls.size() > 100, "the walls are chains of posts");
   for (const auto& o : walls.obstacles())
-    if (near(o.radius, 0.35)) require(o.top - o.bottom > 3.0, "wall posts reach from the foundation to the roof");
-    else require(o.top - o.bottom >= 0.2 && o.top - o.bottom <= 2.1, "the other posts are the bungalow's furniture");
+    if (near(o.radius, 0.35)) require(o.top - o.bottom > 3.0, "wall and partition posts reach from the foundation to the roof (or the floor above)");
+    else if (near(o.radius, 0.08)) require(o.top - o.bottom > 4.0, "the house's handrail runs up both storeys");
+    else require(o.top - o.bottom >= 0.2 && o.top - o.bottom <= 2.2, "the other posts are the furniture");
+  ObstacleField doors(set.door_obstacles());
   WalkEnvironment env;
   env.standing_height = plain_ground;
   env.lower = {-100, 0, -500}; env.upper = {1100, 0, 500};
-  env.obstacles = {&walls};
+  env.obstacles = {&walls, &doors};
   env.platforms = [&](double x, double z, double) { return set.platform_height(x, z); };
   env.surface_speed = [&](double x, double z) { return set.speed_factor(x, z); };
   env.gait.enabled = false;
@@ -224,8 +228,8 @@ void test_set_and_walker() {
   const Vec2 feet{walker.feet.x, walker.feet.z};
   const auto [a, b] = std::pair{(feet - house.centre).dot(house.along), (feet - house.centre).dot(house.facing)};
   require(near(on_path, style.path_speed_factor), "the footpath hurried the walker");
-  require(b > 0.5 * house.spec.depth_meters && b < 0.5 * house.spec.depth_meters + 1.5 && std::abs(a) < 1.0, "the front wall stopped the walker at the door");
-  require(!set.building_at(feet.x, feet.y), "the walker is not inside the house");
+  require(b > 0.5 * house.spec.depth_meters && b < 0.5 * house.spec.depth_meters + 1.5 && std::abs(a) < 1.0, "the closed door stopped the walker at the threshold");
+  require(!set.inside_of(feet.x, feet.y), "the walker is not inside the house");
 }
 
 void test_meshes() {
@@ -244,11 +248,13 @@ void test_meshes() {
     }
     ++count[p.what];
   }
-  require(count["wall"] == 3 && count["glass"] == 1 && count["roof"] == 4 && count["door"] == 3 && count["doorframe"] == 1 && count["window"] == 2 && count["opening"] == 0 &&
+  require(count["wall"] == 3 && count["glass"] == 1 && count["roof"] == 4 && count["door"] == 2 && count["doorframe"] == 2 && count["window"] == 2 && count["opening"] == 0 &&
           count["cross"] == 1 && count["chimney"] == 2 && count["masonry"] == 1 && count["trim"] == 2 && count["path"] == 1 && count["foundation"] == 1,
-          "stone and concrete walls, a glass facade, four roofs, three painted doors and the bungalow's door frame, glass windows on the house and the hospital, real holes in the bungalow, the hospital's cross, two chimneys, the bungalow's masonry plinth, footpaths and foundations");
-  require(count["floor"] == 1 && count["ceiling"] == 1 && count["table"] == 1 && count["chair"] == 1 && count["bed"] == 1 && count["mattress"] == 1 && count["wardrobe"] == 1 &&
-          count["cupboard"] == 1 && count["worktop"] == 1 && count["sink"] == 1 && count["stove"] == 1, "the bungalow's floor, ceiling and furniture");
+          "stone and concrete walls, a glass facade, four roofs, two painted doors and two door frames, glass in the house's holes and on the hospital, real holes in the bungalow, the hospital's cross, two chimneys, the bungalow's masonry plinth, footpaths and foundations");
+  require(count["floor"] == 3 && count["ceiling"] == 2 && count["table"] == 1 && count["chair"] == 1 && count["bed"] == 1 && count["mattress"] == 1 && count["wardrobe"] == 1 &&
+          count["cupboard"] == 1 && count["worktop"] == 1 && count["sink"] == 1 && count["stove"] == 1, "the floors (the house's two), ceilings and the furniture shared by the bungalow and the house");
+  require(count["partition"] == 1 && count["stair"] == 1 && count["sofa"] == 1 && count["television"] == 1 && count["stand"] == 1 && count["toilet"] == 1 && count["washbasin"] == 1 && count["cabinet"] == 1,
+          "the house's partitions, stair, sofa, television, toilet, washbasin and cabinets");
   // Materials: thatch and planks on the bungalow over a stone plinth and a brick chimney, stone and tiles on the house, concrete and glass on the rest.
   std::map<std::string, SurfaceMaterial> materials;
   for (const auto& p : parts) {
@@ -259,8 +265,9 @@ void test_meshes() {
   }
   require(materials["roof@bungalow"] == SurfaceMaterial::Thatch && materials["wall@bungalow"] == SurfaceMaterial::Planks && materials["masonry@bungalow"] == SurfaceMaterial::Stone &&
           materials["chimney@bungalow"] == SurfaceMaterial::Brick, "the bungalow is thatch over planks on a stone plinth with a brick chimney");
-  require(materials["wall@house"] == SurfaceMaterial::Stone && materials["roof@house"] == SurfaceMaterial::Tiles && materials["chimney@house"] == SurfaceMaterial::Brick && materials["door@house"] == SurfaceMaterial::Timber,
-          "the house is stone under tiles with a timber door");
+  require(materials["wall@house"] == SurfaceMaterial::Stone && materials["roof@house"] == SurfaceMaterial::Tiles && materials["chimney@house"] == SurfaceMaterial::Brick &&
+          materials["doorframe@house"] == SurfaceMaterial::Timber && materials["stair@house"] == SurfaceMaterial::Timber && materials["window@house"] == SurfaceMaterial::Window,
+          "the house is stone under tiles with a timber door frame and stair and glazed windows");
   require(materials["wall@hospital"] == SurfaceMaterial::Concrete && materials["glass@skyscraper"] == SurfaceMaterial::Glass && materials["window@house"] == SurfaceMaterial::Window,
           "concrete and glass where they belong");
   require(std::string(surface_material_name(SurfaceMaterial::Thatch)) == "thatch", "material names");
@@ -295,7 +302,8 @@ void test_meshes() {
     if (what == "wall" && *who == 2) require(near(p.color.x, p.color.y, 0.05) && p.color.x > 0.45 && p.color.x < 0.65, "the house's walls are grey stone");
     if (what == "roof" && *who == 3) require(p.color.x > 0.6 && p.color.y > 0.5 && p.color.z < 0.45, "the bungalow's roof is straw");
     if (what == "wall" && *who == 3) require(p.color.x > p.color.y && p.color.y > p.color.z, "the bungalow's walls are wood");
-    if (what == "floor" || what == "ceiling" || what == "bed") require(*who == 3, "the rooms are the bungalow's");
+    if (what == "floor" || what == "ceiling") require(*who == 3 || *who == 2, "the rooms are the bungalow's and the house's");
+    if (what == "partition" || what == "stair" || what == "sofa") require(*who == 2, "the partitions, the stair and the sofa are the house's");
     if (what == "window") require(p.color.z > 0.8 && p.color.z > p.color.x, "glass windows are blue-grey glass");
   }
   require(tower_top - tower.floor_meters >= 70 && tower_top - tower.floor_meters <= 90, "the tower rises at least seventy metres over its floor");
@@ -410,7 +418,8 @@ void walk_frames(FirstPersonCamera& walker, WalkEnvironment& env, BuildingSet& s
 }
 
 void test_interior() {
-  require(building_enterable(BuildingKind::Bungalow) && !building_enterable(BuildingKind::House) && !building_enterable(BuildingKind::Hospital), "only the bungalow is entered");
+  require(building_enterable(BuildingKind::Bungalow) && building_enterable(BuildingKind::House) && !building_enterable(BuildingKind::Hospital) && !building_enterable(BuildingKind::Skyscraper),
+          "the bungalow and the house are entered, the rest are solid");
   // The furniture fits between the walls, clear of the doorway, and stands on the floor.
   const auto spec = building_spec(BuildingKind::Bungalow);
   const auto pieces = furnish(spec);
@@ -426,13 +435,15 @@ void test_interior() {
   }
   require(kinds["cupboard"] == 2 && kinds["worktop"] == 1 && kinds["sink"] == 1 && kinds["stove"] == 1 && kinds["table"] >= 5 && kinds["chair"] >= 4 * 6 && kinds["wardrobe"] == 1 &&
           kinds["bed"] == 1 && kinds["mattress"] == 1 && kinds["blanket"] == 1 && kinds["pillow"] == 1, "the pieces of furniture");
-  require(furnish(building_spec(BuildingKind::House)).empty(), "a solid building has no furniture");
+  require(furnish(building_spec(BuildingKind::Hospital)).empty() && interior_plan(building_spec(BuildingKind::Hospital)).rooms.empty(), "a solid building has no furniture and no rooms");
+  require(interior_plan(spec).rooms.size() == 1 && std::string(interior_plan(spec).rooms[0].name) == "room" && interior_plan(spec).walls.empty() && !interior_plan(spec).stair && interior_plan(spec).upper_floor == 0,
+          "the bungalow is one room on one floor");
   rejects([] { auto s = building_spec(BuildingKind::Bungalow); s.width_meters = 1.0; furnish(s); }, "furnishing validates the spec");
 
   RoadStyle road_style;
   RoadNetwork roads(road_def(), road_style, plain_ground);
   BuildingPlacementStyle style;
-  std::vector<BuildingRequest> two{{BuildingKind::Bungalow, BuildingSite{0, 50.0, 1}}, {BuildingKind::House, BuildingSite{0, 50.0, -1}}};
+  std::vector<BuildingRequest> two{{BuildingKind::Bungalow, BuildingSite{0, 50.0, 1}}, {BuildingKind::Hospital, BuildingSite{0, 50.0, -1}}};
   BuildingSet set(place_buildings(roads, two, plain_ground, std::nullopt, {50, 0}, style), plain_ground, style);
   require(set.size() == 2 && set.stats().interiors == 1, "one interior among two buildings");
   const auto& bungalow = set.buildings()[0];
@@ -440,7 +451,7 @@ void test_interior() {
   // Inside, the floor is the surface; the doorway too; the path ramps up to it.
   require(set.inside(0, bungalow.centre.x, bungalow.centre.y) && set.inside_of(bungalow.centre.x, bungalow.centre.y) == 0 && !set.inside(0, bungalow.door.x + bungalow.facing.x * 2, bungalow.door.y + bungalow.facing.y * 2),
           "inside is within the walls");
-  require(!set.inside(1, set.buildings()[1].centre.x, set.buildings()[1].centre.y) && !set.inside_of(set.buildings()[1].centre.x, set.buildings()[1].centre.y), "the house is never entered");
+  require(!set.inside(1, set.buildings()[1].centre.x, set.buildings()[1].centre.y) && !set.inside_of(set.buildings()[1].centre.x, set.buildings()[1].centre.y), "the hospital is never entered");
   rejects<std::out_of_range>([&] { (void)set.inside(5, 0, 0); }, "inside checks the index");
   require(near(*set.platform_height(bungalow.centre.x, bungalow.centre.y), bungalow.floor_meters) && near(set.speed_factor(bungalow.centre.x, bungalow.centre.y), style.path_speed_factor),
           "the floor carries the feet inside");
@@ -487,7 +498,7 @@ void test_interior() {
   require(set.doors().size() == 2 && near(set.doors()[0].open, 0.0) && !set.doors()[0].opening, "the doors start closed and at rest");
   ObstacleField door_field(set.door_obstacles());
   require(door_field.size() > 3 && gap_at(door_field, threshold) < 0.0, "the closed leaf stands across the doorway");
-  require(!set.toggle_door(1) && set.toggle_door(0) && set.doors()[0].opening, "only the bungalow's door is opened");
+  require(!set.toggle_door(1) && set.toggle_door(0) && set.doors()[0].opening, "the bungalow's door is opened, the hospital's is painted on");
   rejects<std::out_of_range>([&] { set.toggle_door(7); }, "toggle checks the index");
   rejects([&] { set.advance(-1.0); }, "advance needs a non-negative step");
   const auto version = set.door_version();
@@ -579,7 +590,7 @@ void test_hazards() {
   require(material_hazard(SurfaceMaterial::Tiles).impact_tonnes < material_hazard(SurfaceMaterial::Concrete).impact_tonnes && material_hazard(SurfaceMaterial::Thatch).wind_mps < material_hazard(SurfaceMaterial::Tiles).wind_mps,
           "tiles smash under less than concrete, thatch blows off before tiles");
   require(*building_element_material(BuildingKind::Bungalow, E::Roof) == SurfaceMaterial::Thatch && *building_element_material(BuildingKind::House, E::Walls) == SurfaceMaterial::Stone &&
-          !building_element_material(BuildingKind::Bungalow, E::Windows) && !building_element_material(BuildingKind::House, E::Interior) &&
+          !building_element_material(BuildingKind::Bungalow, E::Windows) && *building_element_material(BuildingKind::House, E::Interior) == SurfaceMaterial::Timber && !building_element_material(BuildingKind::Hospital, E::Interior) &&
           *building_element_material(BuildingKind::Hangar, E::Roof) == SurfaceMaterial::Metal && *building_element_material(BuildingKind::Skyscraper, E::Walls) == SurfaceMaterial::Glass,
           "the elements are what the kinds are built of");
   require(std::string(building_element_name(E::Interior)) == "interior" && std::string(building_event_name(K::WashedOut)) == "washed out", "names");
@@ -603,7 +614,8 @@ void test_hazards() {
     const auto& bungalow = set.buildings()[0];
     const auto& house = set.buildings()[1];
     for (const auto& st : set.states()) require(!st.alight() && !st.destroyed && st.integrity() == 1.0 && st.element(E::Walls).present && st.element(E::Roof).present, "everything starts sound");
-    require(!set.states()[0].element(E::Windows).present && set.states()[0].element(E::Interior).present && !set.states()[1].element(E::Interior).present, "the bungalow has no glass, the house no modelled interior");
+    require(!set.states()[0].element(E::Windows).present && set.states()[0].element(E::Interior).present && set.states()[1].element(E::Interior).present && !set.states()[2].element(E::Interior).present,
+            "the bungalow has no glass; the bungalow and the house have rooms, the hospital has none modelled");
     BuildingHazards fire;
     fire.heat = [&](double x, double z) { return (Vec2{x, z} - Vec2{50, 0}).length() < 40.0 ? 1.0 : 0.0; };  // the road between them is ablaze
     const auto version = set.version();
@@ -647,9 +659,15 @@ void test_hazards() {
     for (const auto& pl : smoke) if (pl.kind == 2.0f) smoulder = true;
     require(smoulder, "the burned-down bungalow smoulders");
     std::map<std::string, std::size_t> parts;
-    for (const auto& p : set.build_meshes()) ++parts[p.what];
-    require(parts["rubble"] >= 1 && parts["roof"] == 2 && parts["window"] == 1 && parts["burst"] == 1 && parts["floor"] == 0 && parts["table"] == 0,
-            "rubble drawn, two roofs left (the house's and the hospital's), the house's windows burst (dark holes), no room");
+    bool bungalow_room = false;
+    for (const auto& p : set.build_meshes()) {
+      ++parts[p.what];
+      const std::string what = p.what;
+      if (what != "floor" && what != "ceiling" && what != "table" && what != "bed" && what != "roof") continue;  // (a leaning wall slab lies in the rubble)
+      for (const auto& v : p.vertices) if (set.building_at(v.position[0], v.position[2]) == 0) bungalow_room = true;
+    }
+    require(parts["rubble"] >= 1 && parts["roof"] == 2 && parts["window"] == 1 && parts["burst"] == 1 && !bungalow_room,
+            "rubble drawn, two roofs left (the house's and the hospital's), the house's windows burst (dark holes), nothing of the bungalow's rooms");
     // The house stands: its door burned away, its tiles scorched, the walls hardly touched.
     require(!set.states()[1].destroyed && set.states()[1].element(E::Door).damage >= 1.0 && set.states()[1].element(E::Roof).damage > 0 && set.states()[1].element(E::Roof).damage < 0.2 &&
             set.states()[1].integrity() > 0.8, "the stone house survives the fire with its door gone");
@@ -782,7 +800,8 @@ void test_hazards() {
     require(set.strike(house.centre.x, house.centre.y) == 1 && near(set.states()[1].element(E::Roof).damage, style.strike_scorch, 1e-9) && set.states()[1].element(E::Roof).cause == "lightning" && !set.states()[1].alight(),
             "a strike on the house scorches its tiles");
     require(!set.strike(house.centre.x, house.centre.y + 500.0), "a strike far off hits nothing");
-    require(set.sheltered(bungalow.centre.x, bungalow.centre.y) && !set.sheltered(house.centre.x, house.centre.y), "inside the bungalow is under a roof (the house cannot be entered)");
+    require(set.sheltered(bungalow.centre.x, bungalow.centre.y) && set.sheltered(house.centre.x, house.centre.y) && !set.sheltered(set.buildings()[2].centre.x, set.buildings()[2].centre.y),
+            "inside the bungalow and the house is under a roof (the hospital cannot be entered)");
     rejects([&] { set.strike(std::nan(""), 0); }, "a strike needs a finite position");
     // The hospital (five storeys) draws a bolt that lands between it and a spot nearer the house.
     const Vec2 mid = house.centre + (set.buildings()[2].centre - house.centre) * 0.5;
@@ -790,6 +809,111 @@ void test_hazards() {
     set.destroy(2, "test");
     require(set.states()[2].destroyed && set.states()[2].destroyed_by == "test" && count(set, K::Collapsed, 2) == 1, "destroy brings a building down outright");
   }
+}
+
+// The house: three rooms downstairs, a stair, the bedroom upstairs; the walker climbs.
+void test_house() {
+  const auto spec = building_spec(BuildingKind::House);
+  const auto plan = interior_plan(spec);
+  const double iw = 0.5 * spec.width_meters - kInteriorWallThickness, id = 0.5 * spec.depth_meters - kInteriorWallThickness;
+  std::map<std::string, InteriorRoom> rooms;
+  for (const auto& r : plan.rooms) rooms[r.name] = r;
+  require(rooms.size() == 5 && rooms.count("living room") && rooms.count("kitchen") && rooms.count("bathroom") && rooms.count("stairs") && rooms.count("bedroom"), "five rooms");
+  require(rooms["living room"].level == 0 && rooms["kitchen"].level == 0 && rooms["bathroom"].level == 0 && rooms["bedroom"].level == 1, "three downstairs, the bedroom up");
+  require(rooms["living room"].b1 == id && rooms["kitchen"].b0 == -id && rooms["bathroom"].b0 == -id && rooms["kitchen"].a1 < rooms["bathroom"].a0, "the living room at the front, the kitchen and the bathroom behind it, left and right");
+  require(near(rooms["bedroom"].a0, -iw) && near(rooms["bedroom"].a1, iw) && near(rooms["bedroom"].b0, -id) && near(rooms["bedroom"].b1, id), "the bedroom is the whole upper floor");
+  require(plan.walls.size() == 2 && plan.walls[0].openings.size() == 2 && plan.walls[1].openings.empty() && near(plan.walls[0].top, spec.storey_height_meters - plan.slab),
+          "a partition with two doorways behind the living room, a blind one between the kitchen and the bathroom, up to the floor above");
+  require(plan.stair && near(plan.stair->rise, spec.storey_height_meters) && plan.stair->width == 1.0 && plan.stair->foot.y > plan.stair->head.y && near(plan.stair->foot.x, -iw + 0.5),
+          "a straight flight up the left wall from the front toward the back, rising a storey");
+  require(plan.rails.size() == 1 && plan.rails[0].top > spec.storey_height_meters && plan.rails[0].bottom < 0, "a handrail on the open side, running up both storeys");
+  require(near(plan.upper_floor, spec.storey_height_meters), "the upper floor a storey up");
+  // Furniture: every piece within its room, upstairs pieces on the upper floor.
+  const auto pieces = furnish(spec);
+  std::map<std::string, int> kinds;
+  const auto in_room = [&](const Furnishing& f, const char* name) {
+    const auto& r = rooms[name];
+    return f.centre.x - f.half_along >= r.a0 - 1e-6 && f.centre.x + f.half_along <= r.a1 + 1e-6 && f.centre.y - f.half_across >= r.b0 - 1e-6 && f.centre.y + f.half_across <= r.b1 + 1e-6;
+  };
+  for (const auto& f : pieces) {
+    ++kinds[f.what];
+    const std::string what = f.what;
+    const bool upstairs = f.bottom >= spec.storey_height_meters;
+    if (what == "bed" || what == "mattress" || what == "wardrobe" || what == "blanket" || what == "pillow") require(upstairs && in_room(f, "bedroom"), "the bed and the wardrobe are in the bedroom upstairs");
+    else if (what == "toilet" || what == "washbasin" || what == "tap") require(!upstairs && in_room(f, "bathroom"), "the toilet and the basin are in the bathroom");
+    else if (what == "cupboard" || what == "worktop" || what == "sink" || what == "stove" || what == "table" && f.half_along > 0.6 || what == "chair") require(!upstairs && in_room(f, "kitchen") || what == "table" && in_room(f, "living room"), "the cooking area, the table and the chairs are in the kitchen");
+    else if (what == "sofa" || what == "television" || what == "stand") require(!upstairs && in_room(f, "living room"), "the sofa and the television are in the living room");
+    if (f.solid) require(f.bottom - (upstairs ? spec.storey_height_meters : 0.0) + f.height > 0.5, "solid pieces stand higher than the step height over their floor");
+  }
+  require(kinds["stove"] == 1 && kinds["sink"] == 1 && kinds["cupboard"] == 2 && kinds["chair"] >= 24 && kinds["cabinet"] == 2 && kinds["toilet"] == 3 && kinds["washbasin"] == 3 &&
+          kinds["television"] == 2 && kinds["stand"] == 1 && kinds["sofa"] == 5 && kinds["bed"] == 1 && kinds["wardrobe"] == 1, "the pieces asked for");
+  // The set: levels, rooms and a walker on the stairs.
+  RoadStyle road_style;
+  RoadNetwork roads(road_def(), road_style, plain_ground);
+  BuildingPlacementStyle style;
+  std::vector<BuildingRequest> one{{BuildingKind::House, BuildingSite{0, 50.0, 1}}};
+  BuildingSet set(place_buildings(roads, one, plain_ground, std::nullopt, {50, 0}, style), plain_ground, style);
+  require(set.size() == 1 && set.stats().interiors == 1, "the house is an interior");
+  const auto& h = set.buildings()[0];
+  const auto at = [&](double a, double b) { return h.centre + h.along * a + h.facing * b; };
+  const double floor = h.floor_meters, upper = floor + spec.storey_height_meters;
+  const Vec2 living = at(2.0, 2.0), kitchen = at(-2.0, -2.5), bath = at(3.0, -2.5), stair_mid = at(-iw + 0.5, 0.5 * (plan.stair->foot.y + plan.stair->head.y)), stair_head = at(-iw + 0.5, plan.stair->head.y - 0.3);
+  require(near(*set.platform_height(living.x, living.y, floor), floor) && near(*set.platform_height(living.x, living.y, upper), upper) && near(*set.platform_height(living.x, living.y, floor + 1.0), floor),
+          "on the ground floor the floor, upstairs the upper floor, a jump's height up still the floor");
+  require(near(*set.platform_height(stair_mid.x, stair_mid.y, floor + 1.4), floor + 0.5 * spec.storey_height_meters) && near(*set.platform_height(stair_mid.x, stair_mid.y, floor), floor),
+          "the stair is a ramp half way up at its middle; from the floor below it, the floor");
+  require(near(*set.platform_height(stair_head.x, stair_head.y, upper), upper), "past the head the upper floor");
+  require(std::string(set.room_at(0, living.x, living.y, floor)) == "living room" && std::string(set.room_at(0, kitchen.x, kitchen.y, floor)) == "kitchen" &&
+          std::string(set.room_at(0, bath.x, bath.y, floor)) == "bathroom" && std::string(set.room_at(0, stair_mid.x, stair_mid.y, floor + 1.4)) == "stairs" &&
+          std::string(set.room_at(0, living.x, living.y, upper)) == "bedroom" && !set.room_at(0, h.door.x + h.facing.x * 3, h.door.y + h.facing.y * 3, floor), "the rooms by position and level");
+  rejects<std::out_of_range>([&] { set.room_at(3, 0, 0, 0); }, "room_at checks the index");
+  // Walker: through the doorway into the kitchen, stopped by the blind partition, up the stairs to the bedroom, down again.
+  ObstacleField walls(set.obstacles()), doors(set.door_obstacles());
+  WalkEnvironment env;
+  env.standing_height = plain_ground;
+  env.lower = {-100, 0, -500}; env.upper = {1100, 0, 500};
+  env.obstacles = {&walls, &doors};
+  env.platforms = [&](double x, double z, double feet_y) { return set.platform_height(x, z, feet_y); };
+  env.gait.enabled = false;
+  FirstPersonCamera walker;
+  const auto stand = [&](Vec2 p, double y, Vec2 toward) { walker.feet = {p.x, y, p.y}; walker.grounded = true; walker.yaw = std::atan2(-toward.x, -toward.y); walker.velocity_mps = {}; walker.gait_speed_mps = 0; };
+  const auto go = [&](double seconds) { for (int i = 0; i < static_cast<int>(seconds * 60); ++i) walk(walker, WalkInput{1, 0, false}, 1.0 / 60.0, env); };
+  const auto local = [&]() { const Vec2 f{walker.feet.x, walker.feet.z}; return std::pair{(f - h.centre).dot(h.along), (f - h.centre).dot(h.facing)}; };
+  // From the living room straight at the kitchen doorway.
+  const double doorway_a = -iw + plan.walls[0].openings[0].along;
+  stand(at(doorway_a, 2.0), floor, h.facing * -1.0);
+  go(3.0);
+  require(std::string(set.room_at(0, walker.feet.x, walker.feet.z, walker.feet.y)) == "kitchen" && near(walker.feet.y, floor, 1e-6), "through the doorway into the kitchen");
+  // At the blind partition from the kitchen side.
+  stand(at(plan.walls[1].from.x - 1.5, -2.5), floor, h.along);
+  go(2.0);
+  require(local().first < plan.walls[1].from.x - 0.5 && std::string(set.room_at(0, walker.feet.x, walker.feet.z, walker.feet.y)) == "kitchen", "the partition keeps the kitchen from the bathroom");
+  // Up the stairs: from the foot, walking toward the back.
+  stand(at(-iw + 0.5, plan.stair->foot.y + 0.3), floor, h.facing * -1.0);
+  double highest = floor;
+  for (int i = 0; i < 60 * 6; ++i) { walk(walker, WalkInput{1, 0, false}, 1.0 / 60.0, env); highest = std::max(highest, walker.feet.y); }
+  require(near(walker.feet.y, upper, 1e-6) && local().second < plan.stair->head.y && std::string(set.room_at(0, walker.feet.x, walker.feet.z, walker.feet.y)) == "bedroom",
+          "up the stairs onto the upper floor, in the bedroom");
+  // The bedroom's wardrobe stops the walker; the banister keeps it out of the stairwell.
+  stand(at(iw - 2.0, id - 0.95), upper, h.along);
+  go(2.0);
+  require(local().first < iw - 0.62 - 0.3 && near(walker.feet.y, upper, 1e-6), "the wardrobe stops the walker upstairs");
+  stand(at(-iw + 2.0, 2.0), upper, h.along * -1.0);
+  go(2.0);
+  require(local().first > -iw + 1.0 && near(walker.feet.y, upper, 1e-6), "the banister keeps the walker out of the stairwell");
+  // Down again: from the bedroom over the head of the stairs and down the flight.
+  stand(at(-iw + 0.5, plan.stair->head.y - 1.0), upper, h.facing);
+  go(8.0);
+  require(near(walker.feet.y, floor, 0.05) && local().second > plan.stair->foot.y - 0.1 && walker.grounded, "down the stairs to the ground floor (stopped at the front wall)");
+  // Downstairs under the upper floor the bed does not block, and the sofa does.
+  stand(at(iw - 2.75, -id + 1.05 + 2.5), floor, h.facing * -1.0);
+  go(2.0);
+  require(local().second < -id + 1.05 + 0.5, "the bed upstairs is no obstacle downstairs");
+  const double lb = 0.5 * (plan.walls[0].from.y + 0.5 * kInteriorWallThickness + id) + 0.7;
+  stand(at(iw - 2.85, lb + 2.5), floor, h.facing * -1.0);
+  go(2.0);
+  require(local().second > lb + 1.1 + 0.3, "the sofa stops the walker in the living room");
+  (void)highest;
 }
 
 }  // namespace
@@ -805,7 +929,8 @@ int main() {
     test_civic_and_airport_kinds();
     test_interior();
     test_hazards();
-    std::cout << "TerraFlux buildings: 9 tests passed\n";
+    test_house();
+    std::cout << "TerraFlux buildings: 10 tests passed\n";
   } catch (const std::exception& error) {
     std::cerr << "TerraFlux buildings test failed: " << error.what() << '\n';
     return 1;
